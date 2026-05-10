@@ -1,0 +1,16 @@
+#!/bin/zsh
+set -uo pipefail
+
+log_file="/tmp/typeless-local-launch.log"
+exec >>"$log_file" 2>&1
+echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] launch: argv0=$0 pwd=$PWD"
+
+script_path="${0:A}"
+script_dir="$(cd "$(dirname "$script_path")" && pwd -P)"
+project_root="$(cd "$script_dir/../../.." && pwd -P)"
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+
+echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] script_path=$script_path"
+echo "[$(/bin/date '+%Y-%m-%d %H:%M:%S')] project_root=$project_root"
+
+exec "$project_root/scripts/run.sh"

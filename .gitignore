@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+*.py[cod]
+.DS_Store
+
+# Local planning/debug artifacts. They may include machine-specific paths.
+/completion_audit.md
+/findings.md
+/progress.md
+/task_plan.md
