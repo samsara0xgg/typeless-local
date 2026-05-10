@@ -19,7 +19,7 @@ def test_overlay_contains_copy_fallback_ui() -> None:
 def test_overlay_contains_official_recording_tooltips() -> None:
     assert 'data-tooltip="Cancel"' in OVERLAY_HTML
     assert 'data-tooltip="Finish"' in OVERLAY_HTML
-    assert 'data-tooltip-key="Fn"' in OVERLAY_HTML
+    assert 'data-tooltip-key="F5"' in OVERLAY_HTML
     assert "Click to start dictating" in OVERLAY_HTML
     assert "bottom = rootRect.bottom - targetRect.top + 10" in OVERLAY_HTML
     assert 'bar.addEventListener("mousemove", updateTooltipFromPointer)' in OVERLAY_HTML

@@ -13,12 +13,16 @@ import Quartz
 
 LOGGER = logging.getLogger(__name__)
 
-FN_KEYCODE = 63
+F5_KEYCODE = 96
+# On Apple Silicon Macs the dictation key (F5) reports virtual keycode 176
+# instead of the standard F5 keycode 96. We accept both so external keyboards
+# with a real F5 also work.
+DICTATION_KEYCODE = 176
+PRIMARY_KEYCODES = frozenset({F5_KEYCODE, DICTATION_KEYCODE})
 RIGHT_OPTION_KEYCODE = 61
 SPACE_KEYCODE = 49
 ESCAPE_KEYCODE = 53
 V_KEYCODE = 9
-FN_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskSecondaryFn", 1 << 23)
 OPTION_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskAlternate", 1 << 19)
 HOTKEY_EVENT_TAP_LOCATION = getattr(Quartz, "kCGHIDEventTap", Quartz.kCGSessionEventTap)
 TEXT_INPUT_ROLES = {
@@ -214,7 +218,7 @@ HotkeyCallback = Callable[[str], None]
 
 
 class GlobalHotkeyMonitor:
-    """Capture Fn, Fn+Space, and Esc with a Quartz event tap."""
+    """Capture F5, F5+Space, and Esc with a Quartz event tap."""
 
     def __init__(
         self,
@@ -230,7 +234,7 @@ class GlobalHotkeyMonitor:
         self.is_active_fn = is_active_fn
         self._tap = None
         self._source = None
-        self._fn_down = False
+        self._primary_down: set[int] = set()
         self._debug_down = False
 
     def start(self) -> None:
@@ -290,14 +294,8 @@ class GlobalHotkeyMonitor:
         )
 
         if event_type == Quartz.kCGEventFlagsChanged:
-            flags = Quartz.CGEventGetFlags(event)
-            if keycode == FN_KEYCODE:
-                now_down = bool(flags & FN_FLAG_MASK)
-                if now_down != self._fn_down:
-                    self._fn_down = now_down
-                    self.callback("primary_down" if now_down else "primary_up")
-                return None
             if self.debug_hotkey and keycode == RIGHT_OPTION_KEYCODE:
+                flags = Quartz.CGEventGetFlags(event)
                 now_down = bool(flags & OPTION_FLAG_MASK)
                 if now_down != self._debug_down:
                     self._debug_down = now_down
@@ -306,9 +304,13 @@ class GlobalHotkeyMonitor:
             return event
 
         if event_type == Quartz.kCGEventKeyDown:
-            if keycode == FN_KEYCODE:
+            if keycode in PRIMARY_KEYCODES:
+                # macOS auto-repeats function keys; only fire once per physical press.
+                if keycode not in self._primary_down:
+                    self._primary_down.add(keycode)
+                    self.callback("primary_down")
                 return None
-            if keycode == SPACE_KEYCODE and self._fn_down:
+            if keycode == SPACE_KEYCODE and self._primary_down:
                 self.callback("hands_free")
                 return None
             if keycode == ESCAPE_KEYCODE:
@@ -316,6 +318,9 @@ class GlobalHotkeyMonitor:
                     return event
                 self.callback("cancel")
                 return None
-        if event_type == Quartz.kCGEventKeyUp and keycode == FN_KEYCODE:
+        if event_type == Quartz.kCGEventKeyUp and keycode in PRIMARY_KEYCODES:
+            if keycode in self._primary_down:
+                self._primary_down.discard(keycode)
+                self.callback("primary_up")
             return None
         return event

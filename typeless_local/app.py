@@ -101,7 +101,7 @@ class TypelessLocalApp:
             LOGGER.exception("Failed to install global hotkey monitor")
             self._call_ui(self.overlay.show_error, "Enable Access")
             return
-        LOGGER.info("Typeless Local ready. Press Fn to start/stop dictation.")
+        LOGGER.info("Typeless Local ready. Press F5 to start/stop dictation.")
 
     def _on_hotkey(self, action: str) -> None:
         with self._lock:

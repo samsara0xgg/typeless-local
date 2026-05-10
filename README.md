@@ -1,6 +1,7 @@
 # Typeless Local
 
-Standalone macOS dictation overlay modeled after Typeless' Fn recording control.
+Standalone macOS dictation overlay modeled after Typeless' Fn recording control,
+with F5 (the dictation key on Apple keyboards) as the local trigger.
 
 This app is intentionally separate from the Jarvis project. It can reuse Jarvis'
 existing ASR configuration and modules through `JARVIS_PROJECT_ROOT`, but it owns
@@ -23,8 +24,8 @@ Or from the terminal:
 
 Default behavior:
 
-- `Fn` starts and stops dictation.
-- `Fn+Space` starts hands-free dictation.
+- `F5` starts and stops dictation.
+- `F5+Space` starts hands-free dictation.
 - `Esc` cancels the active or pending dictation.
 - During recording, macOS system output is muted through Jarvis' Inherent
   `SystemAudioDucker` and restored when recording ends or is canceled.
@@ -45,7 +46,7 @@ Optional variables:
   `../jarvis` directory when present.
 - `TYPELESS_LOCAL_LOG_LEVEL`: Python logging level, default `INFO`.
 - `TYPELESS_LOCAL_DEBUG_HOTKEY`: set to `1` to also use `RightOption` as a
-  debug trigger when Fn cannot be captured by the OS event tap.
+  debug trigger when F5 cannot be captured by the OS event tap.
 - `TYPELESS_LOCAL_ASR_LANGUAGE`: optional fixed Whisper language code. Empty by
   default so dictation can auto-detect mixed Chinese/English input.
 - `TYPELESS_LOCAL_MLX_INITIAL_PROMPT`: optional Whisper initial prompt. Empty by
@@ -64,7 +65,7 @@ Recommended capture protocol for the final local recording:
 3. Use the same macOS screen-recording UI used for the reference videos. The
    command-line `screencapture -v` path may miss the floating overlay and should
    not be used as final proof.
-4. Start recording, press `Fn`, speak a short phrase, press `Fn` again to finish,
+4. Start recording, press `F5`, speak a short phrase, press `F5` again to finish,
    and keep recording until Thinking and Copy fallback have both appeared.
 5. Run the audit command below against the official and latest local `.mov`.
 

@@ -89,45 +89,13 @@ def test_hotkey_monitor_prefers_hid_event_tap(monkeypatch) -> None:
     assert calls == [mac_integration.HOTKEY_EVENT_TAP_LOCATION]
 
 
-def test_fn_flags_changed_emits_down_and_up(monkeypatch) -> None:
+def test_f5_key_down_and_up_emit_primary_events(monkeypatch) -> None:
     events = []
     monitor = mac_integration.GlobalHotkeyMonitor(events.append)
-    flags = iter([mac_integration.FN_FLAG_MASK, 0])
     monkeypatch.setattr(
         mac_integration.Quartz,
         "CGEventGetIntegerValueField",
-        lambda event, field: mac_integration.FN_KEYCODE,
-    )
-    monkeypatch.setattr(
-        mac_integration.Quartz,
-        "CGEventGetFlags",
-        lambda event: next(flags),
-    )
-
-    down_result = monitor._handle_event(
-        None,
-        mac_integration.Quartz.kCGEventFlagsChanged,
-        object(),
-        None,
-    )
-    up_result = monitor._handle_event(
-        None,
-        mac_integration.Quartz.kCGEventFlagsChanged,
-        object(),
-        None,
-    )
-
-    assert down_result is None
-    assert up_result is None
-    assert events == ["primary_down", "primary_up"]
-
-
-def test_fn_key_events_are_swallowed(monkeypatch) -> None:
-    monitor = mac_integration.GlobalHotkeyMonitor(lambda action: None)
-    monkeypatch.setattr(
-        mac_integration.Quartz,
-        "CGEventGetIntegerValueField",
-        lambda event, field: mac_integration.FN_KEYCODE,
+        lambda event, field: mac_integration.F5_KEYCODE,
     )
 
     down_result = monitor._handle_event(
@@ -145,6 +113,40 @@ def test_fn_key_events_are_swallowed(monkeypatch) -> None:
 
     assert down_result is None
     assert up_result is None
+    assert events == ["primary_down", "primary_up"]
+
+
+def test_dictation_keycode_emits_primary_events(monkeypatch) -> None:
+    events = []
+    monitor = mac_integration.GlobalHotkeyMonitor(events.append)
+    monkeypatch.setattr(
+        mac_integration.Quartz,
+        "CGEventGetIntegerValueField",
+        lambda event, field: mac_integration.DICTATION_KEYCODE,
+    )
+
+    monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, object(), None)
+    monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyUp, object(), None)
+
+    assert events == ["primary_down", "primary_up"]
+
+
+def test_f5_autorepeat_keydown_is_ignored(monkeypatch) -> None:
+    events = []
+    monitor = mac_integration.GlobalHotkeyMonitor(events.append)
+    monkeypatch.setattr(
+        mac_integration.Quartz,
+        "CGEventGetIntegerValueField",
+        lambda event, field: mac_integration.F5_KEYCODE,
+    )
+
+    monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, object(), None)
+    repeat_result = monitor._handle_event(
+        None, mac_integration.Quartz.kCGEventKeyDown, object(), None
+    )
+
+    assert repeat_result is None
+    assert events == ["primary_down"]
 
 
 def test_paste_text_restores_clipboard_snapshot(monkeypatch) -> None:

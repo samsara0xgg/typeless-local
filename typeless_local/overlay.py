@@ -571,7 +571,7 @@ OVERLAY_HTML = r"""
         <button class="side-button cancel" data-action="cancel" data-tooltip="Cancel" aria-label="Cancel"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.71 12 12l6.3 6.29-1.41 1.41-6.3-6.29-6.3 6.29-1.41-1.41L9.17 12 2.88 5.7 4.29 4.29l6.3 6.3 6.3-6.3z"></path></svg></button>
         <div class="bars" id="bars"></div>
         <div class="countdown" id="countdown"></div>
-        <button class="side-button finish" data-action="finish" data-tooltip="Finish" data-tooltip-key="Fn" aria-label="Finish"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"></path></svg></button>
+        <button class="side-button finish" data-action="finish" data-tooltip="Finish" data-tooltip-key="F5" aria-label="Finish"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"></path></svg></button>
       </div>
       <div class="layer thinking-layer">
         <div class="progress" id="progress"></div>
@@ -592,7 +592,7 @@ OVERLAY_HTML = r"""
         <div class="hover-dots"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
       </div>
     </div>
-    <div class="control-tooltip" id="controlTooltip" role="tooltip"><span id="tooltipText"></span><span class="tooltip-key" id="tooltipKey">Fn</span></div>
+    <div class="control-tooltip" id="controlTooltip" role="tooltip"><span id="tooltipText"></span><span class="tooltip-key" id="tooltipKey">F5</span></div>
   </div>
 <script>
   const root = document.getElementById("root");
