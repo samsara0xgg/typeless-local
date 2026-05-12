@@ -130,9 +130,15 @@ class TypelessLocalApp:
                     self._finish_recording()
 
     def _on_primary_down(self) -> None:
-        now = time.monotonic()
+        # Use the event-generation time captured by the hotkey monitor, not
+        # time.monotonic() here. Handler time is unreliable: _start_recording
+        # blocks the runloop briefly while the mic opens, so KeyUp can wait in
+        # the queue and look like a long press, misfiring hold-to-talk.
+        now = self.hotkeys.last_primary_down_at
         self._primary_down_at = now
-        if now - getattr(self, "_last_short_tap_at", 0.0) <= DOUBLE_CLICK_SECONDS:
+        gap = now - getattr(self, "_last_short_tap_at", 0.0)
+        LOGGER.info("HOTKEY-DEBUG primary_down now=%.3f last_short_tap=%.3f gap=%.3f state=%s mode=%s", now, getattr(self, "_last_short_tap_at", 0.0), gap, self.state, self.mode)
+        if gap <= DOUBLE_CLICK_SECONDS:
             if self.state == "idle":
                 self._start_recording("hands_free")
             elif self.state == "recording":
@@ -151,9 +157,11 @@ class TypelessLocalApp:
         if self.state != "recording" or self.mode != "tap":
             return
 
-        held_for = time.monotonic() - getattr(self, "_primary_down_at", 0.0)
+        up_at = self.hotkeys.last_primary_up_at
+        held_for = up_at - getattr(self, "_primary_down_at", 0.0)
+        LOGGER.info("HOTKEY-DEBUG primary_up up_at=%.3f down_at=%.3f held_for=%.3f", up_at, getattr(self, "_primary_down_at", 0.0), held_for)
         if held_for < LONG_PRESS_SECONDS:
-            self._last_short_tap_at = time.monotonic()
+            self._last_short_tap_at = up_at
             return
 
         self._finish_recording()

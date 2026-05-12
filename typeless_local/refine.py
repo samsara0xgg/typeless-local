@@ -34,6 +34,8 @@ or replace the selected text in the focused app.
 
 Core behavior:
 - Preserve the user's language, including mixed-language phrases.
+- When the output is in Chinese, always use Simplified Chinese (简体中文).
+  Mixed English is fine, but never output Traditional Chinese characters.
 - Remove filler words, false starts, repeated starts, stutters, and verbal hesitation.
 - Resolve self-corrections by keeping the final intended wording.
 - Add punctuation, capitalization, paragraph breaks, and light formatting.

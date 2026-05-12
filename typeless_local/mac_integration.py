@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 from dataclasses import dataclass
 import logging
 import time
@@ -12,6 +14,40 @@ from AppKit import NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSWor
 import Quartz
 
 LOGGER = logging.getLogger(__name__)
+
+
+class _MachTimebase(ctypes.Structure):
+    _fields_ = [("numer", ctypes.c_uint32), ("denom", ctypes.c_uint32)]
+
+
+def _load_mach_timebase() -> tuple[int, int]:
+    """Read the system's mach_absolute_time -> nanoseconds ratio once at import.
+
+    On Apple Silicon this is 125/3 (mach ticks are ~41.67ns each); on Intel
+    it is 1/1 (ticks are nanoseconds). NSEvent.timestamp via PyObjC does not
+    apply this conversion correctly on Apple Silicon, so we read CGEvent
+    timestamps directly and convert here.
+    """
+
+    try:
+        libsystem = ctypes.CDLL(ctypes.util.find_library("System"))
+        libsystem.mach_timebase_info.argtypes = [ctypes.POINTER(_MachTimebase)]
+        libsystem.mach_timebase_info.restype = ctypes.c_int
+        info = _MachTimebase()
+        libsystem.mach_timebase_info(ctypes.byref(info))
+        numer = int(info.numer) or 1
+        denom = int(info.denom) or 1
+        return numer, denom
+    except Exception:
+        LOGGER.exception("Failed to read mach_timebase_info; falling back to 1:1")
+        return 1, 1
+
+
+_TIMEBASE_NUMER, _TIMEBASE_DENOM = _load_mach_timebase()
+
+
+def _mach_ticks_to_seconds(ticks: int) -> float:
+    return ticks * _TIMEBASE_NUMER / _TIMEBASE_DENOM / 1e9
 
 F5_KEYCODE = 96
 # On Apple Silicon Macs the dictation key (F5) reports virtual keycode 176
@@ -236,6 +272,14 @@ class GlobalHotkeyMonitor:
         self._source = None
         self._primary_down: set[int] = set()
         self._debug_down = False
+        # Event-time of the most recent primary down/up, in seconds. Captured
+        # from NSEvent.timestamp so the value reflects when macOS generated the
+        # event, not when our handler picked it up — handler time is unreliable
+        # because _start_recording briefly blocks the runloop while opening the
+        # microphone, which would otherwise inflate held_for and misfire
+        # hold-to-talk on quick taps.
+        self.last_primary_down_at = 0.0
+        self.last_primary_up_at = 0.0
 
     def start(self) -> None:
         """Install the event tap."""
@@ -305,9 +349,14 @@ class GlobalHotkeyMonitor:
 
         if event_type == Quartz.kCGEventKeyDown:
             if keycode in PRIMARY_KEYCODES:
-                # macOS auto-repeats function keys; only fire once per physical press.
-                if keycode not in self._primary_down:
-                    self._primary_down.add(keycode)
+                # macOS 26.4 may deliver KeyDown for both 96 and 176 on a single
+                # physical F5 press; only fire primary_down on the first key of
+                # the press, and treat further primary keycodes (and auto-repeats)
+                # as part of the same hold.
+                was_idle = not self._primary_down
+                self._primary_down.add(keycode)
+                if was_idle:
+                    self.last_primary_down_at = self._event_time(event)
                     self.callback("primary_down")
                 return None
             if keycode == SPACE_KEYCODE and self._primary_down:
@@ -321,6 +370,11 @@ class GlobalHotkeyMonitor:
         if event_type == Quartz.kCGEventKeyUp and keycode in PRIMARY_KEYCODES:
             if keycode in self._primary_down:
                 self._primary_down.discard(keycode)
-                self.callback("primary_up")
+                if not self._primary_down:
+                    self.last_primary_up_at = self._event_time(event)
+                    self.callback("primary_up")
             return None
         return event
+
+    def _event_time(self, event) -> float:
+        return _mach_ticks_to_seconds(Quartz.CGEventGetTimestamp(event))
