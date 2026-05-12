@@ -31,7 +31,12 @@ class JarvisASR:
         if jarvis_root and str(jarvis_root) not in sys.path:
             sys.path.insert(0, str(jarvis_root))
 
-        from core.speech_recognizer import SpeechRecognizer
+        try:
+            from typeless_local._vendor.jarvis_core.speech_recognizer import SpeechRecognizer
+        except ImportError:
+            if jarvis_root and str(jarvis_root) not in sys.path:
+                sys.path.insert(0, str(jarvis_root))
+            from core.speech_recognizer import SpeechRecognizer
 
         self._recognizer = SpeechRecognizer(config)
         self._accepts_per_call_prompt = self._detect_per_call_prompt()
