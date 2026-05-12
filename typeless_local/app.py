@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 import math
 import os
+from pathlib import Path
 import threading
 import time
 from types import SimpleNamespace
@@ -85,13 +86,25 @@ class TypelessLocalApp:
                 debug_hotkey=config.debug_hotkey,
                 is_active_fn=lambda: self.state != "idle",
             )
+
+            from typeless_local.menubar import MenuBarIcon
+            from AppKit import NSApp
+
+            self.menubar = MenuBarIcon(
+                on_reload_vocab=self.reload_vocab,
+                on_quit=lambda: NSApp().terminate_(None),
+                trace_folder=user_paths.config_dir if user_paths else None,
+                log_path=user_paths.log_path if user_paths else None,
+            )
         else:
             self.overlay = None
             self.audio_ducker = None
             self.hotkeys = None
+            self.menubar = None
 
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="typeless-local")
         self.state = "idle"
+        self._set_menubar("idle")
         self.mode: Mode = "tap"
         self.focus_context = FocusContext(app_name="", window_title="", selected_text="")
         self._copy_fallback_text = ""
@@ -127,6 +140,16 @@ class TypelessLocalApp:
         if user_paths is None:
             return
         self.vocab = load_vocab(user_paths.vocab_path)
+        LOGGER.info("Reloaded vocab: %d terms", len(self.vocab))
+
+    def _set_menubar(self, state: str) -> None:
+        """Update the menu-bar status icon. No-op when menubar is unavailable."""
+
+        if getattr(self, "headless", False):
+            return
+        mb = getattr(self, "menubar", None)
+        if mb is not None:
+            mb.set_state(state)
 
     def start(self) -> None:
         """Start the app."""
@@ -136,10 +159,15 @@ class TypelessLocalApp:
         if not has_accessibility_trust():
             LOGGER.warning("Accessibility permission is not granted; Fn capture/paste may fail.")
             request_accessibility_trust()
+        menubar = getattr(self, "menubar", None)
+        if menubar is not None:
+            menubar.setup()
+            menubar.set_state("idle")
         try:
             self.hotkeys.start()
         except RuntimeError:
             LOGGER.exception("Failed to install global hotkey monitor")
+            self._set_menubar("error")
             self._call_ui(self.overlay.show_error, "Enable Access")
             return
         LOGGER.info("Typeless Local ready. Press F5 to start/stop dictation.")
@@ -219,6 +247,7 @@ class TypelessLocalApp:
                 self._copy_last_transcript()
             elif action == "dismiss":
                 self.state = "idle"
+                self._set_menubar("idle")
                 self._copy_fallback_text = ""
                 self._call_ui(self.overlay.hide)
 
@@ -226,6 +255,7 @@ class TypelessLocalApp:
         self._active_session_id = getattr(self, "_active_session_id", 0) + 1
         self.mode = mode
         self.state = "starting"
+        self._set_menubar("starting")
         self._recording_started_at = time.monotonic()
         self._countdown_text = ""
         self.focus_context = capture_focus_context()
@@ -237,9 +267,11 @@ class TypelessLocalApp:
             LOGGER.exception("Failed to start microphone")
             self._restore_audio_ducking()
             self.state = "idle"
+            self._set_menubar("error")
             self._call_ui(self.overlay.show_error, "Mic error")
             return
         self.state = "recording"
+        self._set_menubar("recording")
         self._show_recording_ui()
         self._start_recording_timeout()
 
@@ -251,12 +283,14 @@ class TypelessLocalApp:
         self._cancel_recording_timeout()
         session_id = getattr(self, "_active_session_id", 0)
         self.state = "processing"
+        self._set_menubar("processing")
         try:
             audio = self.recorder.stop()
         except Exception:
             LOGGER.exception("Failed to stop microphone")
             self._restore_audio_ducking()
             self.state = "idle"
+            self._set_menubar("error")
             self._call_ui(self.overlay.show_error, "Mic error")
             return
         self._restore_audio_ducking()
@@ -278,6 +312,7 @@ class TypelessLocalApp:
                 LOGGER.exception("Failed to stop microphone during cancel")
         self._restore_audio_ducking()
         self.state = "idle"
+        self._set_menubar("idle")
         self._call_ui(self.overlay.hide)
 
     def _restore_audio_ducking(self) -> None:
@@ -471,6 +506,7 @@ class TypelessLocalApp:
                 record.was_pasted = True
                 LOGGER.info("Dictation inserted %d characters", len(final_text))
                 self.state = "idle"
+                self._set_menubar("idle")
                 self._copy_fallback_text = ""
                 self._call_ui(self.overlay.hide)
                 return
@@ -482,6 +518,7 @@ class TypelessLocalApp:
             )
             self._copy_fallback_text = final_text
             self.state = "idle"
+            self._set_menubar("idle")
             self._call_ui(self.overlay.show_copy_fallback, final_text, False)
         except Exception as exc:
             record.error = repr(exc)
@@ -489,6 +526,7 @@ class TypelessLocalApp:
             if not headless:
                 self._stop_processing_progress()
                 self.state = "idle"
+                self._set_menubar("error")
                 self._call_ui(self.overlay.show_error, "Retry")
                 time.sleep(1.4)
                 self._call_ui(self.overlay.hide)
@@ -568,6 +606,7 @@ class TypelessLocalApp:
             return
         self._stop_processing_progress()
         self.state = "idle"
+        self._set_menubar("idle")
         self._call_ui(self.overlay.show_empty)
         time.sleep(1.0)
         if self.state == "idle" and session_id == getattr(self, "_active_session_id", 0):
@@ -600,10 +639,25 @@ class TypelessLocalApp:
 def configure_logging() -> None:
     """Configure process logging."""
 
+    from logging.handlers import RotatingFileHandler
+
     level_name = os.environ.get("TYPELESS_LOCAL_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    try:
+        log_dir = Path.home() / ".typeless-local"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / "app.log"
+        handlers.append(
+            RotatingFileHandler(log_path, maxBytes=1_000_000, backupCount=5)
+        )
+    except Exception:
+        pass
     logging.basicConfig(
-        level=getattr(logging, level_name, logging.INFO),
+        level=level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers,
+        force=True,
     )
 
 
