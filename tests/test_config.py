@@ -52,3 +52,20 @@ def test_resolve_jarvis_root_prefers_explicit_environment(monkeypatch, tmp_path)
     monkeypatch.setenv("JARVIS_PROJECT_ROOT", str(jarvis_root))
 
     assert resolve_jarvis_root(tmp_path / "typeless-local") == jarvis_root.resolve()
+
+
+def test_config_resolves_user_paths(monkeypatch, tmp_path):
+    from typeless_local import config as cfg_mod
+    monkeypatch.setenv("HOME", str(tmp_path))
+    paths = cfg_mod.resolve_user_paths()
+    assert paths.vocab_path == tmp_path / ".typeless-local" / "vocab.yaml"
+    assert paths.trace_db_path == tmp_path / ".typeless-local" / "trace.db"
+    assert paths.log_path == tmp_path / ".typeless-local" / "app.log"
+    assert paths.stopwords_dir.name == "assets"
+
+
+def test_resolve_user_paths_creates_directory(monkeypatch, tmp_path):
+    from typeless_local import config as cfg_mod
+    monkeypatch.setenv("HOME", str(tmp_path))
+    cfg_mod.resolve_user_paths()
+    assert (tmp_path / ".typeless-local").is_dir()

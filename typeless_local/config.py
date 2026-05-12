@@ -21,6 +21,18 @@ class RefineConfig:
 
 
 @dataclass(frozen=True)
+class UserPaths:
+    """Filesystem paths typeless-local writes to at runtime."""
+
+    config_dir: Path
+    vocab_path: Path
+    trace_db_path: Path
+    log_path: Path
+    stopwords_dir: Path
+    user_config_path: Path
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Resolved runtime configuration."""
 
@@ -33,6 +45,7 @@ class AppConfig:
     min_recording_seconds: float = 0.25
     low_volume_threshold: float = 0.02
     debug_hotkey: bool = False
+    user_paths: UserPaths | None = None
 
 
 def resolve_app_root() -> Path:
@@ -59,6 +72,28 @@ def resolve_jarvis_root(app_root: Path | None = None) -> Path:
 
     raise FileNotFoundError(
         "Jarvis root not found. Set JARVIS_PROJECT_ROOT to reuse the ASR pipeline."
+    )
+
+
+def resolve_user_paths(app_root: Path | None = None) -> UserPaths:
+    """Return all on-disk paths typeless-local touches outside its install."""
+
+    home = Path(os.environ.get("HOME") or Path.home()).expanduser()
+    config_dir = home / ".typeless-local"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    root = app_root or resolve_app_root()
+
+    # stopwords dir: prefer bundled Resources/, fall back to repo assets/
+    bundled = root.parent / "Resources"  # py2app layout: .app/Contents/Resources
+    stopwords_dir = bundled if (bundled / "stopwords-en.txt").exists() else (root / "assets")
+
+    return UserPaths(
+        config_dir=config_dir,
+        vocab_path=config_dir / "vocab.yaml",
+        trace_db_path=config_dir / "trace.db",
+        log_path=config_dir / "app.log",
+        stopwords_dir=stopwords_dir,
+        user_config_path=config_dir / "config.yaml",
     )
 
 
@@ -131,4 +166,5 @@ def load_config() -> AppConfig:
         min_recording_seconds=float(audio_config.get("min_duration") or 0.25),
         low_volume_threshold=float(audio_config.get("low_volume_threshold") or 0.02),
         debug_hotkey=os.environ.get("TYPELESS_LOCAL_DEBUG_HOTKEY") == "1",
+        user_paths=resolve_user_paths(app_root),
     )
