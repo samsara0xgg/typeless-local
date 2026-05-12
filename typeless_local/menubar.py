@@ -184,41 +184,59 @@ def _state_color(state: str):
     return NSColor.systemGrayColor()
 
 
-def _make_action_target(handler: Callable):
-    """Wrap a Python callable as an NSObject that responds to ObjC selectors.
+_ACTION_TARGETS: list = []
+_ActionTarget = None  # lazy-defined NSObject subclass (one global ObjC class)
 
-    The menu items above use selectors like ``reloadVocabAction:`` etc., so
-    we generate a class with those exact selector names. Each selector dispatches
-    to the corresponding Python handler.
-    """
 
-    from objc import python_method
+def _ensure_action_target_class():
+    """Define the NSObject subclass once (PyObjC classes are global)."""
+
+    global _ActionTarget
+    if _ActionTarget is not None:
+        return _ActionTarget
+
+    import objc
     from Foundation import NSObject
 
-    class _ActionTarget(NSObject):
-        def initWithHandler_(self, h):
-            self = NSObject.init(self)
+    class ActionTarget(NSObject):
+        def init(self):
+            # PyObjC requires `objc.super(...).init()`; calling
+            # `NSObject.init(self)` directly raises "Need 0 arguments, got 1".
+            self = objc.super(ActionTarget, self).init()
             if self is None:
                 return None
-            self._handler = h
+            self._handler = None
             return self
 
+        def setHandler_(self, h):
+            self._handler = h
+
         def reloadVocabAction_(self, sender):
-            self._handler(sender)
+            if self._handler is not None:
+                self._handler(sender)
 
         def quitAction_(self, sender):
-            self._handler(sender)
+            if self._handler is not None:
+                self._handler(sender)
 
         def openTraceAction_(self, sender):
-            self._handler(sender)
+            if self._handler is not None:
+                self._handler(sender)
 
         def showLogAction_(self, sender):
-            self._handler(sender)
+            if self._handler is not None:
+                self._handler(sender)
 
-    target = _ActionTarget.alloc().initWithHandler_(handler)
+    _ActionTarget = ActionTarget
+    return _ActionTarget
+
+
+def _make_action_target(handler: Callable):
+    """Wrap a Python callable as an NSObject responding to the menu selectors."""
+
+    cls = _ensure_action_target_class()
+    target = cls.alloc().init()
+    target.setHandler_(handler)
     # Keep a strong reference; ObjC retains weakly here.
     _ACTION_TARGETS.append(target)
     return target
-
-
-_ACTION_TARGETS: list = []

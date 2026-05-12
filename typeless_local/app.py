@@ -33,7 +33,7 @@ from typeless_local.mac_integration import (
 from typeless_local.overlay import FloatingOverlay
 from typeless_local.refine import TextRefiner
 from typeless_local.trace import DictationTrace, SessionRecord
-from typeless_local.vocab import as_initial_prompt, load_vocab
+from typeless_local.vocab import as_initial_prompt, load_vocab, write_starter_file
 
 LOGGER = logging.getLogger(__name__)
 Mode = Literal["tap", "hands_free"]
@@ -63,6 +63,7 @@ class TypelessLocalApp:
         # so _build_components-injected fakes see a fully initialized app shell.
         user_paths = getattr(config, "user_paths", None)
         if user_paths is not None:
+            write_starter_file(user_paths.vocab_path)
             self.vocab = load_vocab(user_paths.vocab_path)
             self.trace = DictationTrace(user_paths.trace_db_path)
         else:
