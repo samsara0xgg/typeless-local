@@ -1,0 +1,23 @@
+# Minimal config shipped inside the .app bundle.
+# Override by writing ~/.typeless-local/config.yaml.
+
+asr:
+  provider: mlx_whisper
+  mlx_whisper_model: mlx-community/whisper-large-v3-turbo
+  mlx_whisper_initial_prompt: ""
+  language: ""
+  sensevoice_model_dir: ""   # unused but speech_recognizer reads it
+
+audio:
+  vad_model_path: ""         # unused but speech_recognizer may read it
+  min_duration: 0.25
+  low_volume_threshold: 0.02
+
+llm:
+  default_preset: fast
+  presets:
+    fast:
+      model: gpt-5.4-mini
+      base_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      max_tokens: 512
