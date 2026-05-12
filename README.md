@@ -10,17 +10,38 @@ text insertion path.
 
 ## Run
 
-As a local macOS app:
+The shipped, self-contained app bundle:
 
 ```bash
-open -n "./Typeless Local.app"
+open -n "/Applications/Typeless Local.app"
 ```
 
-Or from the terminal:
+Dev mode (uses the sibling `jarvis/` checkout + its `.venv`):
 
 ```bash
 ./scripts/run.sh
 ```
+
+### Build a fresh `.app`
+
+```bash
+# A Homebrew or python.org Python with libpython.dylib (uv-standalone Pythons
+# don't ship one, so py2app's launcher can't link against them).
+PYBUILD=/opt/homebrew/bin/python3.13
+$PYBUILD -m venv /tmp/build-venv
+/tmp/build-venv/bin/pip install \
+  pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-Quartz \
+  pyobjc-framework-ApplicationServices pyobjc-framework-WebKit \
+  numpy sounddevice openai pyyaml mlx-whisper py2app
+/tmp/build-venv/bin/python scripts/build_app.py
+# Result at dist/Typeless Local.app — move to /Applications/.
+```
+
+The bundle is fully self-contained: it includes its own Python interpreter,
+all wheels, and the vendored Jarvis core subset (`speech_recognizer` +
+`media_ducking`). No external `jarvis/` checkout required at runtime.
+First launch downloads the Whisper model to `~/.cache/huggingface/`
+(~1.5 GB) on first F5 press.
 
 Default behavior:
 
@@ -54,6 +75,55 @@ Optional variables:
 
 Secrets are not stored here. The OpenAI API key is read through Jarvis'
 `config.yaml` preset, normally `OPENAI_API_KEY`.
+
+## Vocabulary
+
+Edit `~/.typeless-local/vocab.yaml` to bias the ASR + refine LLM toward
+your proper nouns and domain terms:
+
+```yaml
+user:
+  - Jarvis
+  - Typeless
+  - mlx-whisper
+auto: []   # auto-filled by scripts/extract_hotwords.py
+```
+
+`user:` entries are kept verbatim; `auto:` is rewritten by the extraction
+script. The menu-bar **Reload Vocab** action re-reads the file without
+restarting.
+
+## Trace database
+
+Every dictation session writes one row to `~/.typeless-local/trace.db`:
+
+```bash
+sqlite3 ~/.typeless-local/trace.db \
+  'SELECT datetime(started_at,"unixepoch","localtime") AS at,
+          raw_asr_text, refined_text, latency_total_ms, error
+     FROM sessions ORDER BY id DESC LIMIT 20'
+```
+
+Fields cover audio quality (rms, duration), per-stage latency, the vocab
+list sent to ASR, focus context, paste outcome, and any pipeline error.
+
+## Auto-discover hotwords
+
+```bash
+python scripts/extract_hotwords.py --days 30 --min-count 2 --top-k 50
+```
+
+The script diffs `refined_text` vs `raw_asr_text` per session, counts
+"added" tokens, filters bilingual stopwords (`assets/stopwords-{en,zh}.txt`)
+and existing `user:` terms, and writes the top survivors to `auto:`.
+`--dry-run` prints candidates without saving.
+
+## Menu bar
+
+When running, Typeless Local appears as a menu-bar icon (no Dock icon).
+Color reflects state: gray (idle), yellow (starting/thinking), red
+(recording or error). Click the icon for **Reload Vocab**, **Open Trace
+Folder**, **Show Log**, and **Quit**.
 
 ## Pixel Audit
 
