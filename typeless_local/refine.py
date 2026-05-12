@@ -83,7 +83,12 @@ class TextRefiner:
         self._client = OpenAI(api_key=api_key, base_url=self.config.base_url)
         return self._client
 
-    def refine(self, raw_text: str, context: FocusContext | None = None) -> RefineResult:
+    def refine(
+        self,
+        raw_text: str,
+        context: FocusContext | None = None,
+        vocab: list[str] | None = None,
+    ) -> RefineResult:
         """Refine raw ASR text into insertable dictation text."""
 
         stripped = raw_text.strip()
@@ -99,11 +104,24 @@ class TextRefiner:
             f"- window: {focus.window_title or 'unknown'}\n"
             f"- selected text: {focus.selected_text or '(none)'}\n"
         )
+        system_prompt = SYSTEM_PROMPT
+        if vocab:
+            joined = ", ".join(vocab)
+            system_prompt = (
+                SYSTEM_PROMPT
+                + "\n\nUser vocabulary (high-confidence terms used frequently by this user):\n"
+                + joined
+                + "\n\n"
+                "Where the raw transcript contains short fragments that are plausibly "
+                "mishears of these specific terms (homophones, fuzzy phonetic matches), "
+                "replace them with the correct term. Do not invent occurrences — only "
+                "correct fragments that already seem to be attempts at one of these terms.\n"
+            )
         token_key = "max_completion_tokens" if self.config.model.startswith("gpt-5") else "max_tokens"
         kwargs = {
             "model": self.config.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
             token_key: self.config.max_tokens,
