@@ -78,7 +78,10 @@ class TypelessLocalApp:
         if not headless:
             self.overlay = FloatingOverlay.alloc().init()
             self.overlay.set_action_callback(self._on_overlay_action)
-            from core.media_ducking import SystemAudioDucker
+            try:
+                from typeless_local._vendor.jarvis_core.media_ducking import SystemAudioDucker
+            except ImportError:
+                from core.media_ducking import SystemAudioDucker
 
             self.audio_ducker = SystemAudioDucker.from_config(config.jarvis_config)
             atexit.register(self.audio_ducker.restore_all)

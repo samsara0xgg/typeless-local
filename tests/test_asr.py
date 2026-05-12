@@ -30,6 +30,11 @@ def test_transcribe_passes_initial_prompt_through(monkeypatch, tmp_path: Path) -
     fake_pkg = SimpleNamespace(speech_recognizer=fake_module)
     monkeypatch.setitem(sys.modules, "core", fake_pkg)
     monkeypatch.setitem(sys.modules, "core.speech_recognizer", fake_module)
+    monkeypatch.setitem(
+        sys.modules,
+        "typeless_local._vendor.jarvis_core.speech_recognizer",
+        fake_module,
+    )
 
     j = asr_module.JarvisASR(tmp_path, {"asr": {"provider": "fake"}})
     audio = np.zeros(16000, dtype=np.float32)
@@ -59,6 +64,11 @@ def test_transcribe_strips_prompt_echo_from_short_outputs(monkeypatch, tmp_path:
     fake_pkg = SimpleNamespace(speech_recognizer=fake_module)
     monkeypatch.setitem(sys.modules, "core", fake_pkg)
     monkeypatch.setitem(sys.modules, "core.speech_recognizer", fake_module)
+    monkeypatch.setitem(
+        sys.modules,
+        "typeless_local._vendor.jarvis_core.speech_recognizer",
+        fake_module,
+    )
 
     j = asr_module.JarvisASR(tmp_path, {"asr": {"provider": "fake"}})
     audio = np.zeros(16000, dtype=np.float32)
