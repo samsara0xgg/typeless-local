@@ -72,6 +72,17 @@ class _FailingHotkeys:
         raise RuntimeError("no accessibility")
 
 
+class _FakeHotkeys:
+    """Mimics GlobalHotkeyMonitor's event-time fields used by _on_primary_*."""
+
+    def __init__(self) -> None:
+        self.last_primary_down_at = 0.0
+        self.last_primary_up_at = 0.0
+
+    def start(self) -> None:
+        return None
+
+
 class _FakeRecorder:
     def __init__(self) -> None:
         self.stopped = False
@@ -350,10 +361,14 @@ def test_primary_down_up_finishes_hold_to_talk(monkeypatch) -> None:
     app.focus_context = FocusContext(app_name="", window_title="")
     app._start_processing_progress = lambda: None
 
+    hotkeys = _FakeHotkeys()
+    app.hotkeys = hotkeys
     times = iter([10.0, 10.0, 10.7, 10.7])
     monkeypatch.setattr("typeless_local.app.time.monotonic", lambda: next(times))
 
+    hotkeys.last_primary_down_at = 10.0
     app._on_hotkey("primary_down")
+    hotkeys.last_primary_up_at = 10.7
     app._on_hotkey("primary_up")
 
     assert app.state == "processing"
@@ -381,16 +396,21 @@ def test_short_tap_release_keeps_recording_until_next_press(monkeypatch) -> None
     app.focus_context = FocusContext(app_name="", window_title="")
     app._start_processing_progress = lambda: None
 
+    hotkeys = _FakeHotkeys()
+    app.hotkeys = hotkeys
     times = iter([30.0, 30.0, 30.1, 30.1, 31.0, 31.0])
     monkeypatch.setattr("typeless_local.app.time.monotonic", lambda: next(times))
 
+    hotkeys.last_primary_down_at = 30.0
     app._on_hotkey("primary_down")
+    hotkeys.last_primary_up_at = 30.1
     app._on_hotkey("primary_up")
 
     assert app.state == "recording"
     assert app.recorder.stopped is False
     assert app.executor.submissions == []
 
+    hotkeys.last_primary_down_at = 31.0
     app._on_hotkey("primary_down")
 
     assert app.state == "processing"
@@ -416,11 +436,16 @@ def test_short_double_press_upgrades_to_hands_free(monkeypatch) -> None:
     app.executor = _FakeExecutor()
     app.focus_context = FocusContext(app_name="", window_title="")
 
+    hotkeys = _FakeHotkeys()
+    app.hotkeys = hotkeys
     times = iter([20.0, 20.0, 20.08, 20.08, 20.24])
     monkeypatch.setattr("typeless_local.app.time.monotonic", lambda: next(times))
 
+    hotkeys.last_primary_down_at = 20.0
     app._on_hotkey("primary_down")
+    hotkeys.last_primary_up_at = 20.08
     app._on_hotkey("primary_up")
+    hotkeys.last_primary_down_at = 20.24
     app._on_hotkey("primary_down")
 
     assert app.state == "recording"
