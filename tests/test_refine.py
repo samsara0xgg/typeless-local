@@ -67,3 +67,48 @@ def test_refiner_skips_empty_text() -> None:
 
     assert result.text == ""
     assert fake.completions.kwargs is None
+
+
+def test_refiner_appends_vocab_section_when_provided() -> None:
+    fake = _FakeClient()
+    refiner = TextRefiner(
+        RefineConfig("gpt-5.4-mini", "https://api.openai.com/v1", "OPENAI_API_KEY", 128),
+        client=fake,
+    )
+
+    refiner.refine(
+        "tell jarvas to start",
+        FocusContext(app_name="Slack", window_title="#general"),
+        vocab=["Jarvis", "Typeless"],
+    )
+
+    system_prompt = fake.completions.kwargs["messages"][0]["content"]
+    assert "User vocabulary" in system_prompt
+    assert "Jarvis, Typeless" in system_prompt
+    assert "only correct fragments" in system_prompt
+
+
+def test_refiner_omits_vocab_section_when_empty() -> None:
+    fake = _FakeClient()
+    refiner = TextRefiner(
+        RefineConfig("gpt-5.4-mini", "https://api.openai.com/v1", "OPENAI_API_KEY", 128),
+        client=fake,
+    )
+
+    refiner.refine("hello world", vocab=[])
+
+    system_prompt = fake.completions.kwargs["messages"][0]["content"]
+    assert "User vocabulary" not in system_prompt
+
+
+def test_refiner_omits_vocab_section_when_none() -> None:
+    fake = _FakeClient()
+    refiner = TextRefiner(
+        RefineConfig("gpt-5.4-mini", "https://api.openai.com/v1", "OPENAI_API_KEY", 128),
+        client=fake,
+    )
+
+    refiner.refine("hello world")
+
+    system_prompt = fake.completions.kwargs["messages"][0]["content"]
+    assert "User vocabulary" not in system_prompt
