@@ -28,6 +28,17 @@ STATE_TO_LABEL: dict[str, str] = {
     "error": "Error",
 }
 
+# Unicode glyph used as a fallback title when SF Symbols don't load. Shown
+# directly in the menu bar so the icon never disappears even if SF Symbol
+# resolution silently fails.
+STATE_TO_TITLE: dict[str, str] = {
+    "idle": "TL",
+    "starting": "TL•",
+    "recording": "●REC",
+    "processing": "TL…",
+    "error": "TL!",
+}
+
 _DEFAULT_TRACE_FOLDER = Path.home() / ".typeless-local"
 _DEFAULT_LOG_PATH = _DEFAULT_TRACE_FOLDER / "app.log"
 
@@ -66,7 +77,11 @@ class MenuBarIcon:
         bar = NSStatusBar.systemStatusBar()
         item = bar.statusItemWithLength_(-1)  # NSVariableStatusItemLength
         button = item.button()
-        button.setImagePosition_(2)  # NSImageOnly
+        # Set a unicode-fallback title up front so the status item is visible
+        # even if SF Symbol image loading fails later (image-only buttons with
+        # a missing image collapse to zero width).
+        button.setTitle_("●")
+        button.setImagePosition_(0)  # NSNoImage — overridden when image loads
 
         menu = NSMenu.alloc().init()
 
@@ -125,25 +140,48 @@ class MenuBarIcon:
     def _apply_state(self, state: State) -> None:
         if self._status_item is None:
             return
+        button = self._status_item.button()
+        # Always set a colored unicode dot as the title so the icon is visible
+        # regardless of SF Symbol availability. Mapping per state below.
+        title_dot = STATE_TO_TITLE.get(state, "●")
         try:
-            from AppKit import NSImage, NSImageSymbolConfiguration, NSColor
+            button.setTitle_(title_dot)
+            button.setImagePosition_(0)  # NSNoImage (no image yet)
+        except Exception:
+            LOGGER.warning("menubar: failed to set fallback title", exc_info=True)
+
+        try:
+            from AppKit import NSImage
 
             symbol = STATE_TO_SYMBOL.get(state, "mic")
             image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
                 symbol, f"Typeless Local {state}"
             )
             if image is not None:
-                tint = _state_color(state)
-                image.setTemplate_(False)
-                config = NSImageSymbolConfiguration.configurationWithHierarchicalColor_(tint)
-                tinted = image.imageWithSymbolConfiguration_(config)
-                self._status_item.button().setImage_(tinted or image)
-            if self._status_label_item is not None:
+                try:
+                    from AppKit import NSImageSymbolConfiguration
+
+                    tint = _state_color(state)
+                    config = NSImageSymbolConfiguration.configurationWithHierarchicalColor_(tint)
+                    tinted = image.imageWithSymbolConfiguration_(config) or image
+                except Exception:
+                    LOGGER.info("menubar: hierarchical color unavailable; using template image")
+                    tinted = image
+                    tinted.setTemplate_(True)
+                button.setImage_(tinted)
+                # Once we have an image, hide the text and show image only.
+                button.setTitle_("")
+                button.setImagePosition_(2)  # NSImageOnly
+        except Exception:
+            LOGGER.warning("menubar: SF Symbol load failed; keeping text dot", exc_info=True)
+
+        if self._status_label_item is not None:
+            try:
                 self._status_label_item.setTitle_(
                     f"Typeless Local — {STATE_TO_LABEL.get(state, state)}"
                 )
-        except Exception:
-            LOGGER.debug("_apply_state failed", exc_info=True)
+            except Exception:
+                LOGGER.debug("menubar: failed to update label", exc_info=True)
 
     def _on_reload_action(self, sender) -> None:
         try:
