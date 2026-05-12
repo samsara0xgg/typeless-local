@@ -1,6 +1,11 @@
 """py2app build config for Typeless Local."""
 
+import sys
 from pathlib import Path
+
+# py2app's modulegraph walks ASTs deeply through numpy / mlx / pyobjc;
+# default 1000 trips on some transitive imports.
+sys.setrecursionlimit(10000)
 
 from setuptools import setup
 
@@ -24,16 +29,24 @@ OPTIONS = {
         "typeless_local",
         "numpy",
         "sounddevice",
-        "AppKit",
-        "Quartz",
-        "ApplicationServices",
-        "PyObjCTools",
         "objc",
         "openai",
         "yaml",
         "mlx_whisper",
     ],
-    "includes": ["ctypes", "sqlite3", "json", "re", "logging.handlers"],
+    "includes": [
+        "ctypes",
+        "sqlite3",
+        "json",
+        "re",
+        "logging.handlers",
+        "AppKit",
+        "Quartz",
+        "ApplicationServices",
+        "PyObjCTools",
+        "PyObjCTools.AppHelper",
+        "Foundation",
+    ],
     "excludes": [
         "tkinter",
         "PIL",
