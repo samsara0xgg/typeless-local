@@ -53,7 +53,7 @@ class _FakeASR:
         self.confidence = confidence
         self.calls = []
 
-    def transcribe(self, audio: np.ndarray) -> Transcript:
+    def transcribe(self, audio: np.ndarray, initial_prompt: str | None = None) -> Transcript:
         self.calls.append(audio)
         return Transcript(text=self.text, language=self.language, confidence=self.confidence)
 
@@ -62,7 +62,7 @@ class _FakeRefiner:
     def __init__(self) -> None:
         self.calls = []
 
-    def refine(self, text: str, context: FocusContext) -> RefineResult:
+    def refine(self, text: str, context: FocusContext, vocab=None) -> RefineResult:
         self.calls.append((text, context))
         return RefineResult(text="Refined text.", raw_text=text, model="gpt-5.4-mini")
 

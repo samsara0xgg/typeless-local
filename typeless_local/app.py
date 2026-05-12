@@ -9,12 +9,14 @@ import math
 import os
 import threading
 import time
+from types import SimpleNamespace
 from typing import Literal
 
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 import numpy as np
 from PyObjCTools import AppHelper
 
+from typeless_local import app_version
 from typeless_local.asr import JarvisASR
 from typeless_local.audio import MicrophoneRecorder
 from typeless_local.config import AppConfig, load_config
@@ -29,6 +31,8 @@ from typeless_local.mac_integration import (
 )
 from typeless_local.overlay import FloatingOverlay
 from typeless_local.refine import TextRefiner
+from typeless_local.trace import DictationTrace, SessionRecord
+from typeless_local.vocab import as_initial_prompt, load_vocab
 
 LOGGER = logging.getLogger(__name__)
 Mode = Literal["tap", "hands_free"]
@@ -50,25 +54,42 @@ PROCESSING_PROGRESS_POINTS = (
 class TypelessLocalApp:
     """Coordinate hotkeys, recording, ASR, refinement, UI, and insertion."""
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(self, config: AppConfig, headless: bool = False) -> None:
         self.config = config
-        self.overlay = FloatingOverlay.alloc().init()
-        self.overlay.set_action_callback(self._on_overlay_action)
-        self.asr = JarvisASR(config.jarvis_root, config.jarvis_config)
-        from core.media_ducking import SystemAudioDucker
+        self.headless = headless
 
-        self.audio_ducker = SystemAudioDucker.from_config(config.jarvis_config)
-        atexit.register(self.audio_ducker.restore_all)
-        self.refiner = TextRefiner(config.refine)
-        self.recorder = MicrophoneRecorder(
-            sample_rate=config.sample_rate,
-            on_level=self._on_audio_level,
-        )
-        self.hotkeys = GlobalHotkeyMonitor(
-            self._on_hotkey,
-            debug_hotkey=config.debug_hotkey,
-            is_active_fn=lambda: self.state != "idle",
-        )
+        # Vocab + trace are file-backed and cheap; load them before components
+        # so _build_components-injected fakes see a fully initialized app shell.
+        user_paths = getattr(config, "user_paths", None)
+        if user_paths is not None:
+            self.vocab = load_vocab(user_paths.vocab_path)
+            self.trace = DictationTrace(user_paths.trace_db_path)
+        else:
+            self.vocab = []
+            self.trace = None
+
+        components = self._build_components()
+        self.asr = components.asr
+        self.refiner = components.refiner
+        self.recorder = components.recorder
+
+        if not headless:
+            self.overlay = FloatingOverlay.alloc().init()
+            self.overlay.set_action_callback(self._on_overlay_action)
+            from core.media_ducking import SystemAudioDucker
+
+            self.audio_ducker = SystemAudioDucker.from_config(config.jarvis_config)
+            atexit.register(self.audio_ducker.restore_all)
+            self.hotkeys = GlobalHotkeyMonitor(
+                self._on_hotkey,
+                debug_hotkey=config.debug_hotkey,
+                is_active_fn=lambda: self.state != "idle",
+            )
+        else:
+            self.overlay = None
+            self.audio_ducker = None
+            self.hotkeys = None
+
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="typeless-local")
         self.state = "idle"
         self.mode: Mode = "tap"
@@ -86,6 +107,26 @@ class TypelessLocalApp:
         self._primary_down_at = 0.0
         self._last_short_tap_at = 0.0
         self._active_session_id = 0
+
+    def _build_components(self) -> SimpleNamespace:
+        """Construct ASR / refiner / recorder. Patched by tests to inject fakes."""
+
+        config = self.config
+        asr = JarvisASR(config.jarvis_root, config.jarvis_config)
+        refiner = TextRefiner(config.refine)
+        recorder = MicrophoneRecorder(
+            sample_rate=config.sample_rate,
+            on_level=self._on_audio_level,
+        )
+        return SimpleNamespace(asr=asr, refiner=refiner, recorder=recorder)
+
+    def reload_vocab(self) -> None:
+        """Atomically replace ``self.vocab`` with a freshly loaded list."""
+
+        user_paths = getattr(self.config, "user_paths", None)
+        if user_paths is None:
+            return
+        self.vocab = load_vocab(user_paths.vocab_path)
 
     def start(self) -> None:
         """Start the app."""
@@ -340,8 +381,35 @@ class TypelessLocalApp:
 
     def _process_audio(self, audio: np.ndarray, context: FocusContext, session_id: int | None = None) -> None:
         session_id = getattr(self, "_active_session_id", 0) if session_id is None else session_id
+        headless = bool(getattr(self, "headless", False))
+        started = time.time()
+
+        sample_rate = int(getattr(self.config, "sample_rate", 16000))
         try:
-            LOGGER.info("Processing %.2fs audio", audio.size / self.config.sample_rate)
+            audio_rms = float(self.recorder.get_volume_level(audio))
+        except Exception:
+            audio_rms = 0.0
+        refine_model = ""
+        refine_cfg = getattr(self.config, "refine", None)
+        if refine_cfg is not None:
+            refine_model = str(getattr(refine_cfg, "model", "") or "")
+
+        record = SessionRecord(
+            started_at=started,
+            audio_duration_s=(audio.size / sample_rate) if sample_rate else 0.0,
+            audio_rms=audio_rms,
+            audio_sample_rate=sample_rate,
+            focus_app=context.app_name or "",
+            focus_window=context.window_title or "",
+            vocab_terms_used=", ".join(getattr(self, "vocab", []) or []),
+            hotwords_count=len(getattr(self, "vocab", []) or []),
+            asr_model=str(getattr(self.asr, "model_name", "") or ""),
+            refine_model=refine_model,
+            app_version=app_version(),
+        )
+
+        try:
+            LOGGER.info("Processing %.2fs audio", audio.size / sample_rate if sample_rate else 0.0)
             quality_ok, quality_message = self.recorder.is_quality_ok(
                 audio,
                 min_duration=float(getattr(self.config, "min_recording_seconds", 0.25)),
@@ -349,14 +417,25 @@ class TypelessLocalApp:
             )
             if not quality_ok:
                 LOGGER.info("Dropping low-quality audio before ASR: %s", quality_message)
-                self._show_empty_then_idle(session_id)
+                record.error = f"dropped: {quality_message}"
+                if not headless:
+                    self._show_empty_then_idle(session_id)
                 return
 
-            if not self._is_current_processing_session(session_id):
+            if not headless and not self._is_current_processing_session(session_id):
                 return
             self._set_processing_message("Thinking")
             LOGGER.info("Starting ASR")
-            transcript = self.asr.transcribe(audio)
+
+            asr_start = time.monotonic()
+            vocab_terms = getattr(self, "vocab", []) or []
+            transcript = self.asr.transcribe(
+                audio, initial_prompt=as_initial_prompt(vocab_terms) or None
+            )
+            record.raw_asr_text = transcript.text
+            record.raw_asr_language = transcript.language
+            record.raw_asr_confidence = float(getattr(transcript, "confidence", 0.0) or 0.0)
+            record.latency_asr_ms = int((time.monotonic() - asr_start) * 1000)
             LOGGER.info(
                 "ASR result language=%s confidence=%.2f text=%r",
                 transcript.language,
@@ -364,15 +443,24 @@ class TypelessLocalApp:
                 transcript.text,
             )
             if self._should_drop_transcript(transcript):
-                self._show_empty_then_idle(session_id)
+                record.error = "dropped: empty/short transcript"
+                if not headless:
+                    self._show_empty_then_idle(session_id)
                 return
 
-            if not self._is_current_processing_session(session_id):
+            if not headless and not self._is_current_processing_session(session_id):
                 return
             self._set_processing_message("Thinking")
             LOGGER.info("Starting refinement")
-            refined = self.refiner.refine(transcript.text, context)
-            final_text = refined.text or transcript.text
+            refine_start = time.monotonic()
+            refined = self.refiner.refine(transcript.text, context, vocab=vocab_terms)
+            record.refined_text = refined.text or transcript.text
+            record.latency_refine_ms = int((time.monotonic() - refine_start) * 1000)
+            final_text = record.refined_text
+
+            if headless:
+                return  # tests stop here; no overlay/paste path
+
             if not self._is_current_processing_session(session_id):
                 return
             self._stop_processing_progress()
@@ -380,6 +468,7 @@ class TypelessLocalApp:
             if context.can_insert_text:
                 LOGGER.info("Pasting refined text into focused app: %s", context.app_name or "unknown")
                 paste_text(final_text)
+                record.was_pasted = True
                 LOGGER.info("Dictation inserted %d characters", len(final_text))
                 self.state = "idle"
                 self._copy_fallback_text = ""
@@ -395,12 +484,22 @@ class TypelessLocalApp:
             self.state = "idle"
             self._call_ui(self.overlay.show_copy_fallback, final_text, False)
         except Exception as exc:
+            record.error = repr(exc)
             LOGGER.exception("Dictation failed")
-            self._stop_processing_progress()
-            self.state = "idle"
-            self._call_ui(self.overlay.show_error, "Retry")
-            time.sleep(1.4)
-            self._call_ui(self.overlay.hide)
+            if not headless:
+                self._stop_processing_progress()
+                self.state = "idle"
+                self._call_ui(self.overlay.show_error, "Retry")
+                time.sleep(1.4)
+                self._call_ui(self.overlay.hide)
+                return
+            raise
+        finally:
+            record.ended_at = time.time()
+            record.latency_total_ms = int((record.ended_at - started) * 1000)
+            trace = getattr(self, "trace", None)
+            if trace is not None:
+                trace.log(record)
 
     def _start_processing_progress(self) -> None:
         self._stop_processing_progress()
