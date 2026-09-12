@@ -1091,10 +1091,6 @@ class FloatingOverlay(NSObject):
         self._eval(f"window.setAudioLevel({float(level):.5f});")
 
     @objc.python_method
-    def resizeToWidth_(self, width: int) -> None:
-        del width
-
-    @objc.python_method
     def _send_state(
         self,
         state: str,
