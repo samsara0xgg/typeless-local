@@ -70,3 +70,35 @@ def test_overlay_waveform_uses_tuned_official_like_response() -> None:
     assert "SILENCE_DECAY_THRESHOLD = NOISE_THRESHOLD * 1.15" in OVERLAY_HTML
     assert "now - lastPulseAt < 130" in OVERLAY_HTML
     assert "MAX_PULSE_HEIGHT = 18" in OVERLAY_HTML
+
+
+def test_screen_for_point_picks_the_display_under_the_pointer() -> None:
+    """The overlay must follow the pointer across displays.
+
+    ``FloatingOverlay.setup`` frames the panel once from ``NSScreen.mainScreen()``,
+    so before this the overlay stayed on whichever display was main when the app
+    launched. Geometry below is Allen's real 2026-09-12 layout: the BenQ at the
+    origin and the built-in display to its left at a negative x.
+    """
+
+    from types import SimpleNamespace
+
+    from typeless_local.overlay import _screen_for_point
+
+    def screen(x, y, w, h):
+        rect = SimpleNamespace(origin=SimpleNamespace(x=x, y=y), size=SimpleNamespace(width=w, height=h))
+        return SimpleNamespace(frame=lambda rect=rect: rect, tag=(x, y))
+
+    benq = screen(0, 0, 1920, 1080)
+    built_in = screen(-1352, 0, 1352, 878)
+    screens = [benq, built_in]
+
+    assert _screen_for_point(SimpleNamespace(x=952, y=272), screens) is benq
+    assert _screen_for_point(SimpleNamespace(x=-600, y=400), screens) is built_in
+    # The menu bar sits above visibleFrame but still belongs to that display.
+    assert _screen_for_point(SimpleNamespace(x=100, y=1070), screens) is benq
+    # Exactly on the shared edge belongs to the display that owns that origin.
+    assert _screen_for_point(SimpleNamespace(x=0, y=500), screens) is benq
+    assert _screen_for_point(SimpleNamespace(x=-1, y=500), screens) is built_in
+    # Off every display.
+    assert _screen_for_point(SimpleNamespace(x=5000, y=5000), screens) is None

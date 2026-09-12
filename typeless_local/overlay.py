@@ -36,6 +36,24 @@ HANDS_FREE_WIDTH = 116
 COUNTDOWN_EXTRA_WIDTH = 40
 
 
+
+def _screen_for_point(point, screens):
+    """The screen whose frame contains ``point``, or ``None`` if it is on none.
+
+    ``frame`` is used rather than ``visibleFrame`` so a pointer over the menu
+    bar or the Dock still counts as being on that display.
+    """
+
+    for screen in screens:
+        frame = screen.frame()
+        if (
+            frame.origin.x <= point.x < frame.origin.x + frame.size.width
+            and frame.origin.y <= point.y < frame.origin.y + frame.size.height
+        ):
+            return screen
+    return None
+
+
 def _hover_kind_for_local_point(
     state: str,
     x: float,
@@ -1087,6 +1105,8 @@ class FloatingOverlay(NSObject):
         self._has_countdown = bool(countdown)
         self._set_mouse_events(state in {"idle-base", "hover", "recording", "hands-free", "copy-fallback"})
         if self.panel is not None:
+            if state != "idle-hidden":
+                self._move_to_mouse_screen()
             self.panel.setAlphaValue_(0.0 if state == "idle-hidden" else 1.0)
             self.panel.orderFrontRegardless()
         payload = json.dumps(
@@ -1162,6 +1182,29 @@ class FloatingOverlay(NSObject):
             return
         self._hover_kind = kind
         self._eval(f"window.setPointerTooltip({json.dumps(kind)});")
+
+    @objc.python_method
+    def _move_to_mouse_screen(self) -> None:
+        """Put the panel on the display the pointer is on.
+
+        ``setup`` frames the panel once from ``NSScreen.mainScreen()``, so on a
+        multi-display setup the overlay stayed on whichever screen was main at
+        launch however far the pointer moved.
+        """
+
+        screen = _screen_for_point(NSEvent.mouseLocation(), NSScreen.screens())
+        if screen is None:
+            screen = NSScreen.mainScreen()
+        if screen is None:
+            return
+        rect = self._panel_rect(screen.visibleFrame())
+        current = self.panel.frame()
+        if (
+            abs(current.origin.x - rect.origin.x) < 1.0
+            and abs(current.origin.y - rect.origin.y) < 1.0
+        ):
+            return
+        self.panel.setFrame_display_(rect, False)
 
     @objc.python_method
     def _panel_rect(self, frame):
