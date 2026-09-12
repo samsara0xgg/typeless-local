@@ -14,6 +14,7 @@ LOGGER = logging.getLogger(__name__)
 _STARTER_HEADER = """# Typeless Local vocabulary.
 # Edit `user:` freely — those terms are never overwritten.
 # `auto:` is rewritten by `scripts/extract_hotwords.py`; don't hand-edit it.
+# `rejected:` lists mishears the extractor must never re-promote.
 """
 
 
@@ -61,6 +62,55 @@ def load_vocab(path: Path) -> list[str]:
     return result
 
 
+def load_rejected(path: Path) -> list[str]:
+    """Return the case-preserved list of terms the extractor must skip."""
+
+    path = Path(path)
+    if not path.exists():
+        return []
+    return _coerce_list(_read_yaml(path).get("rejected"))
+
+
+def _load_sections(path: Path) -> dict[str, list[str]]:
+    """Read user/auto/rejected sections, defaulting missing ones to []."""
+
+    if not path.exists():
+        return {"user": [], "auto": [], "rejected": []}
+    data = _read_yaml(path)
+    return {
+        "user": _coerce_list(data.get("user")),
+        "auto": _coerce_list(data.get("auto")),
+        "rejected": _coerce_list(data.get("rejected")),
+    }
+
+
+def _atomic_write_sections(path: Path, sections: dict[str, list[str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "user": sections.get("user", []),
+        "auto": sections.get("auto", []),
+        "rejected": sections.get("rejected", []),
+    }
+    rendered = _STARTER_HEADER + yaml.safe_dump(
+        payload,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+    )
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=".vocab-", suffix=".yaml.tmp", dir=str(path.parent)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(rendered)
+        os.replace(tmp_name, path)
+    except Exception:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+        raise
+
+
 def as_initial_prompt(terms: list[str], max_chars: int = 600) -> str:
     """Render terms as a single-line Whisper initial prompt.
 
@@ -87,38 +137,32 @@ def as_initial_prompt(terms: list[str], max_chars: int = 600) -> str:
 
 
 def save_auto_terms(path: Path, terms: list[str]) -> None:
-    """Atomically rewrite `auto:` section. Preserves `user:` section."""
+    """Atomically rewrite `auto:`. Preserves `user:` and `rejected:`."""
 
     path = Path(path)
-    if path.exists():
-        data = _read_yaml(path)
-        user_terms = _coerce_list(data.get("user"))
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        user_terms = []
+    sections = _load_sections(path)
+    sections["auto"] = [t for t in terms if t.strip()]
+    _atomic_write_sections(path, sections)
 
-    payload = {
-        "user": user_terms,
-        "auto": [t for t in terms if t.strip()],
-    }
-    rendered = _STARTER_HEADER + yaml.safe_dump(
-        payload,
-        allow_unicode=True,
-        sort_keys=False,
-        default_flow_style=False,
-    )
 
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=".vocab-", suffix=".yaml.tmp", dir=str(path.parent)
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(rendered)
-        os.replace(tmp_name, path)
-    except Exception:
-        if os.path.exists(tmp_name):
-            os.unlink(tmp_name)
-        raise
+def reject_term(path: Path, term: str) -> None:
+    """Move ``term`` out of ``auto:`` and into ``rejected:`` (case-insensitive).
+
+    Idempotent — if the term is already rejected we just rewrite the file.
+    Used by ``scripts/extract_hotwords.py --reject`` so the user can blocklist
+    a mishear (e.g. "Hermes Aging") without hand-editing YAML.
+    """
+
+    path = Path(path)
+    cleaned = term.strip()
+    if not cleaned:
+        return
+    lc = cleaned.lower()
+    sections = _load_sections(path)
+    sections["auto"] = [t for t in sections["auto"] if t.lower() != lc]
+    if not any(t.lower() == lc for t in sections["rejected"]):
+        sections["rejected"].append(cleaned)
+    _atomic_write_sections(path, sections)
 
 
 def write_starter_file(path: Path) -> None:
@@ -129,6 +173,6 @@ def write_starter_file(path: Path) -> None:
     if path.exists():
         return
     path.write_text(
-        _STARTER_HEADER + "user: []\nauto: []\n",
+        _STARTER_HEADER + "user: []\nauto: []\nrejected: []\n",
         encoding="utf-8",
     )

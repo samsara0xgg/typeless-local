@@ -75,3 +75,56 @@ def test_save_auto_terms_creates_file_if_missing(tmp_path: Path) -> None:
     vocab.save_auto_terms(path, ["Term1"])
     loaded = vocab.load_vocab(path)
     assert loaded == ["Term1"]
+
+
+def test_load_rejected_missing_file_returns_empty(tmp_path: Path) -> None:
+    assert vocab.load_rejected(tmp_path / "missing.yaml") == []
+
+
+def test_load_rejected_reads_explicit_section(tmp_path: Path) -> None:
+    path = tmp_path / "vocab.yaml"
+    path.write_text(
+        "user:\n  - Jarvis\nauto: []\nrejected:\n  - Hermes Aging\n  - Foo Bar\n",
+        encoding="utf-8",
+    )
+    assert vocab.load_rejected(path) == ["Hermes Aging", "Foo Bar"]
+
+
+def test_save_auto_terms_preserves_rejected_section(tmp_path: Path) -> None:
+    path = tmp_path / "vocab.yaml"
+    path.write_text(
+        "user:\n  - Jarvis\nauto:\n  - Old\nrejected:\n  - Hermes Aging\n",
+        encoding="utf-8",
+    )
+    vocab.save_auto_terms(path, ["NewTerm"])
+    assert vocab.load_rejected(path) == ["Hermes Aging"]
+    assert vocab.load_vocab(path) == ["Jarvis", "NewTerm"]
+
+
+def test_reject_term_moves_term_from_auto_into_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "vocab.yaml"
+    path.write_text(
+        "user:\n  - Jarvis\nauto:\n  - Hermes Aging\n  - PyObjC\nrejected: []\n",
+        encoding="utf-8",
+    )
+    vocab.reject_term(path, "Hermes Aging")
+    assert vocab.load_vocab(path) == ["Jarvis", "PyObjC"]
+    assert vocab.load_rejected(path) == ["Hermes Aging"]
+
+
+def test_reject_term_is_case_insensitive_and_idempotent(tmp_path: Path) -> None:
+    path = tmp_path / "vocab.yaml"
+    path.write_text(
+        "user: []\nauto:\n  - Hermes Aging\nrejected: []\n",
+        encoding="utf-8",
+    )
+    vocab.reject_term(path, "hermes aging")
+    vocab.reject_term(path, "Hermes Aging")
+    assert vocab.load_rejected(path) == ["hermes aging"]
+    assert vocab.load_vocab(path) == []
+
+
+def test_reject_term_creates_file_if_missing(tmp_path: Path) -> None:
+    path = tmp_path / "vocab.yaml"
+    vocab.reject_term(path, "Mishear")
+    assert vocab.load_rejected(path) == ["Mishear"]

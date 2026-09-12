@@ -62,10 +62,42 @@ def sign(app: Path) -> None:
     )
 
 
+def patch_native_dylibs(app: Path) -> None:
+    """py2app doesn't copy mlx's lib/ subfolder (libmlx.dylib, libjaccl.dylib,
+    metallib). Locate them in the build-time site-packages and copy them next
+    to mlx/core.so so its @loader_path/lib rpath resolves."""
+
+    import sysconfig
+
+    site_packages = Path(sysconfig.get_paths()["purelib"])
+    src_lib = site_packages / "mlx" / "lib"
+    if not src_lib.exists():
+        print(f"warning: mlx/lib not found at {src_lib}; mlx will fail to load")
+        return
+    bundle_mlx = (
+        app
+        / "Contents"
+        / "Resources"
+        / "lib"
+        / "python3.13"
+        / "lib-dynload"
+        / "mlx"
+    )
+    if not bundle_mlx.exists():
+        print(f"warning: bundled mlx not found at {bundle_mlx}; skipping dylib copy")
+        return
+    dst_lib = bundle_mlx / "lib"
+    if dst_lib.exists():
+        shutil.rmtree(dst_lib)
+    shutil.copytree(src_lib, dst_lib, symlinks=True)
+    print(f"copied {src_lib} -> {dst_lib}")
+
+
 def main() -> int:
     bake_version()
     clean()
     app = build()
+    patch_native_dylibs(app)
     sign(app)
     print(f"\nBuilt: {app}")
     print("Move to /Applications/ or run with: open '" + str(app) + "'")

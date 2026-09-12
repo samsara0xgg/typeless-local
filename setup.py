@@ -46,6 +46,11 @@ OPTIONS = {
         "PyObjCTools",
         "PyObjCTools.AppHelper",
         "Foundation",
+        # mlx loads these via its internal __load mechanism; modulegraph misses
+        # them by static analysis. Listing them explicitly so they end up in
+        # the bundle zip alongside the wrapper-only mlx/__init__.pyc.
+        "mlx._reprlib_fix",
+        "mlx.utils",
     ],
     "excludes": [
         "tkinter",

@@ -20,8 +20,8 @@ class VoiceActivityAnalyzer:
         self,
         sample_rate: int,
         fft_size: int = 2048,
-        noise_threshold: float = 0.03,
-        voice_threshold: float = 0.12,
+        noise_threshold: float = 0.01,
+        voice_threshold: float = 0.06,
     ) -> None:
         self.sample_rate = sample_rate
         self.fft_size = fft_size

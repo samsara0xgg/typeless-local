@@ -108,6 +108,24 @@ def test_voice_activity_analyzer_prefers_vocal_band_over_silence() -> None:
     assert voice_levels[-1] == voice_levels[0]
 
 
+def test_voice_activity_analyzer_responds_to_soft_speech_onset() -> None:
+    """Soft initial syllables must produce a visible waveform level.
+
+    Previously rms*0.35 ≈ voice_band_level ≈ noise_threshold for soft onsets,
+    so the overlay stayed flat for the first ~half-second of dictation while
+    audio was already being captured. Thresholds must be low enough that a
+    quiet 440Hz tone (amplitude 0.025) registers above zero.
+    """
+
+    analyzer = VoiceActivityAnalyzer(sample_rate=16000)
+    t = np.arange(800, dtype=np.float32) / 16000
+    soft_voice = (0.025 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+
+    level = analyzer.analyze(soft_voice)
+
+    assert level > 0.0
+
+
 def test_microphone_recorder_quality_gate_rejects_silence_and_short_audio() -> None:
     recorder = MicrophoneRecorder(sample_rate=16000)
 
