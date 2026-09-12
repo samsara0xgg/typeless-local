@@ -60,6 +60,9 @@ SPACE_KEYCODE = 49
 ESCAPE_KEYCODE = 53
 V_KEYCODE = 9
 OPTION_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskAlternate", 1 << 19)
+# Right Command arrives as a FlagsChanged event with keycode 54 (kVK_RightCommand).
+RIGHT_COMMAND_KEYCODE = 54
+COMMAND_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskCommand", 1 << 20)
 HOTKEY_EVENT_TAP_LOCATION = getattr(Quartz, "kCGHIDEventTap", Quartz.kCGSessionEventTap)
 TEXT_INPUT_ROLES = {
     "AXTextArea",
@@ -67,6 +70,7 @@ TEXT_INPUT_ROLES = {
     "AXComboBox",
     "AXSearchField",
 }
+SURROUNDING_TEXT_RADIUS = 500
 
 
 @dataclass(frozen=True)
@@ -78,6 +82,7 @@ class FocusContext:
     selected_text: str = ""
     focused_role: str = ""
     can_insert_text: bool = False
+    surrounding_text: str = ""
 
 
 def capture_focus_context() -> FocusContext:
@@ -90,6 +95,7 @@ def capture_focus_context() -> FocusContext:
     selected_text = ""
     focused_role = ""
     can_insert_text = False
+    surrounding_text = ""
 
     if pid:
         try:
@@ -124,6 +130,9 @@ def capture_focus_context() -> FocusContext:
                 )
                 if selection is not None:
                     selected_text = str(selection or "")
+                surrounding_text = _extract_surrounding_text(
+                    focused_element, SURROUNDING_TEXT_RADIUS
+                )
         except Exception as exc:
             LOGGER.debug("Unable to read focused AX context: %s", exc)
 
@@ -133,7 +142,69 @@ def capture_focus_context() -> FocusContext:
         selected_text=selected_text,
         focused_role=focused_role,
         can_insert_text=can_insert_text,
+        surrounding_text=surrounding_text,
     )
+
+
+def _extract_surrounding_text(element, radius: int) -> str:
+    """Return ±radius characters of document text around the cursor.
+
+    Returns "" when the element does not expose its document text via
+    AXValue, when the selected-range cannot be decoded, or when AX raises.
+    The whole value is truncated to a ±radius window so refine prompts
+    stay bounded even on large documents.
+    """
+
+    full_value = _copy_ax_attribute(element, ApplicationServices.kAXValueAttribute)
+    if not isinstance(full_value, str):
+        return ""
+    full_text = full_value
+    if not full_text:
+        return ""
+
+    range_value = _copy_ax_attribute(
+        element, ApplicationServices.kAXSelectedTextRangeAttribute
+    )
+    cursor = _coerce_range_location(range_value)
+    if cursor is None:
+        cursor = len(full_text)
+    cursor = max(0, min(cursor, len(full_text)))
+
+    start = max(0, cursor - radius)
+    end = min(len(full_text), cursor + radius)
+    return full_text[start:end]
+
+
+def _coerce_range_location(range_value) -> int | None:
+    """Pull the .location out of a kAXSelectedTextRangeAttribute value.
+
+    PyObjC can return this as a CFRange struct, an AXValueRef, a (loc, len)
+    tuple, or as some app-specific wrapper. Try each path; return None if
+    none work.
+    """
+
+    if range_value is None:
+        return None
+    location = getattr(range_value, "location", None)
+    if location is not None:
+        try:
+            return int(location)
+        except (TypeError, ValueError):
+            pass
+    if isinstance(range_value, tuple) and len(range_value) >= 1:
+        try:
+            return int(range_value[0])
+        except (TypeError, ValueError):
+            pass
+    try:
+        success, info = ApplicationServices.AXValueGetValue(
+            range_value, ApplicationServices.kAXValueCFRangeType, None
+        )
+        if success:
+            return int(info.location)
+    except Exception:
+        pass
+    return None
 
 
 def _copy_ax_attribute(element, attribute: str):
@@ -254,7 +325,7 @@ HotkeyCallback = Callable[[str], None]
 
 
 class GlobalHotkeyMonitor:
-    """Capture F5, F5+Space, and Esc with a Quartz event tap."""
+    """Capture F5 / right-Cmd tap, F5+Space / right-Cmd+Space, and Esc with a Quartz event tap."""
 
     def __init__(
         self,
@@ -272,6 +343,9 @@ class GlobalHotkeyMonitor:
         self._source = None
         self._primary_down: set[int] = set()
         self._debug_down = False
+        # Right Cmd is also a modifier (Cmd+C, Cmd+Tab), so a tap only counts
+        # if no other key went down while it was held.
+        self._rcmd_armed = False
         # Event-time of the most recent primary down/up, in seconds. Captured
         # from NSEvent.timestamp so the value reflects when macOS generated the
         # event, not when our handler picked it up — handler time is unreliable
@@ -338,6 +412,19 @@ class GlobalHotkeyMonitor:
         )
 
         if event_type == Quartz.kCGEventFlagsChanged:
+            if keycode == RIGHT_COMMAND_KEYCODE:
+                if Quartz.CGEventGetFlags(event) & COMMAND_FLAG_MASK:
+                    self._rcmd_armed = True
+                elif self._rcmd_armed:
+                    self._rcmd_armed = False
+                    # A tap toggles: same timestamp for down/up so the app never
+                    # reads a long hold as hold-to-talk.
+                    now = self._event_time(event)
+                    self.last_primary_down_at = now
+                    self.callback("primary_down")
+                    self.last_primary_up_at = now
+                    self.callback("primary_up")
+                return event  # never swallow a modifier change
             if self.debug_hotkey and keycode == RIGHT_OPTION_KEYCODE:
                 flags = Quartz.CGEventGetFlags(event)
                 now_down = bool(flags & OPTION_FLAG_MASK)
@@ -348,6 +435,11 @@ class GlobalHotkeyMonitor:
             return event
 
         if event_type == Quartz.kCGEventKeyDown:
+            if self._rcmd_armed:
+                self._rcmd_armed = False
+                if keycode == SPACE_KEYCODE:
+                    self.callback("hands_free")
+                    return None
             if keycode in PRIMARY_KEYCODES:
                 # macOS 26.4 may deliver KeyDown for both 96 and 176 on a single
                 # physical F5 press; only fire primary_down on the first key of

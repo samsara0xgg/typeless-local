@@ -43,6 +43,68 @@ def test_focused_element_accepts_text_roles() -> None:
     assert mac_integration._focused_element_accepts_text(object(), "AXTextArea") is True
 
 
+def test_coerce_range_location_handles_struct_with_location() -> None:
+    class FakeRange:
+        location = 42
+
+    assert mac_integration._coerce_range_location(FakeRange()) == 42
+
+
+def test_coerce_range_location_handles_tuple() -> None:
+    assert mac_integration._coerce_range_location((17, 0)) == 17
+
+
+def test_coerce_range_location_returns_none_for_unrecognized() -> None:
+    assert mac_integration._coerce_range_location(None) is None
+    assert mac_integration._coerce_range_location("not a range") is None
+
+
+def test_extract_surrounding_text_slices_window_around_cursor(monkeypatch) -> None:
+    full_text = "A" * 100 + "TARGET" + "B" * 100
+    attrs = {
+        mac_integration.ApplicationServices.kAXValueAttribute: full_text,
+        mac_integration.ApplicationServices.kAXSelectedTextRangeAttribute: (103, 0),
+    }
+    monkeypatch.setattr(
+        mac_integration,
+        "_copy_ax_attribute",
+        lambda element, attribute: attrs.get(attribute),
+    )
+
+    result = mac_integration._extract_surrounding_text(object(), radius=20)
+
+    assert "TARGET" in result
+    assert len(result) <= 40
+
+
+def test_extract_surrounding_text_returns_empty_when_no_value(monkeypatch) -> None:
+    monkeypatch.setattr(
+        mac_integration, "_copy_ax_attribute", lambda element, attribute: None
+    )
+
+    assert mac_integration._extract_surrounding_text(object(), radius=10) == ""
+
+
+def test_extract_surrounding_text_clamps_cursor_past_end(monkeypatch) -> None:
+    """A bogus selected-range past the buffer must not raise; clamp to len."""
+
+    full_text = "hello world"
+    attrs = {
+        mac_integration.ApplicationServices.kAXValueAttribute: full_text,
+        mac_integration.ApplicationServices.kAXSelectedTextRangeAttribute: (
+            9999,
+            0,
+        ),
+    }
+    monkeypatch.setattr(
+        mac_integration,
+        "_copy_ax_attribute",
+        lambda element, attribute: attrs.get(attribute),
+    )
+
+    assert mac_integration._extract_surrounding_text(object(), radius=20) == full_text
+
+
 def test_focused_element_rejects_static_non_text(monkeypatch) -> None:
     monkeypatch.setattr(mac_integration, "_copy_ax_attribute", lambda element, attribute: None)
 
@@ -214,3 +276,63 @@ def test_set_clipboard_text_does_not_restore_previous_clipboard(monkeypatch) -> 
         "clear",
         ("set", "Hello", mac_integration.NSPasteboardTypeString),
     ]
+
+
+class _KeyEvent:
+    def __init__(self, keycode: int, flags: int = 0) -> None:
+        self.keycode = keycode
+        self.flags = flags
+
+
+def _rcmd_monitor(monkeypatch, events):
+    monitor = mac_integration.GlobalHotkeyMonitor(events.append)
+    monkeypatch.setattr(
+        mac_integration.Quartz, "CGEventGetIntegerValueField", lambda event, field: event.keycode
+    )
+    monkeypatch.setattr(mac_integration.Quartz, "CGEventGetFlags", lambda event: event.flags)
+    return monitor
+
+
+def _rcmd(monitor, down: bool):
+    event = _KeyEvent(
+        mac_integration.RIGHT_COMMAND_KEYCODE, mac_integration.COMMAND_FLAG_MASK if down else 0
+    )
+    return monitor._handle_event(None, mac_integration.Quartz.kCGEventFlagsChanged, event, None), event
+
+
+def test_right_cmd_tap_emits_primary_down_and_up(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events)
+
+    down_result, down_event = _rcmd(monitor, True)
+    assert down_result is down_event  # modifier change passes through
+    assert events == []
+    up_result, up_event = _rcmd(monitor, False)
+    assert up_result is up_event
+    assert events == ["primary_down", "primary_up"]
+
+
+def test_right_cmd_used_as_modifier_does_not_fire(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events)
+    c_key = _KeyEvent(8, mac_integration.COMMAND_FLAG_MASK)  # Cmd+C
+
+    _rcmd(monitor, True)
+    result = monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, c_key, None)
+    _rcmd(monitor, False)
+
+    assert result is c_key  # Cmd+C reaches the focused app untouched
+    assert events == []
+
+
+def test_right_cmd_space_enters_hands_free(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events)
+    space = _KeyEvent(mac_integration.SPACE_KEYCODE, mac_integration.COMMAND_FLAG_MASK)
+
+    _rcmd(monitor, True)
+    result = monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, space, None)
+    _rcmd(monitor, False)
+
+    assert result is None
+    assert events == ["hands_free"]
