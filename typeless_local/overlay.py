@@ -27,6 +27,8 @@ ActionCallback = Callable[[str], None]
 
 PANEL_WIDTH = 500
 PANEL_HEIGHT = 500
+# How often the visible panel re-checks which display the pointer is on.
+SCREEN_FOLLOW_INTERVAL = 0.1
 BAR_HEIGHT = 34
 IDLE_WIDTH = 40
 IDLE_HEIGHT = 6
@@ -995,6 +997,7 @@ class FloatingOverlay(NSObject):
         self._state = "idle-hidden"
         self._has_countdown = False
         self._hover_timer = None
+        self._follow_timer = None
         self._hover_kind = ""
         self.action_callback = None
         return self
@@ -1107,6 +1110,9 @@ class FloatingOverlay(NSObject):
         if self.panel is not None:
             if state != "idle-hidden":
                 self._move_to_mouse_screen()
+                self._start_screen_follow()
+            else:
+                self._stop_screen_follow()
             self.panel.setAlphaValue_(0.0 if state == "idle-hidden" else 1.0)
             self.panel.orderFrontRegardless()
         payload = json.dumps(
@@ -1154,6 +1160,29 @@ class FloatingOverlay(NSObject):
             timer.invalidate()
             self._hover_timer = None
         self._set_pointer_tooltip("")
+
+    @objc.python_method
+    def _start_screen_follow(self) -> None:
+        if self._follow_timer is not None:
+            return
+        self._follow_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            SCREEN_FOLLOW_INTERVAL,
+            self,
+            "pollScreen:",
+            None,
+            True,
+        )
+
+    @objc.python_method
+    def _stop_screen_follow(self) -> None:
+        timer = getattr(self, "_follow_timer", None)
+        if timer is not None:
+            timer.invalidate()
+            self._follow_timer = None
+
+    def pollScreen_(self, timer) -> None:
+        del timer
+        self._move_to_mouse_screen()
 
     def pollHover_(self, timer) -> None:
         del timer
@@ -1204,7 +1233,7 @@ class FloatingOverlay(NSObject):
             and abs(current.origin.y - rect.origin.y) < 1.0
         ):
             return
-        self.panel.setFrame_display_(rect, False)
+        self.panel.setFrame_display_(rect, True)
 
     @objc.python_method
     def _panel_rect(self, frame):
