@@ -545,9 +545,10 @@ class TypelessLocalApp:
                 context.focused_role or "unknown",
             )
             self._copy_fallback_text = final_text
+            set_clipboard_text(final_text)
             self.state = "idle"
             self._set_menubar("idle")
-            self._call_ui(self.overlay.show_copy_fallback, final_text, False)
+            self._call_ui(self.overlay.show_copy_fallback, final_text, True)
         except Exception as exc:
             record.error = repr(exc)
             LOGGER.exception("Dictation failed")

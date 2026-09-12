@@ -162,16 +162,25 @@ def test_process_audio_transcribes_refines_and_pastes(monkeypatch) -> None:
 
 
 def test_process_audio_shows_copy_fallback_when_focus_is_not_editable(monkeypatch) -> None:
+    """With nowhere to paste, the text still lands on the clipboard by itself.
+
+    It used to wait for a click on the overlay's Copy button, so a dictation
+    aimed at a non-editable target was one missed click away from being lost.
+    """
+
     pasted = []
+    copied = []
     monkeypatch.setattr("typeless_local.app.paste_text", pasted.append)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", copied.append)
     app = _make_app("raw dictation")
     context = FocusContext(app_name="Finder", window_title="Desktop", focused_role="AXGroup")
 
     app._process_audio(np.ones(16000, dtype=np.float32), context)
 
     assert pasted == []
+    assert copied == ["Refined text."]
     assert app._copy_fallback_text == "Refined text."
-    assert app.overlay.calls[-1] == ("copy-fallback", "Refined text.", False)
+    assert app.overlay.calls[-1] == ("copy-fallback", "Refined text.", True)
 
 
 def test_copy_fallback_action_sets_clipboard_and_marks_copied(monkeypatch) -> None:
