@@ -222,6 +222,9 @@ def test_paste_text_restores_clipboard_snapshot(monkeypatch) -> None:
         def setString_forType_(self, text, item_type):
             events.append(("set", text, item_type))
 
+        def setData_forType_(self, data, item_type):
+            events.append(("set-data", item_type))
+
     pasteboard = FakePasteboard()
 
     class FakePasteboardFactory:
@@ -250,6 +253,11 @@ def test_paste_text_restores_clipboard_snapshot(monkeypatch) -> None:
 
     assert events[0] == "clear"
     assert events[1] == ("set", "Hello", mac_integration.NSPasteboardTypeString)
+    # The dictation is a means to an end, not something the user copied. Without
+    # this marker every dictation left an entry in the clipboard history even
+    # though the real clipboard is restored a moment later.
+    assert ("set-data", mac_integration.TRANSIENT_TYPE) in events
+    assert mac_integration.TRANSIENT_TYPE == "org.nspasteboard.TransientType"
     assert restored == [(pasteboard, [["snapshot"]])]
 
 

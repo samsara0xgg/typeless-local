@@ -11,9 +11,17 @@ from typing import Callable
 
 import ApplicationServices
 from AppKit import NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSWorkspace
+from Foundation import NSData
 import Quartz
 
 LOGGER = logging.getLogger(__name__)
+
+# nspasteboard.org convention: a pasteboard carrying this type is a means to an
+# end, not something the user copied, so clipboard managers skip it. Without it
+# every dictation leaves an entry in the clipboard history even though the real
+# clipboard is restored a moment later. Raycast, the manager running here,
+# advertises the type in its binary.
+TRANSIENT_TYPE = "org.nspasteboard.TransientType"
 
 
 class _MachTimebase(ctypes.Structure):
@@ -254,6 +262,7 @@ def paste_text(text: str) -> None:
     snapshot = _snapshot_pasteboard(pasteboard)
     pasteboard.clearContents()
     pasteboard.setString_forType_(text, NSPasteboardTypeString)
+    pasteboard.setData_forType_(NSData.data(), TRANSIENT_TYPE)
 
     source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
     down = Quartz.CGEventCreateKeyboardEvent(source, V_KEYCODE, True)
@@ -296,6 +305,7 @@ def _restore_pasteboard(pasteboard, snapshot: list[list[tuple[object, object]]])
             item = NSPasteboardItem.alloc().init()
             for item_type, data in values:
                 item.setData_forType_(data, item_type)
+            item.setData_forType_(NSData.data(), TRANSIENT_TYPE)
             restored_items.append(item)
         pasteboard.writeObjects_(restored_items)
     except Exception as exc:
