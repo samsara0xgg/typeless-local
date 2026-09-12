@@ -46,7 +46,7 @@ class AppConfig:
     refine: RefineConfig
     sample_rate: int = 16000
     max_recording_seconds: float = 540.0
-    min_recording_seconds: float = 0.25
+    min_recording_seconds: float = 0.15
     low_volume_threshold: float = 0.02
     debug_hotkey: bool = False
     user_paths: UserPaths | None = None
@@ -215,7 +215,7 @@ def load_config() -> AppConfig:
         jarvis_root=jarvis_root,
         jarvis_config=jarvis_config,
         refine=_resolve_refine_config(jarvis_config),
-        min_recording_seconds=float(audio_config.get("min_duration") or 0.25),
+        min_recording_seconds=float(audio_config.get("min_duration") or 0.15),
         low_volume_threshold=float(audio_config.get("low_volume_threshold") or 0.02),
         debug_hotkey=os.environ.get("TYPELESS_LOCAL_DEBUG_HOTKEY") == "1",
         user_paths=user_paths,

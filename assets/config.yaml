@@ -11,7 +11,7 @@ asr:
 
 audio:
   vad_model_path: ""         # unused but speech_recognizer may read it
-  min_duration: 0.25
+  min_duration: 0.15
   low_volume_threshold: 0.02
 
 llm:

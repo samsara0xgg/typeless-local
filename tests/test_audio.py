@@ -144,3 +144,28 @@ def test_microphone_recorder_quality_gate_rejects_silence_and_short_audio() -> N
         min_duration=0.25,
         low_volume_threshold=0.02,
     )[0] is True
+
+
+def test_quality_gate_keeps_short_utterance_surrounded_by_silence() -> None:
+    """A brief phrase must survive the volume gate.
+
+    Whole-clip RMS averages speech into the silence around it, so short
+    dictations scored below low_volume_threshold and were dropped before ASR
+    with no output at all. Real trace.db drops on 2026-09-12 sat at RMS
+    0.0174-0.0197 against a 0.02 gate while the speech itself was plainly
+    audible. The gate measures the loudest 0.2s window instead.
+    """
+
+    recorder = MicrophoneRecorder(sample_rate=16000)
+    t = np.arange(4800, dtype=np.float32) / 16000
+    speech = (0.045 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    clip = np.concatenate(
+        [np.zeros(6400, dtype=np.float32), speech, np.zeros(4800, dtype=np.float32)]
+    )
+
+    assert recorder.get_volume_level(clip) < 0.02
+    assert recorder.peak_window_level(clip) > 0.02
+    assert recorder.is_quality_ok(clip, min_duration=0.15, low_volume_threshold=0.02)[0] is True
+
+    near_silence = (0.002 * np.sin(2 * np.pi * 220 * np.arange(16000, dtype=np.float32) / 16000)).astype(np.float32)
+    assert recorder.is_quality_ok(near_silence, min_duration=0.15, low_volume_threshold=0.02)[0] is False

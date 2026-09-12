@@ -120,6 +120,25 @@ class MicrophoneRecorder:
             return 0.0
         return float(np.sqrt(np.mean(np.square(normalized), dtype=np.float64)))
 
+    def peak_window_level(self, audio: np.ndarray, window_seconds: float = 0.2) -> float:
+        """RMS of the loudest short window.
+
+        Whole-clip RMS averages a brief phrase into the silence around it, so a
+        short utterance scores lower than the same speech in a long recording
+        and gets dropped as "too quiet". The loudest window is independent of
+        how much silence surrounds it.
+        """
+
+        normalized = np.asarray(audio, dtype=np.float32)
+        window = max(1, int(self.sample_rate * window_seconds))
+        if normalized.size <= window:
+            return self.get_volume_level(normalized)
+        cumulative = np.concatenate(
+            ([0.0], np.cumsum(np.square(normalized, dtype=np.float64)))
+        )
+        window_means = (cumulative[window:] - cumulative[:-window]) / window
+        return float(np.sqrt(window_means.max()))
+
     def is_quality_ok(
         self,
         audio: np.ndarray,
@@ -131,7 +150,7 @@ class MicrophoneRecorder:
 
         normalized = np.asarray(audio, dtype=np.float32)
         duration_seconds = normalized.size / self.sample_rate
-        volume_level = self.get_volume_level(normalized)
+        volume_level = self.peak_window_level(normalized)
         issues: list[str] = []
 
         if normalized.size == 0:
@@ -142,7 +161,7 @@ class MicrophoneRecorder:
             )
         if volume_level < low_volume_threshold:
             issues.append(
-                "volume "
+                "peak volume "
                 f"{volume_level:.4f} is below threshold {low_volume_threshold:.4f}"
             )
 
