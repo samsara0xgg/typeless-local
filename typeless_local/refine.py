@@ -54,6 +54,9 @@ Context awareness:
 - If selected text is provided and the transcript is an editing instruction
   (for example: make this shorter, translate this, fix grammar, rewrite as an email),
   return the replacement text for that selection.
+- If 'Surrounding text near cursor' is provided, use it to disambiguate
+  ambiguous words, resolve names by context, and match the tone, language,
+  and formatting of the existing text. Do not echo it back in your output.
 
 Strict output:
 - Return only the insertable/replacement text.
@@ -104,6 +107,11 @@ class TextRefiner:
             f"- window: {focus.window_title or 'unknown'}\n"
             f"- selected text: {focus.selected_text or '(none)'}\n"
         )
+        if focus.surrounding_text:
+            user_prompt += (
+                "\nSurrounding text near cursor:\n"
+                f"{focus.surrounding_text}\n"
+            )
         system_prompt = SYSTEM_PROMPT
         if vocab:
             joined = ", ".join(vocab)
@@ -130,6 +138,13 @@ class TextRefiner:
             not self.config.base_url or "api.openai.com" in self.config.base_url
         ):
             kwargs["prompt_cache_retention"] = "24h"
+        # Per-preset knobs: gpt-5.6 needs reasoning_effort=none and DeepSeek needs
+        # thinking disabled, or the whole token budget goes to reasoning and the
+        # reply is empty.
+        if self.config.reasoning_effort:
+            kwargs["reasoning_effort"] = self.config.reasoning_effort
+        if self.config.extra_body:
+            kwargs["extra_body"] = dict(self.config.extra_body)
 
         LOGGER.info("Refining transcript with %s", self.config.model)
         response = self._get_client().chat.completions.create(**kwargs)

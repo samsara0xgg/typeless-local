@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import dataclasses
 from concurrent.futures import ThreadPoolExecutor
 import logging
 import math
@@ -20,7 +21,13 @@ from PyObjCTools import AppHelper
 from typeless_local import app_version
 from typeless_local.asr import JarvisASR
 from typeless_local.audio import MicrophoneRecorder
-from typeless_local.config import AppConfig, load_config
+from typeless_local.config import (
+    AppConfig,
+    load_config,
+    preset_names,
+    refine_config_for,
+    save_default_preset,
+)
 from typeless_local.mac_integration import (
     FocusContext,
     GlobalHotkeyMonitor,
@@ -99,6 +106,9 @@ class TypelessLocalApp:
                 on_quit=lambda: NSApp().terminate_(None),
                 trace_folder=user_paths.config_dir if user_paths else None,
                 log_path=user_paths.log_path if user_paths else None,
+                presets=preset_names(config.jarvis_config),
+                active_preset=config.refine.preset,
+                on_select_model=self.select_model,
             )
         else:
             self.overlay = None
@@ -145,6 +155,20 @@ class TypelessLocalApp:
             return
         self.vocab = load_vocab(user_paths.vocab_path)
         LOGGER.info("Reloaded vocab: %d terms", len(self.vocab))
+
+    def select_model(self, preset: str) -> None:
+        """Switch the refinement preset live and persist it to the user config."""
+
+        refine = refine_config_for(self.config.jarvis_config, preset)
+        self.config = dataclasses.replace(self.config, refine=refine)
+        self.refiner = TextRefiner(refine)
+        user_paths = getattr(self.config, "user_paths", None)
+        if user_paths is not None:
+            save_default_preset(user_paths, preset)
+        menubar = getattr(self, "menubar", None)
+        if menubar is not None:
+            menubar.set_active_preset(preset)
+        LOGGER.info("Refinement model switched to %s (%s)", preset, refine.model)
 
     def _set_menubar(self, state: str) -> None:
         """Update the menu-bar status icon. No-op when menubar is unavailable."""

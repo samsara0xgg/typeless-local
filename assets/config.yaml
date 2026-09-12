@@ -1,5 +1,6 @@
 # Minimal config shipped inside the .app bundle.
-# Override by writing ~/.typeless-local/config.yaml.
+# Override by writing ~/.typeless-local/config.yaml (the Model menu writes
+# llm.default_preset there). API keys: ~/.typeless-local/env (KEY=value lines).
 
 asr:
   provider: mlx_whisper
@@ -14,10 +15,44 @@ audio:
   low_volume_threshold: 0.02
 
 llm:
-  default_preset: fast
+  default_preset: gpt-5.6-terra
   presets:
-    fast:
+    gpt-5.4-mini:
       model: gpt-5.4-mini
       base_url: https://api.openai.com/v1
       api_key_env: OPENAI_API_KEY
       max_tokens: 512
+    gpt-5.6-luna:
+      model: gpt-5.6-luna
+      base_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      max_tokens: 512
+      reasoning_effort: none   # default medium burns the budget, empty reply
+    gpt-5.6-terra:
+      model: gpt-5.6-terra
+      base_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      max_tokens: 512
+      reasoning_effort: none
+    gpt-5.6-sol:
+      model: gpt-5.6-sol
+      base_url: https://api.openai.com/v1
+      api_key_env: OPENAI_API_KEY
+      max_tokens: 512
+      reasoning_effort: none
+    deepseek-flash:
+      model: deepseek-flash
+      base_url: https://api.deepseek.com/v1
+      api_key_env: DEEPSEEK_API_KEY
+      max_tokens: 512
+      extra_body:
+        thinking:
+          type: disabled     # thinking on by default, empty reply otherwise
+    deepseek-v4-pro:
+      model: deepseek-v4-pro
+      base_url: https://api.deepseek.com/v1
+      api_key_env: DEEPSEEK_API_KEY
+      max_tokens: 512
+      extra_body:
+        thinking:
+          type: disabled

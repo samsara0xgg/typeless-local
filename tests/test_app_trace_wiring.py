@@ -23,6 +23,7 @@ def _make_app_config(tmp_path: Path) -> AppConfig:
         log_path=tmp_path / "app.log",
         stopwords_dir=tmp_path / "stops",
         user_config_path=tmp_path / "config.yaml",
+        env_path=tmp_path / "env",
     )
     return AppConfig(
         root=resolve_app_root(),

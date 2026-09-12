@@ -52,9 +52,16 @@ class MenuBarIcon:
         on_quit: Callable[[], None],
         trace_folder: Path | None = None,
         log_path: Path | None = None,
+        presets: list[str] | None = None,
+        active_preset: str = "",
+        on_select_model: Callable[[str], None] | None = None,
     ) -> None:
         self._on_reload_vocab = on_reload_vocab
         self._on_quit = on_quit
+        self._presets = list(presets or [])
+        self.active_preset = active_preset
+        self._on_select_model = on_select_model
+        self._model_items: dict[str, object] = {}
         self._trace_folder = trace_folder or _DEFAULT_TRACE_FOLDER
         self._log_path = log_path or _DEFAULT_LOG_PATH
         self.current_state: State = "idle"
@@ -100,6 +107,22 @@ class MenuBarIcon:
         menu.addItem_(reload_item)
         menu.addItem_(NSMenuItem.separatorItem())
 
+        if self._presets:
+            model_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Model", None, "")
+            submenu = NSMenu.alloc().initWithTitle_("Model")
+            for name in self._presets:
+                entry = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    name, "selectModelAction:", ""
+                )
+                entry.setRepresentedObject_(name)
+                entry.setTarget_(_make_action_target(self._on_select_model_action))
+                submenu.addItem_(entry)
+                self._model_items[name] = entry
+            model_item.setSubmenu_(submenu)
+            menu.addItem_(model_item)
+            menu.addItem_(NSMenuItem.separatorItem())
+            self._apply_active_preset()
+
         open_trace = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Open Trace Folder", "openTraceAction:", ""
         )
@@ -136,6 +159,21 @@ class MenuBarIcon:
             AppHelper.callAfter(self._apply_state, self.current_state)
         except Exception:
             LOGGER.debug("set_state called without AppKit available", exc_info=True)
+
+    def set_active_preset(self, name: str) -> None:
+        """Thread-safe checkmark update for the Model submenu."""
+
+        self.active_preset = name
+        try:
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(self._apply_active_preset)
+        except Exception:
+            LOGGER.debug("set_active_preset called without AppKit available", exc_info=True)
+
+    def _apply_active_preset(self) -> None:
+        for name, item in self._model_items.items():
+            item.setState_(1 if name == self.active_preset else 0)  # NSControlStateValueOn
 
     def _apply_state(self, state: State) -> None:
         if self._status_item is None:
@@ -188,6 +226,14 @@ class MenuBarIcon:
             self._on_reload_vocab()
         except Exception:
             LOGGER.warning("Reload-vocab callback failed", exc_info=True)
+
+    def _on_select_model_action(self, sender) -> None:
+        try:
+            name = str(sender.representedObject())
+            if self._on_select_model is not None:
+                self._on_select_model(name)
+        except Exception:
+            LOGGER.warning("Select-model callback failed", exc_info=True)
 
     def _on_quit_action(self, sender) -> None:
         try:
@@ -254,6 +300,10 @@ def _ensure_action_target_class():
                 self._handler(sender)
 
         def quitAction_(self, sender):
+            if self._handler is not None:
+                self._handler(sender)
+
+        def selectModelAction_(self, sender):
             if self._handler is not None:
                 self._handler(sender)
 

@@ -36,3 +36,18 @@ def test_quit_callback_invoked_via_action() -> None:
     icon = MenuBarIcon(on_reload_vocab=MagicMock(), on_quit=on_quit)
     icon._on_quit_action(None)
     on_quit.assert_called_once()
+
+
+def test_select_model_action_passes_represented_name_and_tracks_active() -> None:
+    from types import SimpleNamespace
+    on_select = MagicMock()
+    icon = MenuBarIcon(
+        on_reload_vocab=MagicMock(), on_quit=MagicMock(),
+        presets=["gpt-5.4-mini", "gpt-5.6-terra"], active_preset="gpt-5.6-terra",
+        on_select_model=on_select,
+    )
+
+    icon._on_select_model_action(SimpleNamespace(representedObject=lambda: "gpt-5.4-mini"))
+    on_select.assert_called_once_with("gpt-5.4-mini")
+    icon.set_active_preset("gpt-5.4-mini")
+    assert icon.active_preset == "gpt-5.4-mini"

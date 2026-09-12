@@ -47,7 +47,15 @@ Default behavior:
 
 - `F5` starts and stops dictation.
 - `F5+Space` starts hands-free dictation.
+- A single right `Cmd` tap does the same as `F5` (Typeless-style); right
+  `Cmd+Space` starts hands-free. Right `Cmd` used as a modifier (`Cmd+C`,
+  `Cmd+Tab`) is ignored.
 - `Esc` cancels the active or pending dictation.
+- The menu-bar icon has a `Model` submenu listing every `llm.presets` entry from
+  the config; picking one switches the refinement model immediately and writes
+  `llm.default_preset` to `~/.typeless-local/config.yaml`.
+- API keys for Finder/Spotlight launches go in `~/.typeless-local/env`
+  (`KEY=value` lines, loaded at startup; variables already in the environment win).
 - During recording, macOS system output is muted through Jarvis' Inherent
   `SystemAudioDucker` and restored when recording ends or is canceled.
 - After recording stops, audio is transcribed through Jarvis ASR, refined with
