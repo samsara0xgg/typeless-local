@@ -12,6 +12,7 @@ from AppKit import (
     NSMakeRect,
     NSPanel,
     NSScreen,
+    NSFloatingWindowLevel,
     NSStatusWindowLevel,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
@@ -214,7 +215,7 @@ OVERLAY_HTML = r"""
 
   #bar.copy-fallback {
     width: 360px;
-    height: 120px;
+    height: auto;
     border-radius: 8px;
     background: rgba(29, 26, 26, 1);
     border: 1px solid rgba(119, 119, 119, 0.30);
@@ -233,6 +234,11 @@ OVERLAY_HTML = r"""
     display: none;
     align-items: center;
     justify-content: center;
+  }
+
+  #bar.copy-fallback .copy-layer {
+    position: relative;
+    inset: auto;
   }
 
   #bar.starting .starting-layer,
@@ -532,20 +538,35 @@ OVERLAY_HTML = r"""
     height: 16px;
   }
 
-  .copy-text {
+  .copy-edit {
+    /* Height is set from the content by fitEdit(), up to seven lines. Anything
+       shorter shows whole, so the panel never hides the tail of a transcript. */
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
     margin: 0;
-    min-height: 16px;
-    color: #c9c9c9;
-    font-size: 12px;
+    padding: 8px 10px;
+    border: 1px solid rgba(119, 119, 119, 0.35);
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.07);
+    color: #f0f0f0;
+    font-family: inherit;
+    font-size: 13px;
     font-weight: 400;
-    line-height: 16px;
-    text-align: center;
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 5;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    line-height: 19px;
+    text-align: left;
+    resize: none;
+    outline: none;
+    overflow-y: hidden;
+    white-space: pre-wrap;
     word-break: break-word;
+    pointer-events: auto;
+    cursor: text;
+  }
+
+  .copy-edit:focus {
+    border-color: rgba(101, 138, 255, 0.75);
+    background: rgba(255, 255, 255, 0.10);
   }
 
   .copy-footer {
@@ -605,7 +626,7 @@ OVERLAY_HTML = r"""
           </div>
           <button class="copy-close" data-action="dismiss"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.71 12 12l6.3 6.29-1.41 1.41-6.3-6.29-6.3 6.29-1.41-1.41L9.17 12 2.88 5.7 4.29 4.29l6.3 6.3 6.3-6.3z"></path></svg></button>
         </div>
-        <div class="copy-text" id="copyText"></div>
+        <textarea class="copy-edit" id="copyEdit" spellcheck="false"></textarea>
         <div class="copy-footer"><button class="copy-button" id="copyButton" data-action="copy-fallback">Copy</button></div>
       </div>
       <div class="layer hover-layer">
@@ -621,7 +642,35 @@ OVERLAY_HTML = r"""
   const progress = document.getElementById("progress");
   const message = document.getElementById("message");
   const countdown = document.getElementById("countdown");
-  const copyText = document.getElementById("copyText");
+  const copyEdit = document.getElementById("copyEdit");
+
+  const EDIT_LINE_HEIGHT = 19;
+  const EDIT_MAX_LINES = 7;
+
+  function fitEdit() {
+    // Grow to the text, up to seven lines, and only scroll past that. Sizing off
+    // scrollHeight needs the height cleared first or it can only ever grow.
+    // Forced to zero, not "auto", before measuring: inside the flex layer an
+    // auto height resolves to the field's intrinsic row height, so scrollHeight
+    // reports that instead of the text and every transcript comes out tall.
+    if (copyEdit.clientWidth < 100) {
+      // Too narrow to measure against: #bar is still animating open, and the
+      // text would wrap at a width it is about to leave. One line now, the
+      // real fit when the width lands.
+      copyEdit.style.height = EDIT_LINE_HEIGHT + 18 + "px";
+      copyEdit.style.overflowY = "hidden";
+      return;
+    }
+    copyEdit.style.height = "0px";
+    const max = EDIT_LINE_HEIGHT * EDIT_MAX_LINES + 18;
+    // scrollHeight covers the content and the padding but not the border, and
+    // the field is border-box, so the border has to be added back or the last
+    // line is clipped.
+    const wanted =
+      copyEdit.scrollHeight + copyEdit.offsetHeight - copyEdit.clientHeight;
+    copyEdit.style.height = Math.min(wanted, max) + "px";
+    copyEdit.style.overflowY = wanted > max ? "auto" : "hidden";
+  }
   const copyButton = document.getElementById("copyButton");
   const controlTooltip = document.getElementById("controlTooltip");
   const tooltipText = document.getElementById("tooltipText");
@@ -671,9 +720,15 @@ OVERLAY_HTML = r"""
     message.textContent = payload.message || "Thinking";
     progress.style.width = `${Math.max(0, Math.min(1, payload.progress || 0)) * 100}%`;
     countdown.textContent = payload.countdown || "";
-    copyText.textContent = payload.transcript ? `“${payload.transcript}”` : "";
+    if (state === "copy-fallback") {
+      copyEdit.value = payload.transcript || "";
+    }
     setCopyButton(Boolean(payload.copied));
     setClass(state, Boolean(payload.countdown));
+    // Sized only once setClass has made the layer visible: a display:none
+    // textarea reports scrollHeight 0, which collapses the field onto its
+    // own padding and cuts the text in half.
+    if (state === "copy-fallback") fitEdit();
     if (previousState !== state && !["recording", "hands-free", "hover"].includes(state)) {
       hideControlTooltip();
     }
@@ -702,6 +757,53 @@ OVERLAY_HTML = r"""
     renderBars();
     lastInputLevel = incoming;
   };
+
+  window.focusEdit = function () {
+    copyEdit.focus();
+    copyEdit.setSelectionRange(copyEdit.value.length, copyEdit.value.length);
+  };
+
+  window.blurEdit = function () {
+    copyEdit.blur();
+  };
+
+  // #bar animates its width from 40px over 200ms, so a fit measured the instant
+  // the class lands wraps one line into seven. Re-fit once the width arrives.
+  bar.addEventListener("transitionend", (event) => {
+    if (event.propertyName === "width" && state === "copy-fallback") fitEdit();
+  });
+
+  copyEdit.addEventListener("input", () => {
+    fitEdit();
+    // Every keystroke goes straight to the clipboard. The field exists to fix
+    // the transcript, so the fixed version has to be the one waiting to paste
+    // the moment the user stops typing, not only once Return commits it.
+    window.webkit?.messageHandlers?.overlayAction?.postMessage(
+      "edit-live:" + copyEdit.value
+    );
+  });
+
+  // The app needs to know when this field owns the keyboard: while it does, a
+  // Return belongs to the field, not to the message being sent behind it.
+  copyEdit.addEventListener("focus", () => {
+    window.webkit?.messageHandlers?.overlayAction?.postMessage("edit-focused");
+  });
+  copyEdit.addEventListener("blur", () => {
+    window.webkit?.messageHandlers?.overlayAction?.postMessage("edit-blurred");
+  });
+
+  copyEdit.addEventListener("keydown", (event) => {
+    const post = window.webkit?.messageHandlers?.overlayAction;
+    if (!post) return;
+    // Enter commits; Shift+Enter is how you get a newline into the text.
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      post.postMessage("edit-commit:" + event.target.value);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      post.postMessage("edit-cancel");
+    }
+  });
 
   document.addEventListener("click", (event) => {
     const action = event.target.closest("[data-action]")?.dataset.action;
@@ -984,6 +1086,35 @@ class OverlayActionHandler(NSObject):
             callback(str(message.body()))
 
 
+class EditablePanel(NSPanel):
+    """A non-activating panel that is allowed to take keyboard focus.
+
+    Borderless panels refuse key status by default, which is right while the
+    overlay only reports status. Editing needs real keystrokes and a working
+    input method, so it has to be allowed to become key. Non-activating keeps
+    the app the text belongs to in the foreground, so the paste still lands
+    where the caret already is. Merely allowing it changes nothing on its own:
+    the panel is ordered front without being made key until editing starts.
+    """
+
+    def canBecomeKeyWindow(self) -> bool:
+        return True
+
+
+class FirstMouseWebView(WKWebView):
+    """A web view that acts on the click which made its panel key.
+
+    A non-activating panel is not key while it only reports status, so the
+    first click on it is spent making it key and never reaches the field.
+    Accepting the first mouse makes one click land in the text, which is what
+    a click on a text field is expected to do.
+    """
+
+    def acceptsFirstMouse_(self, event) -> bool:  # noqa: N802 - Cocoa selector
+        del event
+        return True
+
+
 class FloatingOverlay(NSObject):
     """Owns the bottom-centered non-activating overlay panel."""
 
@@ -1010,7 +1141,7 @@ class FloatingOverlay(NSObject):
     def setup(self) -> None:
         frame = NSScreen.mainScreen().visibleFrame()
         rect = self._panel_rect(frame)
-        self.panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
+        self.panel = EditablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
             rect,
             NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
             NSBackingStoreBuffered,
@@ -1034,7 +1165,7 @@ class FloatingOverlay(NSObject):
         config = WKWebViewConfiguration.alloc().init()
         config.setUserContentController_(controller)
 
-        self.webview = WKWebView.alloc().initWithFrame_configuration_(
+        self.webview = FirstMouseWebView.alloc().initWithFrame_configuration_(
             NSMakeRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT),
             config,
         )
@@ -1083,8 +1214,23 @@ class FloatingOverlay(NSObject):
         self._send_state("empty", message="No speech", progress=1.0)
 
     @objc.python_method
-    def show_copy_fallback(self, transcript: str, copied: bool = False) -> None:
+    def show_copy_fallback(
+        self, transcript: str, copied: bool = False, focus: bool = False
+    ) -> None:
+        """Show the transcript in an editable field.
+
+        ``focus`` takes the keyboard straight away, which suits the case where
+        there was nowhere to paste. After a successful paste it must stay False:
+        the text is already in the target app and the user is about to press
+        Return there, so stealing the keyboard would break the common path. A
+        click on the field still focuses it, because the panel may become key.
+        """
+
         self._send_state("copy-fallback", transcript=transcript, copied=copied)
+        if focus:
+            if self.panel is not None:
+                self.panel.makeKeyAndOrderFront_(None)
+            self._eval("window.focusEdit();")
 
     @objc.python_method
     def update_level(self, level: float) -> None:
@@ -1109,6 +1255,16 @@ class FloatingOverlay(NSObject):
                 self._start_screen_follow()
             else:
                 self._stop_screen_follow()
+            # An input method draws its candidate list at window level 20, and
+            # the status level this panel normally sits at is 25, so the panel
+            # would cover the candidates for the text being typed into it. Drop
+            # below the candidates while the field is editable; stay above
+            # everything the rest of the time, when nothing is being typed.
+            self.panel.setLevel_(
+                NSFloatingWindowLevel
+                if state == "copy-fallback"
+                else NSStatusWindowLevel
+            )
             self.panel.setAlphaValue_(0.0 if state == "idle-hidden" else 1.0)
             self.panel.orderFrontRegardless()
         payload = json.dumps(
@@ -1126,6 +1282,20 @@ class FloatingOverlay(NSObject):
             self._start_hover_tracking()
         else:
             self._stop_hover_tracking()
+
+    @objc.python_method
+    def end_edit(self) -> None:
+        """Hand the keyboard back to whatever had it before the field appeared.
+
+        hide() only fades the panel out, so a panel left as key window would go
+        on swallowing keystrokes while invisible. Ordering out and back in drops
+        key status without disturbing what is in front.
+        """
+
+        self._eval("window.blurEdit();")
+        if self.panel is not None:
+            self.panel.orderOut_(None)
+            self.panel.orderFrontRegardless()
 
     @objc.python_method
     def _eval(self, script: str) -> None:

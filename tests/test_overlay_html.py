@@ -45,7 +45,7 @@ def test_appkit_hover_hit_test_matches_recording_controls() -> None:
 
 def test_copy_fallback_uses_official_alert_constants() -> None:
     assert "width: 360px;" in OVERLAY_HTML
-    assert "height: 120px;" in OVERLAY_HTML
+    assert "height: auto;" in OVERLAY_HTML
     assert "border-radius: 8px;" in OVERLAY_HTML
     assert "background: rgba(29, 26, 26, 1);" in OVERLAY_HTML
     assert "border: 1px solid rgba(119, 119, 119, 0.30);" in OVERLAY_HTML
