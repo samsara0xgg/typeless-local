@@ -4,7 +4,13 @@ import sqlite3
 import time
 from pathlib import Path
 
-from typeless_local.trace import DictationTrace, SessionRecord
+from typeless_local.trace import (
+    DictationTrace,
+    SessionRecord,
+    append_correction,
+    changed_terms,
+    load_corrections,
+)
 
 
 def _make_record(**overrides) -> SessionRecord:
@@ -121,3 +127,43 @@ def test_index_on_started_at_exists(tmp_path: Path) -> None:
         assert cur.fetchone() is not None
     finally:
         conn.close()
+
+
+def test_correction_records_the_fragments_that_changed(tmp_path: Path) -> None:
+    """A correction stores the words that were wrong, not only the two texts.
+
+    The fragments are what makes the log answerable: counting them says which
+    terms the recogniser keeps getting wrong.
+    """
+
+    log = tmp_path / "corrections.yaml"
+    append_correction(log, 473, "这个函数很好用", "这个方法很好用")
+
+    entries = load_corrections(log)
+    assert len(entries) == 1
+    assert entries[0]["session"] == 473
+    assert entries[0]["before"] == "这个函数很好用"
+    assert entries[0]["after"] == "这个方法很好用"
+    assert entries[0]["terms"] == [{"wrong": "函数", "right": "方法"}]
+
+
+def test_corrections_log_is_appended_and_stays_loadable(tmp_path: Path) -> None:
+    """Entries accumulate as one YAML list so a bad one can be deleted by hand."""
+
+    log = tmp_path / "corrections.yaml"
+    append_correction(log, 1, "第一次", "第一版")
+    append_correction(log, 2, "第二次", "第二版")
+
+    assert log.read_text(encoding="utf-8").startswith("#")
+    assert [entry["session"] for entry in load_corrections(log)] == [1, 2]
+
+
+def test_unchanged_correction_records_nothing(tmp_path: Path) -> None:
+    log = tmp_path / "corrections.yaml"
+    append_correction(log, 1, "一样的文字", "一样的文字")
+    assert not log.exists()
+
+
+def test_changed_terms_marks_insertions_and_deletions() -> None:
+    assert changed_terms("能听见吗", "能听见吗67") == [("", "67")]
+    assert changed_terms("二三四五六", "二三四") == [("五六", "")]

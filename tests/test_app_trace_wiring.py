@@ -19,6 +19,7 @@ def _make_app_config(tmp_path: Path) -> AppConfig:
     user_paths = UserPaths(
         config_dir=tmp_path,
         vocab_path=tmp_path / "vocab.yaml",
+        corrections_path=tmp_path / "corrections.yaml",
         trace_db_path=tmp_path / "trace.db",
         log_path=tmp_path / "app.log",
         stopwords_dir=tmp_path / "stops",
