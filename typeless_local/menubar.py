@@ -39,6 +39,8 @@ STATE_TO_TITLE: dict[str, str] = {
     "error": "TL!",
 }
 
+SYSTEM_DEFAULT_LABEL = "System Default"
+
 _DEFAULT_TRACE_FOLDER = Path.home() / ".typeless-local"
 _DEFAULT_LOG_PATH = _DEFAULT_TRACE_FOLDER / "app.log"
 
@@ -55,6 +57,12 @@ class MenuBarIcon:
         presets: list[str] | None = None,
         active_preset: str = "",
         on_select_model: Callable[[str], None] | None = None,
+        input_devices: list[str] | None = None,
+        output_devices: list[str] | None = None,
+        active_input: str = "",
+        active_output: str = "",
+        on_select_input: Callable[[str], None] | None = None,
+        on_select_output: Callable[[str], None] | None = None,
     ) -> None:
         self._on_reload_vocab = on_reload_vocab
         self._on_quit = on_quit
@@ -62,6 +70,14 @@ class MenuBarIcon:
         self.active_preset = active_preset
         self._on_select_model = on_select_model
         self._model_items: dict[str, object] = {}
+        self._input_devices = list(input_devices or [])
+        self._output_devices = list(output_devices or [])
+        self.active_input = active_input
+        self.active_output = active_output
+        self._on_select_input = on_select_input
+        self._on_select_output = on_select_output
+        self._input_items: dict[str, object] = {}
+        self._output_items: dict[str, object] = {}
         self._trace_folder = trace_folder or _DEFAULT_TRACE_FOLDER
         self._log_path = log_path or _DEFAULT_LOG_PATH
         self.current_state: State = "idle"
@@ -83,6 +99,10 @@ class MenuBarIcon:
 
         bar = NSStatusBar.systemStatusBar()
         item = bar.statusItemWithLength_(-1)  # NSVariableStatusItemLength
+        # Dragging the icon off the menu bar persists isVisible = false, and
+        # AppKit restores it on every later launch, so the icon never comes
+        # back on its own. This is the only way back short of editing defaults.
+        item.setVisible_(True)
         button = item.button()
         # Set a unicode-fallback title up front so the status item is visible
         # even if SF Symbol image loading fails later (image-only buttons with
@@ -122,6 +142,30 @@ class MenuBarIcon:
             menu.addItem_(model_item)
             menu.addItem_(NSMenuItem.separatorItem())
             self._apply_active_preset()
+
+        if self._input_devices:
+            # "" is the system default, so the menu always offers a way back to it.
+            self._add_device_submenu(
+                menu,
+                title="Input",
+                names=[SYSTEM_DEFAULT_LABEL, *self._input_devices],
+                selector="selectInputAction:",
+                handler=self._on_select_input_action,
+                items=self._input_items,
+            )
+            self._apply_active_input()
+        if self._output_devices:
+            self._add_device_submenu(
+                menu,
+                title="Output",
+                names=self._output_devices,
+                selector="selectOutputAction:",
+                handler=self._on_select_output_action,
+                items=self._output_items,
+            )
+            self._apply_active_output()
+        if self._input_devices or self._output_devices:
+            menu.addItem_(NSMenuItem.separatorItem())
 
         open_trace = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Open Trace Folder", "openTraceAction:", ""
@@ -170,6 +214,67 @@ class MenuBarIcon:
             AppHelper.callAfter(self._apply_active_preset)
         except Exception:
             LOGGER.debug("set_active_preset called without AppKit available", exc_info=True)
+
+    def _add_device_submenu(self, menu, *, title, names, selector, handler, items) -> None:
+        """Attach one checkmarked submenu of device names to ``menu``."""
+
+        from AppKit import NSMenu, NSMenuItem
+
+        parent = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
+        submenu = NSMenu.alloc().initWithTitle_(title)
+        for name in names:
+            entry = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(name, selector, "")
+            entry.setRepresentedObject_(name)
+            entry.setTarget_(_make_action_target(handler))
+            submenu.addItem_(entry)
+            items[name] = entry
+        parent.setSubmenu_(submenu)
+        menu.addItem_(parent)
+
+    def set_active_input(self, name: str) -> None:
+        """Thread-safe checkmark update for the Input submenu."""
+
+        self.active_input = name
+        self._call_after(self._apply_active_input)
+
+    def set_active_output(self, name: str) -> None:
+        """Thread-safe checkmark update for the Output submenu."""
+
+        self.active_output = name
+        self._call_after(self._apply_active_output)
+
+    def _call_after(self, callback) -> None:
+        try:
+            from PyObjCTools import AppHelper
+
+            AppHelper.callAfter(callback)
+        except Exception:
+            LOGGER.debug("Menu update requested without AppKit available", exc_info=True)
+
+    def _apply_active_input(self) -> None:
+        active = self.active_input or SYSTEM_DEFAULT_LABEL
+        for name, item in self._input_items.items():
+            item.setState_(1 if name == active else 0)
+
+    def _apply_active_output(self) -> None:
+        for name, item in self._output_items.items():
+            item.setState_(1 if name == self.active_output else 0)
+
+    def _on_select_input_action(self, sender) -> None:
+        try:
+            name = str(sender.representedObject())
+            if self._on_select_input is not None:
+                self._on_select_input("" if name == SYSTEM_DEFAULT_LABEL else name)
+        except Exception:
+            LOGGER.warning("Select-input callback failed", exc_info=True)
+
+    def _on_select_output_action(self, sender) -> None:
+        try:
+            name = str(sender.representedObject())
+            if self._on_select_output is not None:
+                self._on_select_output(name)
+        except Exception:
+            LOGGER.warning("Select-output callback failed", exc_info=True)
 
     def _apply_active_preset(self) -> None:
         for name, item in self._model_items.items():
@@ -304,6 +409,14 @@ def _ensure_action_target_class():
                 self._handler(sender)
 
         def selectModelAction_(self, sender):
+            if self._handler is not None:
+                self._handler(sender)
+
+        def selectInputAction_(self, sender):
+            if self._handler is not None:
+                self._handler(sender)
+
+        def selectOutputAction_(self, sender):
             if self._handler is not None:
                 self._handler(sender)
 

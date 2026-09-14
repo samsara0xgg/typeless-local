@@ -13,7 +13,7 @@ def test_microphone_recorder_collects_audio_and_reports_level(monkeypatch) -> No
     streams = []
 
     class FakeInputStream:
-        def __init__(self, samplerate, channels, dtype, blocksize, callback):
+        def __init__(self, samplerate, channels, dtype, blocksize, callback, device=None):
             self.samplerate = samplerate
             self.channels = channels
             self.dtype = dtype
@@ -58,7 +58,7 @@ def test_microphone_recorder_closes_stream_when_stop_fails(monkeypatch) -> None:
     streams = []
 
     class FakeInputStream:
-        def __init__(self, samplerate, channels, dtype, blocksize, callback):
+        def __init__(self, samplerate, channels, dtype, blocksize, callback, device=None):
             self.channels = channels
             self.blocksize = blocksize
             self.callback = callback

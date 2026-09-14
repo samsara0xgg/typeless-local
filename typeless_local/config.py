@@ -29,6 +29,7 @@ class UserPaths:
 
     config_dir: Path
     vocab_path: Path
+    corrections_path: Path
     trace_db_path: Path
     log_path: Path
     stopwords_dir: Path
@@ -50,6 +51,8 @@ class AppConfig:
     low_volume_threshold: float = 0.02
     debug_hotkey: bool = False
     user_paths: UserPaths | None = None
+    input_device: str = ""
+    aec_pairs: tuple[dict[str, str], ...] = ()
 
 
 def resolve_app_root() -> Path:
@@ -95,6 +98,7 @@ def resolve_user_paths(app_root: Path | None = None) -> UserPaths:
     return UserPaths(
         config_dir=config_dir,
         vocab_path=config_dir / "vocab.yaml",
+        corrections_path=config_dir / "corrections.yaml",
         trace_db_path=config_dir / "trace.db",
         log_path=config_dir / "app.log",
         stopwords_dir=stopwords_dir,
@@ -138,14 +142,26 @@ def refine_config_for(jarvis_config: dict[str, Any], preset_name: str) -> Refine
     return _resolve_refine_config(jarvis_config, preset_name)
 
 
-def save_default_preset(user_paths: UserPaths, preset_name: str) -> None:
-    """Persist the chosen preset, seeding the user config from the bundled one."""
+def _update_user_config(user_paths: UserPaths, section: str, key: str, value: Any) -> None:
+    """Set one key in the user config, seeding the file from the bundled one."""
 
     path = user_paths.user_config_path
     source = path if path.exists() else user_paths.stopwords_dir / "config.yaml"
     data = load_yaml(source)
-    data.setdefault("llm", {})["default_preset"] = preset_name
+    data.setdefault(section, {})[key] = value
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+def save_default_preset(user_paths: UserPaths, preset_name: str) -> None:
+    """Persist the chosen preset, seeding the user config from the bundled one."""
+
+    _update_user_config(user_paths, "llm", "default_preset", preset_name)
+
+
+def save_input_device(user_paths: UserPaths, device_name: str) -> None:
+    """Persist the chosen capture device; "" means follow the system default."""
+
+    _update_user_config(user_paths, "audio", "input_device", device_name)
 
 
 def _resolve_refine_config(jarvis_config: dict[str, Any], preset_name: str | None = None) -> RefineConfig:
@@ -198,6 +214,22 @@ def _absolutize_jarvis_paths(config: dict[str, Any], jarvis_root: Path) -> dict[
     return copied
 
 
+def _read_aec_pairs(config: dict[str, Any]) -> tuple[dict[str, str], ...]:
+    """Input/output pairings whose capture device cancels the speakers itself."""
+
+    ducking = config.get("audio_ducking") or {}
+    raw = ducking.get("aec_pairs") if isinstance(ducking, dict) else None
+    pairs: list[dict[str, str]] = []
+    for entry in raw or []:
+        if not isinstance(entry, dict):
+            continue
+        source = str(entry.get("input") or "").strip()
+        sink = str(entry.get("output") or "").strip()
+        if source and sink:
+            pairs.append({"input": source, "output": sink})
+    return tuple(pairs)
+
+
 def load_config() -> AppConfig:
     """Load ~/.typeless-local/config.yaml, else the config.yaml shipped in assets."""
 
@@ -217,6 +249,8 @@ def load_config() -> AppConfig:
         refine=_resolve_refine_config(jarvis_config),
         min_recording_seconds=float(audio_config.get("min_duration") or 0.15),
         low_volume_threshold=float(audio_config.get("low_volume_threshold") or 0.02),
+        input_device=str(audio_config.get("input_device") or "").strip(),
+        aec_pairs=_read_aec_pairs(jarvis_config),
         debug_hotkey=os.environ.get("TYPELESS_LOCAL_DEBUG_HOTKEY") == "1",
         user_paths=user_paths,
     )

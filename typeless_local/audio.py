@@ -80,11 +80,14 @@ class MicrophoneRecorder:
         channels: int = 1,
         block_duration: float = 0.05,
         on_level: LevelCallback | None = None,
+        device: int | None = None,
     ) -> None:
         self.sample_rate = sample_rate
         self.channels = channels
         self.block_duration = block_duration
         self.on_level = on_level
+        # Reassigned when the menu picks another input; None means system default.
+        self.device = device
         self._chunks: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._stream = None
@@ -200,6 +203,7 @@ class MicrophoneRecorder:
             dtype="float32",
             blocksize=blocksize,
             callback=callback,
+            device=self.device,
         )
         self._stream.start()
         LOGGER.info("Microphone recording started")
