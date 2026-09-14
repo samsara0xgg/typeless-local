@@ -66,6 +66,8 @@ PRIMARY_KEYCODES = frozenset({F5_KEYCODE, DICTATION_KEYCODE})
 RIGHT_OPTION_KEYCODE = 61
 SPACE_KEYCODE = 49
 ESCAPE_KEYCODE = 53
+# Return and the keypad's Enter, so sending a message is noticed either way.
+RETURN_KEYCODES = frozenset({36, 76})
 V_KEYCODE = 9
 OPTION_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskAlternate", 1 << 19)
 # Right Command arrives as a FlagsChanged event with keycode 54 (kVK_RightCommand).
@@ -79,6 +81,11 @@ TEXT_INPUT_ROLES = {
     "AXSearchField",
 }
 SURROUNDING_TEXT_RADIUS = 500
+# ponytail: size heuristic, because role cannot tell these apart — Ghostty's
+# scrollback and Codex's input box both report AXTextArea. Above this many
+# characters, an undecodable caret means the end of the value is almost
+# certainly not where the user is. Drop the guard if a real caret decode lands.
+UNANCHORED_TEXT_LIMIT = 2000
 
 
 @dataclass(frozen=True)
@@ -141,6 +148,16 @@ def capture_focus_context() -> FocusContext:
                 surrounding_text = _extract_surrounding_text(
                     focused_element, SURROUNDING_TEXT_RADIUS
                 )
+            else:
+                # Some apps publish no focused element at all: ChatGPT's
+                # composer is one, and no amount of AXManualAccessibility or
+                # AXEnhancedUserInterface coaxes a text role out of it. Silence
+                # is not evidence that the caret is somewhere unpastable, and
+                # the hotkey was pressed while that window held it, so paste.
+                # A paste that lands nowhere costs one Cmd+V; refusing to paste
+                # strands the whole dictation in the panel. Apps that really
+                # have no text target answer with a role and are unaffected.
+                can_insert_text = True
         except Exception as exc:
             LOGGER.debug("Unable to read focused AX context: %s", exc)
 
@@ -175,6 +192,11 @@ def _extract_surrounding_text(element, radius: int) -> str:
     )
     cursor = _coerce_range_location(range_value)
     if cursor is None:
+        # No caret. Falling back to the end of the value is right in an input box,
+        # where the caret does sit at the end, and wrong in a terminal scrollback,
+        # where the end is the status bar. Only guess on small values.
+        if len(full_text) > UNANCHORED_TEXT_LIMIT:
+            return ""
         cursor = len(full_text)
     cursor = max(0, min(cursor, len(full_text)))
 
@@ -342,6 +364,7 @@ class GlobalHotkeyMonitor:
         callback: HotkeyCallback,
         debug_hotkey: bool = False,
         is_active_fn: Callable[[], bool] | None = None,
+        wants_return_fn: Callable[[], bool] | None = None,
     ) -> None:
         self.callback = callback
         self.debug_hotkey = debug_hotkey
@@ -349,6 +372,8 @@ class GlobalHotkeyMonitor:
         # it passes through to the focused app. Without this, the global tap
         # consumed every Esc system-wide, breaking Esc in any app.
         self.is_active_fn = is_active_fn
+        # Asked on every Return press, so it must stay a plain attribute read.
+        self.wants_return_fn = wants_return_fn
         self._tap = None
         self._source = None
         self._primary_down: set[int] = set()
@@ -469,6 +494,14 @@ class GlobalHotkeyMonitor:
                     return event
                 self.callback("cancel")
                 return None
+            if keycode in RETURN_KEYCODES:
+                # Sending the dictated message means the overlay has served its
+                # purpose. Never swallow the key, and never ask the app anything
+                # unless the overlay is actually up: this runs inside a
+                # synchronous event tap, where slow work stalls the keyboard.
+                if self.wants_return_fn is not None and self.wants_return_fn():
+                    self.callback("return_pressed")
+                return event
         if event_type == Quartz.kCGEventKeyUp and keycode in PRIMARY_KEYCODES:
             if keycode in self._primary_down:
                 self._primary_down.discard(keycode)

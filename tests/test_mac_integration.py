@@ -344,3 +344,45 @@ def test_right_cmd_space_enters_hands_free(monkeypatch) -> None:
 
     assert result is None
     assert events == ["hands_free"]
+
+
+def test_focus_context_pastes_when_the_app_exposes_no_focused_element(monkeypatch) -> None:
+    """AX silence means paste, not fall back.
+
+    ChatGPT answers kAXFocusedUIElementAttribute with kAXErrorNoValue however
+    its composer is focused, so treating "no answer" as "not a text field"
+    sends every dictation aimed at it to the overlay instead of the caret.
+    """
+
+    class _App:
+        def localizedName(self):
+            return "ChatGPT"
+
+        def processIdentifier(self):
+            return 4242
+
+    class _Workspace:
+        @staticmethod
+        def sharedWorkspace():
+            return _Workspace()
+
+        def frontmostApplication(self):
+            return _App()
+
+    monkeypatch.setattr(mac_integration, "NSWorkspace", _Workspace)
+    monkeypatch.setattr(
+        mac_integration.ApplicationServices,
+        "AXUIElementCreateApplication",
+        lambda pid: object(),
+    )
+    monkeypatch.setattr(
+        mac_integration.ApplicationServices,
+        "AXUIElementCopyAttributeValue",
+        lambda element, attribute, placeholder: (-25212, None),
+    )
+
+    context = mac_integration.capture_focus_context()
+
+    assert context.app_name == "ChatGPT"
+    assert context.focused_role == ""
+    assert context.can_insert_text is True
