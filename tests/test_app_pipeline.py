@@ -42,8 +42,10 @@ class _FakeOverlay:
     def show_recording(self, hands_free: bool = False, countdown_text: str = "") -> None:
         self.calls.append(("recording", hands_free, countdown_text))
 
-    def show_copy_fallback(self, transcript: str, copied: bool = False) -> None:
-        self.calls.append(("copy-fallback", transcript, copied))
+    def show_copy_fallback(
+        self, transcript: str, copied: bool = False, focus: bool = False
+    ) -> None:
+        self.calls.append(("copy-fallback", transcript, copied, focus))
 
 
 class _FakeASR:
@@ -158,7 +160,9 @@ def test_process_audio_transcribes_refines_and_pastes(monkeypatch) -> None:
     assert app.asr.calls
     assert app.refiner.calls == [("raw dictation", context)]
     assert pasted == ["Refined text."]
-    assert app.overlay.calls[-1] == ("hide",)
+    # The transcript stays up unfocused after a successful paste: the text is
+    # already in the target app, so the panel must not take the keyboard.
+    assert app.overlay.calls[-1] == ("copy-fallback", "Refined text.", True, False)
 
 
 def test_process_audio_shows_copy_fallback_when_focus_is_not_editable(monkeypatch) -> None:
@@ -180,7 +184,7 @@ def test_process_audio_shows_copy_fallback_when_focus_is_not_editable(monkeypatc
     assert pasted == []
     assert copied == ["Refined text."]
     assert app._copy_fallback_text == "Refined text."
-    assert app.overlay.calls[-1] == ("copy-fallback", "Refined text.", True)
+    assert app.overlay.calls[-1] == ("copy-fallback", "Refined text.", True, True)
 
 
 def test_copy_fallback_action_sets_clipboard_and_marks_copied(monkeypatch) -> None:
@@ -192,7 +196,7 @@ def test_copy_fallback_action_sets_clipboard_and_marks_copied(monkeypatch) -> No
     app._copy_last_transcript()
 
     assert copied == ["Refined text."]
-    assert app.overlay.calls[-1] == ("copy-fallback", "Refined text.", True)
+    assert app.overlay.calls[-1] == ("copy-fallback", "Refined text.", True, True)
 
 
 def test_process_audio_empty_transcript_does_not_paste(monkeypatch) -> None:

@@ -21,11 +21,13 @@ from PyObjCTools import AppHelper
 from typeless_local import app_version
 from typeless_local.asr import JarvisASR
 from typeless_local.audio import MicrophoneRecorder
+from typeless_local import devices
 from typeless_local.config import (
     AppConfig,
     load_config,
     preset_names,
     refine_config_for,
+    save_input_device,
     save_default_preset,
 )
 from typeless_local.mac_integration import (
@@ -39,7 +41,7 @@ from typeless_local.mac_integration import (
 )
 from typeless_local.overlay import FloatingOverlay
 from typeless_local.refine import TextRefiner
-from typeless_local.trace import DictationTrace, SessionRecord
+from typeless_local.trace import DictationTrace, SessionRecord, append_correction
 from typeless_local.vocab import as_initial_prompt, load_vocab, write_starter_file
 
 LOGGER = logging.getLogger(__name__)
@@ -96,6 +98,7 @@ class TypelessLocalApp:
                 self._on_hotkey,
                 debug_hotkey=config.debug_hotkey,
                 is_active_fn=lambda: self.state != "idle",
+                wants_return_fn=self._overlay_awaits_return,
             )
 
             from typeless_local.menubar import MenuBarIcon
@@ -109,6 +112,12 @@ class TypelessLocalApp:
                 presets=preset_names(config.jarvis_config),
                 active_preset=config.refine.preset,
                 on_select_model=self.select_model,
+                input_devices=devices.list_input_devices(),
+                output_devices=devices.list_output_devices(),
+                active_input=getattr(config, "input_device", "") or devices.current_input_device(),
+                active_output=devices.current_output_device(),
+                on_select_input=self.select_input_device,
+                on_select_output=self.select_output_device,
             )
         else:
             self.overlay = None
@@ -144,6 +153,7 @@ class TypelessLocalApp:
         recorder = MicrophoneRecorder(
             sample_rate=config.sample_rate,
             on_level=self._on_audio_level,
+            device=devices.resolve_input_index(getattr(config, "input_device", "")),
         )
         return SimpleNamespace(asr=asr, refiner=refiner, recorder=recorder)
 
@@ -155,6 +165,69 @@ class TypelessLocalApp:
             return
         self.vocab = load_vocab(user_paths.vocab_path)
         LOGGER.info("Reloaded vocab: %d terms", len(self.vocab))
+
+    def _select_capture_device(self) -> str:
+        """Point the recorder at the preferred mic, or the system default if it is gone.
+
+        Resolved per recording rather than once at launch: the mic gets plugged
+        and pulled between dictations, and the answer has to be the device that
+        is actually there now. Returns the name being captured with, which is
+        what decides whether the speakers still need ducking.
+        """
+
+        devices.refresh()
+        preferred = getattr(self.config, "input_device", "")
+        index = devices.resolve_input_index(preferred)
+        recorder = getattr(self, "recorder", None)
+        if recorder is not None:
+            recorder.device = index
+        return preferred if index is not None else devices.current_input_device()
+
+    def _speakers_need_ducking(self, capture: str) -> bool:
+        """Whether the speakers must be silenced for this capture to stay clean.
+
+        A capture device with hardware echo cancellation already removes what the
+        speakers play, but only while it is fed the same signal they get, so the
+        answer depends on the input and output pairing rather than on the mic
+        alone. Anything unrecognised ducks, which is the behaviour that was there
+        before any pairing was configured. ``capture`` is the device actually in
+        use, not the configured preference, so falling back to the built-in mic
+        ducks even while the paired mic stays configured.
+        """
+
+        playback = devices.current_output_device()
+        pairs = list(getattr(self.config, "aec_pairs", ()) or ())
+        if devices.has_hardware_aec(capture, playback, pairs):
+            LOGGER.info(
+                "Leaving system audio up: %s + %s cancels the speakers in hardware",
+                capture,
+                playback,
+            )
+            return False
+        return True
+
+    def select_input_device(self, name: str) -> None:
+        """Point capture at ``name`` from the next recording on, and persist it."""
+
+        self.config = dataclasses.replace(self.config, input_device=name)
+        recorder = getattr(self, "recorder", None)
+        if recorder is not None:
+            recorder.device = devices.resolve_input_index(name)
+        user_paths = getattr(self.config, "user_paths", None)
+        if user_paths is not None:
+            save_input_device(user_paths, name)
+        menubar = getattr(self, "menubar", None)
+        if menubar is not None:
+            menubar.set_active_input(name)
+        LOGGER.info("Capture device set to %s", name or "(system default)")
+
+    def select_output_device(self, name: str) -> None:
+        """Switch the system default output; the menu follows what actually took."""
+
+        devices.set_output_device(name)
+        menubar = getattr(self, "menubar", None)
+        if menubar is not None:
+            menubar.set_active_output(devices.current_output_device())
 
     def select_model(self, preset: str) -> None:
         """Switch the refinement preset live and persist it to the user config."""
@@ -235,7 +308,12 @@ class TypelessLocalApp:
         self._primary_down_at = now
         gap = now - getattr(self, "_last_short_tap_at", 0.0)
         LOGGER.info("HOTKEY-DEBUG primary_down now=%.3f last_short_tap=%.3f gap=%.3f state=%s mode=%s", now, getattr(self, "_last_short_tap_at", 0.0), gap, self.state, self.mode)
-        if gap <= DOUBLE_CLICK_SECONDS:
+        # A tap cannot land before the one it follows, so a negative gap means
+        # the two timestamps came from different clocks rather than that this
+        # was a double tap. Treating it as one wedges every later press into
+        # the double-tap branch, where a second press only re-renders and never
+        # stops the recording, for the life of the process.
+        if 0.0 <= gap <= DOUBLE_CLICK_SECONDS:
             if self.state == "idle":
                 self._start_recording("hands_free")
             elif self.state == "recording":
@@ -273,11 +351,104 @@ class TypelessLocalApp:
                 self._finish_recording()
             elif action == "copy-fallback":
                 self._copy_last_transcript()
+            elif action == "return_pressed":
+                self._dismiss_overlay()
+            elif action == "edit-focused":
+                self._editing = True
+                self._cancel_overlay_dismiss()
+            elif action == "edit-blurred":
+                self._editing = False
+            elif action.startswith("edit-live:"):
+                # Clipboard only: _copy_fallback_text stays the original so the
+                # correction recorded on commit is measured against what the
+                # dictation actually produced, not against the last keystroke.
+                set_clipboard_text(action[len("edit-live:") :])
+            elif action.startswith("edit-commit:"):
+                self._commit_edit(action[len("edit-commit:") :])
+            elif action == "edit-cancel":
+                self._end_edit()
             elif action == "dismiss":
                 self.state = "idle"
                 self._set_menubar("idle")
                 self._copy_fallback_text = ""
                 self._call_ui(self.overlay.hide)
+
+    def _schedule_overlay_dismiss(self, delay: float = 8.0) -> None:
+        """Take the transcript down after a while if nothing is done with it."""
+
+        self._cancel_overlay_dismiss()
+        timer = threading.Timer(delay, self._dismiss_overlay)
+        timer.daemon = True
+        self._dismiss_timer = timer
+        timer.start()
+
+    def _cancel_overlay_dismiss(self) -> None:
+        timer = getattr(self, "_dismiss_timer", None)
+        if timer is not None:
+            timer.cancel()
+        self._dismiss_timer = None
+
+    def _dismiss_overlay(self) -> None:
+        """Put the transcript away unless it is being edited right now."""
+
+        if getattr(self, "_editing", False) or self.state != "idle":
+            return
+        self._cancel_overlay_dismiss()
+        self._copy_fallback_text = ""
+        self._call_ui(self.overlay.hide)
+
+    def _overlay_awaits_return(self) -> bool:
+        """Whether a Return in another app should take the transcript down.
+
+        Read from inside the keyboard event tap on every Return press, so it
+        stays a couple of attribute reads and never takes a lock.
+        """
+
+        return bool(self._copy_fallback_text) and not getattr(self, "_editing", False)
+
+    def _end_edit(self) -> None:
+        """Dismiss the field, leaving the clipboard as the transcript left it."""
+
+        self._editing = False
+        self._cancel_overlay_dismiss()
+        self._call_ui(self.overlay.end_edit)
+        self.state = "idle"
+        self._set_menubar("idle")
+        self._copy_fallback_text = ""
+        self._call_ui(self.overlay.hide)
+
+    def _commit_edit(self, text: str) -> None:
+        """Take the edited text to the clipboard and record what was changed.
+
+        The field only appears where there was nowhere to paste, so the
+        clipboard is the destination and nothing has to be undone first.
+        """
+
+        before = getattr(self, "_copy_fallback_text", "")
+        corrected = text.strip()
+        self._editing = False
+        self._cancel_overlay_dismiss()
+        self._call_ui(self.overlay.end_edit)
+        if corrected:
+            set_clipboard_text(corrected)
+            if corrected != before:
+                user_paths = getattr(self.config, "user_paths", None)
+                if user_paths is not None:
+                    append_correction(
+                        user_paths.corrections_path,
+                        getattr(self, "_last_trace_id", None),
+                        before,
+                        corrected,
+                    )
+                LOGGER.info(
+                    "Correction recorded: %d chars -> %d chars",
+                    len(before),
+                    len(corrected),
+                )
+        self.state = "idle"
+        self._set_menubar("idle")
+        self._copy_fallback_text = ""
+        self._call_ui(self.overlay.hide)
 
     def _start_recording(self, mode: Mode) -> None:
         self._active_session_id = getattr(self, "_active_session_id", 0) + 1
@@ -288,7 +459,8 @@ class TypelessLocalApp:
         self._countdown_text = ""
         self.focus_context = capture_focus_context()
         self._call_ui(self.overlay.show_starting)
-        self.audio_ducker.duck()
+        if self._speakers_need_ducking(self._select_capture_device()):
+            self.audio_ducker.duck()
         try:
             self.recorder.start()
         except Exception:
@@ -532,11 +704,19 @@ class TypelessLocalApp:
                 LOGGER.info("Pasting refined text into focused app: %s", context.app_name or "unknown")
                 paste_text(final_text)
                 record.was_pasted = True
+                # paste_text puts the old clipboard back when it is done, so
+                # without this a Cmd+V the target app swallowed would leave the
+                # text nowhere at all. Keeping it here means one manual paste
+                # always recovers it, and makes the panel's "Copied" true.
+                set_clipboard_text(final_text)
                 LOGGER.info("Dictation inserted %d characters", len(final_text))
                 self.state = "idle"
                 self._set_menubar("idle")
-                self._copy_fallback_text = ""
-                self._call_ui(self.overlay.hide)
+                self._copy_fallback_text = final_text
+                # Shown but not focused: the text is already in the target app
+                # and the next key is usually Return there, which dismisses this.
+                self._call_ui(self.overlay.show_copy_fallback, final_text, True, False)
+                self._schedule_overlay_dismiss()
                 return
 
             LOGGER.info(
@@ -546,9 +726,10 @@ class TypelessLocalApp:
             )
             self._copy_fallback_text = final_text
             set_clipboard_text(final_text)
+            self._editing = True
             self.state = "idle"
             self._set_menubar("idle")
-            self._call_ui(self.overlay.show_copy_fallback, final_text, True)
+            self._call_ui(self.overlay.show_copy_fallback, final_text, True, True)
         except Exception as exc:
             record.error = repr(exc)
             LOGGER.exception("Dictation failed")
@@ -566,7 +747,7 @@ class TypelessLocalApp:
             record.latency_total_ms = int((record.ended_at - started) * 1000)
             trace = getattr(self, "trace", None)
             if trace is not None:
-                trace.log(record)
+                self._last_trace_id = trace.log(record)
 
     def _start_processing_progress(self) -> None:
         self._stop_processing_progress()
@@ -646,7 +827,7 @@ class TypelessLocalApp:
         if not text:
             return
         set_clipboard_text(text)
-        self._call_ui(self.overlay.show_copy_fallback, text, True)
+        self._call_ui(self.overlay.show_copy_fallback, text, True, True)
 
     def _on_audio_level(self, level: float) -> None:
         if self.state == "recording":
