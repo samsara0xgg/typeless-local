@@ -795,6 +795,11 @@ OVERLAY_HTML = r"""
   copyEdit.addEventListener("keydown", (event) => {
     const post = window.webkit?.messageHandlers?.overlayAction;
     if (!post) return;
+    // While an IME is composing, Enter picks the highlighted candidate and
+    // Escape drops the candidate list -- both belong to the input method, not
+    // to this panel. Committing here would close the panel and throw away the
+    // characters the user was in the middle of choosing.
+    if (event.isComposing || event.keyCode === 229) return;
     // Enter commits; Shift+Enter is how you get a newline into the text.
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
