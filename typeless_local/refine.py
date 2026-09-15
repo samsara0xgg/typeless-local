@@ -54,9 +54,6 @@ Context awareness:
 - If selected text is provided and the transcript is an editing instruction
   (for example: make this shorter, translate this, fix grammar, rewrite as an email),
   return the replacement text for that selection.
-- If 'Surrounding text near cursor' is provided, use it to disambiguate
-  ambiguous words, resolve names by context, and match the tone, language,
-  and formatting of the existing text. Do not echo it back in your output.
 
 Strict output:
 - Return only the insertable/replacement text.
@@ -107,11 +104,6 @@ class TextRefiner:
             f"- window: {focus.window_title or 'unknown'}\n"
             f"- selected text: {focus.selected_text or '(none)'}\n"
         )
-        if focus.surrounding_text:
-            user_prompt += (
-                "\nSurrounding text near cursor:\n"
-                f"{focus.surrounding_text}\n"
-            )
         system_prompt = SYSTEM_PROMPT
         if vocab:
             joined = ", ".join(vocab)

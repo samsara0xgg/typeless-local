@@ -43,66 +43,10 @@ def test_focused_element_accepts_text_roles() -> None:
     assert mac_integration._focused_element_accepts_text(object(), "AXTextArea") is True
 
 
-def test_coerce_range_location_handles_struct_with_location() -> None:
-    class FakeRange:
-        location = 42
-
-    assert mac_integration._coerce_range_location(FakeRange()) == 42
 
 
-def test_coerce_range_location_handles_tuple() -> None:
-    assert mac_integration._coerce_range_location((17, 0)) == 17
 
 
-def test_coerce_range_location_returns_none_for_unrecognized() -> None:
-    assert mac_integration._coerce_range_location(None) is None
-    assert mac_integration._coerce_range_location("not a range") is None
-
-
-def test_extract_surrounding_text_slices_window_around_cursor(monkeypatch) -> None:
-    full_text = "A" * 100 + "TARGET" + "B" * 100
-    attrs = {
-        mac_integration.ApplicationServices.kAXValueAttribute: full_text,
-        mac_integration.ApplicationServices.kAXSelectedTextRangeAttribute: (103, 0),
-    }
-    monkeypatch.setattr(
-        mac_integration,
-        "_copy_ax_attribute",
-        lambda element, attribute: attrs.get(attribute),
-    )
-
-    result = mac_integration._extract_surrounding_text(object(), radius=20)
-
-    assert "TARGET" in result
-    assert len(result) <= 40
-
-
-def test_extract_surrounding_text_returns_empty_when_no_value(monkeypatch) -> None:
-    monkeypatch.setattr(
-        mac_integration, "_copy_ax_attribute", lambda element, attribute: None
-    )
-
-    assert mac_integration._extract_surrounding_text(object(), radius=10) == ""
-
-
-def test_extract_surrounding_text_clamps_cursor_past_end(monkeypatch) -> None:
-    """A bogus selected-range past the buffer must not raise; clamp to len."""
-
-    full_text = "hello world"
-    attrs = {
-        mac_integration.ApplicationServices.kAXValueAttribute: full_text,
-        mac_integration.ApplicationServices.kAXSelectedTextRangeAttribute: (
-            9999,
-            0,
-        ),
-    }
-    monkeypatch.setattr(
-        mac_integration,
-        "_copy_ax_attribute",
-        lambda element, attribute: attrs.get(attribute),
-    )
-
-    assert mac_integration._extract_surrounding_text(object(), radius=20) == full_text
 
 
 def test_focused_element_rejects_static_non_text(monkeypatch) -> None:

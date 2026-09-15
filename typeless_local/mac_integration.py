@@ -80,13 +80,6 @@ TEXT_INPUT_ROLES = {
     "AXComboBox",
     "AXSearchField",
 }
-SURROUNDING_TEXT_RADIUS = 500
-# ponytail: size heuristic, because role cannot tell these apart — Ghostty's
-# scrollback and Codex's input box both report AXTextArea. Above this many
-# characters, an undecodable caret means the end of the value is almost
-# certainly not where the user is. Drop the guard if a real caret decode lands.
-UNANCHORED_TEXT_LIMIT = 2000
-
 
 @dataclass(frozen=True)
 class FocusContext:
@@ -97,7 +90,6 @@ class FocusContext:
     selected_text: str = ""
     focused_role: str = ""
     can_insert_text: bool = False
-    surrounding_text: str = ""
 
 
 def capture_focus_context() -> FocusContext:
@@ -110,7 +102,6 @@ def capture_focus_context() -> FocusContext:
     selected_text = ""
     focused_role = ""
     can_insert_text = False
-    surrounding_text = ""
 
     if pid:
         try:
@@ -145,9 +136,6 @@ def capture_focus_context() -> FocusContext:
                 )
                 if selection is not None:
                     selected_text = str(selection or "")
-                surrounding_text = _extract_surrounding_text(
-                    focused_element, SURROUNDING_TEXT_RADIUS
-                )
             else:
                 # Some apps publish no focused element at all: ChatGPT's
                 # composer is one, and no amount of AXManualAccessibility or
@@ -167,74 +155,7 @@ def capture_focus_context() -> FocusContext:
         selected_text=selected_text,
         focused_role=focused_role,
         can_insert_text=can_insert_text,
-        surrounding_text=surrounding_text,
     )
-
-
-def _extract_surrounding_text(element, radius: int) -> str:
-    """Return ±radius characters of document text around the cursor.
-
-    Returns "" when the element does not expose its document text via
-    AXValue, when the selected-range cannot be decoded, or when AX raises.
-    The whole value is truncated to a ±radius window so refine prompts
-    stay bounded even on large documents.
-    """
-
-    full_value = _copy_ax_attribute(element, ApplicationServices.kAXValueAttribute)
-    if not isinstance(full_value, str):
-        return ""
-    full_text = full_value
-    if not full_text:
-        return ""
-
-    range_value = _copy_ax_attribute(
-        element, ApplicationServices.kAXSelectedTextRangeAttribute
-    )
-    cursor = _coerce_range_location(range_value)
-    if cursor is None:
-        # No caret. Falling back to the end of the value is right in an input box,
-        # where the caret does sit at the end, and wrong in a terminal scrollback,
-        # where the end is the status bar. Only guess on small values.
-        if len(full_text) > UNANCHORED_TEXT_LIMIT:
-            return ""
-        cursor = len(full_text)
-    cursor = max(0, min(cursor, len(full_text)))
-
-    start = max(0, cursor - radius)
-    end = min(len(full_text), cursor + radius)
-    return full_text[start:end]
-
-
-def _coerce_range_location(range_value) -> int | None:
-    """Pull the .location out of a kAXSelectedTextRangeAttribute value.
-
-    PyObjC can return this as a CFRange struct, an AXValueRef, a (loc, len)
-    tuple, or as some app-specific wrapper. Try each path; return None if
-    none work.
-    """
-
-    if range_value is None:
-        return None
-    location = getattr(range_value, "location", None)
-    if location is not None:
-        try:
-            return int(location)
-        except (TypeError, ValueError):
-            pass
-    if isinstance(range_value, tuple) and len(range_value) >= 1:
-        try:
-            return int(range_value[0])
-        except (TypeError, ValueError):
-            pass
-    try:
-        success, info = ApplicationServices.AXValueGetValue(
-            range_value, ApplicationServices.kAXValueCFRangeType, None
-        )
-        if success:
-            return int(info.location)
-    except Exception:
-        pass
-    return None
 
 
 def _copy_ax_attribute(element, attribute: str):

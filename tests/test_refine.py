@@ -114,30 +114,10 @@ def test_refiner_omits_vocab_section_when_none() -> None:
     assert "User vocabulary" not in system_prompt
 
 
-def test_refiner_includes_surrounding_text_when_provided() -> None:
-    fake = _FakeClient()
-    refiner = TextRefiner(
-        RefineConfig("gpt-5.4-mini", "https://api.openai.com/v1", "OPENAI_API_KEY", 128),
-        client=fake,
-    )
 
-    refiner.refine(
-        "agent 进展",
-        FocusContext(
-            app_name="Notes",
-            window_title="Project",
-            surrounding_text="Working on the Hermes agent today.",
-        ),
-    )
-
-    user_prompt = fake.completions.kwargs["messages"][1]["content"]
-    assert "Surrounding text near cursor" in user_prompt
-    assert "Hermes agent" in user_prompt
-    system_prompt = fake.completions.kwargs["messages"][0]["content"]
-    assert "Surrounding text near cursor" in system_prompt
-
-
-def test_refiner_omits_surrounding_text_section_when_empty() -> None:
+def test_refiner_never_sends_text_near_the_cursor() -> None:
+    """The composer's existing text used to reach the model, which then rewrote
+    it instead of the transcript. Nothing about the cursor may be sent."""
     fake = _FakeClient()
     refiner = TextRefiner(
         RefineConfig("gpt-5.4-mini", "https://api.openai.com/v1", "OPENAI_API_KEY", 128),
@@ -147,7 +127,9 @@ def test_refiner_omits_surrounding_text_section_when_empty() -> None:
     refiner.refine("hello", FocusContext(app_name="Notes", window_title="Project"))
 
     user_prompt = fake.completions.kwargs["messages"][1]["content"]
+    system_prompt = fake.completions.kwargs["messages"][0]["content"]
     assert "Surrounding text near cursor" not in user_prompt
+    assert "Surrounding text" not in system_prompt
 
 
 def test_refiner_passes_preset_reasoning_and_extra_body() -> None:
