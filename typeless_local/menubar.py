@@ -1,4 +1,4 @@
-"""macOS menu-bar status indicator for typeless-local."""
+"""macOS menu-bar status indicator for Typlus."""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ STATE_TO_TITLE: dict[str, str] = {
 
 SYSTEM_DEFAULT_LABEL = "System Default"
 
-_DEFAULT_TRACE_FOLDER = Path.home() / ".typeless-local"
+_DEFAULT_TRACE_FOLDER = Path.home() / ".typlus"
 _DEFAULT_LOG_PATH = _DEFAULT_TRACE_FOLDER / "app.log"
 
 
@@ -63,6 +63,7 @@ class MenuBarIcon:
         active_output: str = "",
         on_select_input: Callable[[str], None] | None = None,
         on_select_output: Callable[[str], None] | None = None,
+        on_set_api_key: Callable[[], None] | None = None,
     ) -> None:
         self._on_reload_vocab = on_reload_vocab
         self._on_quit = on_quit
@@ -76,6 +77,7 @@ class MenuBarIcon:
         self.active_output = active_output
         self._on_select_input = on_select_input
         self._on_select_output = on_select_output
+        self._on_set_api_key = on_set_api_key
         self._input_items: dict[str, object] = {}
         self._output_items: dict[str, object] = {}
         self._trace_folder = trace_folder or _DEFAULT_TRACE_FOLDER
@@ -113,7 +115,7 @@ class MenuBarIcon:
         menu = NSMenu.alloc().init()
 
         label = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            f"Typeless Local — {STATE_TO_LABEL['idle']}", None, ""
+            f"Typlus — {STATE_TO_LABEL['idle']}", None, ""
         )
         label.setEnabled_(False)
         self._status_label_item = label
@@ -125,6 +127,13 @@ class MenuBarIcon:
         )
         reload_item.setTarget_(_make_action_target(self._on_reload_action))
         menu.addItem_(reload_item)
+
+        if self._on_set_api_key is not None:
+            api_key_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Set API Key\u2026", "setAPIKeyAction:", ""
+            )
+            api_key_item.setTarget_(_make_action_target(self._on_set_api_key_action))
+            menu.addItem_(api_key_item)
         menu.addItem_(NSMenuItem.separatorItem())
 
         if self._presets:
@@ -298,7 +307,7 @@ class MenuBarIcon:
 
             symbol = STATE_TO_SYMBOL.get(state, "mic")
             image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
-                symbol, f"Typeless Local {state}"
+                symbol, f"Typlus {state}"
             )
             if image is not None:
                 try:
@@ -321,7 +330,7 @@ class MenuBarIcon:
         if self._status_label_item is not None:
             try:
                 self._status_label_item.setTitle_(
-                    f"Typeless Local — {STATE_TO_LABEL.get(state, state)}"
+                    f"Typlus — {STATE_TO_LABEL.get(state, state)}"
                 )
             except Exception:
                 LOGGER.debug("menubar: failed to update label", exc_info=True)
@@ -331,6 +340,13 @@ class MenuBarIcon:
             self._on_reload_vocab()
         except Exception:
             LOGGER.warning("Reload-vocab callback failed", exc_info=True)
+
+    def _on_set_api_key_action(self, sender) -> None:
+        try:
+            if self._on_set_api_key is not None:
+                self._on_set_api_key()
+        except Exception:
+            LOGGER.warning("Set-API-key callback failed", exc_info=True)
 
     def _on_select_model_action(self, sender) -> None:
         try:

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -25,7 +28,7 @@ class RefineConfig:
 
 @dataclass(frozen=True)
 class UserPaths:
-    """Filesystem paths typeless-local writes to at runtime."""
+    """Filesystem paths Typlus writes to at runtime."""
 
     config_dir: Path
     vocab_path: Path
@@ -82,11 +85,36 @@ def resolve_jarvis_root(app_root: Path | None = None) -> Path:
     )
 
 
-def resolve_user_paths(app_root: Path | None = None) -> UserPaths:
-    """Return all on-disk paths typeless-local touches outside its install."""
+def migrate_legacy_config_dir() -> Path:
+    """Carry an install from before the Typlus rename over, and return the dir.
+
+    Everything the user owns lives in there -- the API key, the vocabulary, the
+    hand corrections, and the whole dictation history -- so a rename that left
+    it behind would read as data loss, not as a new name.
+
+    Callable from anywhere and safe to repeat: whoever touches the config
+    directory first must call this before creating it, or the move is skipped
+    for a directory that only exists because a log file was opened.
+    """
 
     home = Path(os.environ.get("HOME") or Path.home()).expanduser()
-    config_dir = home / ".typeless-local"
+    config_dir = home / ".typlus"
+    legacy = home / ".typeless-local"
+    if config_dir.exists() or not legacy.is_dir():
+        return config_dir
+    try:
+        legacy.rename(config_dir)
+        LOGGER.info("Moved %s to %s after the rename", legacy, config_dir)
+    except OSError:
+        LOGGER.exception("Could not move %s to %s; starting empty", legacy, config_dir)
+    return config_dir
+
+
+def resolve_user_paths(app_root: Path | None = None) -> UserPaths:
+    """Return all on-disk paths Typlus touches outside its install."""
+
+    home = Path(os.environ.get("HOME") or Path.home()).expanduser()
+    config_dir = migrate_legacy_config_dir()
     config_dir.mkdir(parents=True, exist_ok=True)
     root = app_root or resolve_app_root()
 
@@ -231,7 +259,7 @@ def _read_aec_pairs(config: dict[str, Any]) -> tuple[dict[str, str], ...]:
 
 
 def load_config() -> AppConfig:
-    """Load ~/.typeless-local/config.yaml, else the config.yaml shipped in assets."""
+    """Load ~/.typlus/config.yaml, else the config.yaml shipped in assets."""
 
     app_root = resolve_app_root()
     jarvis_root = resolve_jarvis_root(app_root)

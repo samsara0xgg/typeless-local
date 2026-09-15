@@ -20,7 +20,7 @@ LOGGER = logging.getLogger(__name__)
 SWITCH_AUDIO_SOURCE = "SwitchAudioSource"
 SYSTEM_DEFAULT = ""
 # Launched from Finder the app inherits no shell PATH, so a Homebrew install is
-# invisible to shutil.which. Same reason API keys live in ~/.typeless-local/env.
+# invisible to shutil.which. Same reason API keys live in ~/.typlus/env.
 _SWITCH_FALLBACK_PATHS = (
     "/opt/homebrew/bin/SwitchAudioSource",
     "/usr/local/bin/SwitchAudioSource",

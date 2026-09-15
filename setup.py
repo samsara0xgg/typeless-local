@@ -1,4 +1,4 @@
-"""py2app build config for Typeless Local."""
+"""py2app build config for Typlus."""
 
 import sys
 from pathlib import Path
@@ -62,25 +62,25 @@ OPTIONS = {
         "wheel",
     ],
     "plist": {
-        "CFBundleName": "Typeless Local",
-        "CFBundleDisplayName": "Typeless Local",
-        "CFBundleIdentifier": "com.alllllenshi.typeless-local",
+        "CFBundleName": "Typlus",
+        "CFBundleDisplayName": "Typlus",
+        "CFBundleIdentifier": "com.alllllenshi.typlus",
         "CFBundleShortVersionString": "0.2.0",
         "CFBundleVersion": "0.2.0",
         "LSUIElement": True,
         "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
         "NSMicrophoneUsageDescription":
-            "Typeless Local records audio when you press F5 to dictate.",
+            "Typlus records audio when you press F5 to dictate.",
         "NSAppleEventsUsageDescription":
-            "Typeless Local pastes refined dictation into the focused app.",
+            "Typlus pastes refined dictation into the focused app.",
     },
     "iconfile": str(ROOT / "assets" / "AppIcon.icns"),
 }
 
 setup(
     app=APP,
-    name="Typeless Local",
+    name="Typlus",
     data_files=DATA_FILES,
     options={"py2app": OPTIONS},
     setup_requires=["py2app"],

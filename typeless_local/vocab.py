@@ -11,7 +11,7 @@ import yaml
 
 LOGGER = logging.getLogger(__name__)
 
-_STARTER_HEADER = """# Typeless Local vocabulary.
+_STARTER_HEADER = """# Typlus vocabulary.
 # Edit `user:` freely — those terms are never overwritten.
 # `auto:` is rewritten by `scripts/extract_hotwords.py`; don't hand-edit it.
 # `rejected:` lists mishears the extractor must never re-promote.

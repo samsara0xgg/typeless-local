@@ -1,20 +1,39 @@
-# Typeless Local
+# Typlus
 
-Standalone macOS dictation overlay modeled after Typeless' Fn recording control,
-with F5 (the dictation key on Apple keyboards) as the local trigger.
+A standalone macOS dictation app: hold a key, talk, and the cleaned-up text is
+pasted into whatever app you were in. Speech recognition runs locally through
+Whisper; only the final tidy-up pass goes to a language model.
 
-This app is intentionally separate from the Jarvis project. It can reuse Jarvis'
-existing ASR configuration and modules through `JARVIS_PROJECT_ROOT`, but it owns
-its own global hotkey, floating UI, recording lifecycle, refinement prompt, and
-text insertion path.
+## Install
 
-## Run
+Download the latest `Typlus-<version>.dmg` from
+[Releases](https://github.com/samsara0xgg/typeless-local/releases), open it, and
+drag Typlus to Applications. The build is signed and notarized by Apple, so it
+opens by double-clicking with no security warnings.
 
-The shipped, self-contained app bundle:
+On first launch Typlus asks for the API key used by the refinement model and
+writes it to `~/.typlus/env`. It then downloads the Whisper weights (~1.5 GB)
+with a progress bar, so the first dictation is not a silent multi-minute wait.
 
-```bash
-open -n "/Applications/Typeless Local.app"
-```
+macOS will ask for two permissions, both required:
+
+- **Microphone**, to record what you say.
+- **Accessibility**, to see the global hotkey and paste into other apps.
+
+To change the key later, use **Set API Key…** in the menu-bar menu.
+
+## Use
+
+- `F5` starts and stops dictation.
+- `F5+Space` starts hands-free dictation.
+- A single right `Cmd` tap does the same as `F5`; right `Cmd+Space` starts
+  hands-free. Right `Cmd` used as a modifier (`Cmd+C`, `Cmd+Tab`) is ignored.
+- `Esc` cancels the active or pending dictation.
+- The menu-bar **Model** submenu lists every `llm.presets` entry from the
+  config; picking one switches the refinement model immediately.
+- During recording, macOS system output is muted and restored afterwards.
+
+## Build from source
 
 Dev mode (uses the sibling `jarvis/` checkout + its `.venv`):
 
@@ -34,7 +53,23 @@ $PYBUILD -m venv /tmp/build-venv
   pyobjc-framework-ApplicationServices pyobjc-framework-WebKit \
   numpy sounddevice openai pyyaml mlx-whisper py2app
 /tmp/build-venv/bin/python scripts/build_app.py
-# Result at dist/Typeless Local.app — move to /Applications/.
+# Result at dist/Typlus.app — move to /Applications/.
+```
+
+For a build other people can run, `--release` signs with a Developer ID,
+notarizes through Apple, staples the ticket, and produces a `.dmg`:
+
+```bash
+/tmp/build-venv/bin/python scripts/build_app.py --release
+```
+
+It needs a **Developer ID Application** certificate in the keychain (an "Apple
+Development" certificate cannot be notarized) and notary credentials stored
+once with:
+
+```bash
+xcrun notarytool store-credentials "Typlus" \
+  --apple-id <your-apple-id> --team-id <your-team-id>
 ```
 
 The bundle is fully self-contained: it includes its own Python interpreter,
@@ -53,8 +88,8 @@ Default behavior:
 - `Esc` cancels the active or pending dictation.
 - The menu-bar icon has a `Model` submenu listing every `llm.presets` entry from
   the config; picking one switches the refinement model immediately and writes
-  `llm.default_preset` to `~/.typeless-local/config.yaml`.
-- API keys for Finder/Spotlight launches go in `~/.typeless-local/env`
+  `llm.default_preset` to `~/.typlus/config.yaml`.
+- API keys for Finder/Spotlight launches go in `~/.typlus/env`
   (`KEY=value` lines, loaded at startup; variables already in the environment win).
 - During recording, macOS system output is muted through Jarvis' Inherent
   `SystemAudioDucker` and restored when recording ends or is canceled.
@@ -86,7 +121,7 @@ Secrets are not stored here. The OpenAI API key is read through Jarvis'
 
 ## Vocabulary
 
-Edit `~/.typeless-local/vocab.yaml` to bias the ASR + refine LLM toward
+Edit `~/.typlus/vocab.yaml` to bias the ASR + refine LLM toward
 your proper nouns and domain terms:
 
 ```yaml
@@ -103,10 +138,10 @@ restarting.
 
 ## Trace database
 
-Every dictation session writes one row to `~/.typeless-local/trace.db`:
+Every dictation session writes one row to `~/.typlus/trace.db`:
 
 ```bash
-sqlite3 ~/.typeless-local/trace.db \
+sqlite3 ~/.typlus/trace.db \
   'SELECT datetime(started_at,"unixepoch","localtime") AS at,
           raw_asr_text, refined_text, latency_total_ms, error
      FROM sessions ORDER BY id DESC LIMIT 20'
@@ -128,7 +163,7 @@ and existing `user:` terms, and writes the top survivors to `auto:`.
 
 ## Menu bar
 
-When running, Typeless Local appears as a menu-bar icon (no Dock icon).
+When running, Typlus appears as a menu-bar icon (no Dock icon).
 Color reflects state: gray (idle), yellow (starting/thinking), red
 (recording or error). Click the icon for **Reload Vocab**, **Open Trace
 Folder**, **Show Log**, and **Quit**.

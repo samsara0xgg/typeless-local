@@ -1,4 +1,4 @@
-"""Typeless Local — standalone macOS dictation app."""
+"""Typlus — standalone macOS dictation app."""
 
 from __future__ import annotations
 

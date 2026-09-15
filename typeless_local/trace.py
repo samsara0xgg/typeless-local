@@ -1,4 +1,4 @@
-"""SQLite-backed per-session trace for typeless-local."""
+"""SQLite-backed per-session trace for Typlus."""
 
 from __future__ import annotations
 

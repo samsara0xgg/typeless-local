@@ -19,6 +19,13 @@ class ChatCompletionsClient(Protocol):
     chat: Any
 
 
+class MissingAPIKey(RuntimeError):
+    """The preset's API key variable is unset, so no request can be made.
+
+    Typed so the UI can say that rather than offering a pointless retry.
+    """
+
+
 @dataclass(frozen=True)
 class RefineResult:
     """Final text produced by the refinement pass."""
@@ -77,7 +84,7 @@ class TextRefiner:
 
         api_key = os.environ.get(self.config.api_key_env)
         if not api_key:
-            raise RuntimeError(
+            raise MissingAPIKey(
                 f"{self.config.api_key_env} is required for refinement with {self.config.model}."
             )
         self._client = OpenAI(api_key=api_key, base_url=self.config.base_url)

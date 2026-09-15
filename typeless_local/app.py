@@ -25,6 +25,7 @@ from typeless_local import devices
 from typeless_local.config import (
     AppConfig,
     load_config,
+    migrate_legacy_config_dir,
     preset_names,
     refine_config_for,
     save_input_device,
@@ -39,8 +40,14 @@ from typeless_local.mac_integration import (
     request_accessibility_trust,
     set_clipboard_text,
 )
+from typeless_local.first_run import (
+    download_model,
+    ensure_api_key,
+    model_is_cached,
+    set_api_key,
+)
 from typeless_local.overlay import FloatingOverlay
-from typeless_local.refine import TextRefiner
+from typeless_local.refine import MissingAPIKey, TextRefiner
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
 from typeless_local.vocab import as_initial_prompt, load_vocab, write_starter_file
 
@@ -118,6 +125,7 @@ class TypelessLocalApp:
                 active_output=devices.current_output_device(),
                 on_select_input=self.select_input_device,
                 on_select_output=self.select_output_device,
+                on_set_api_key=self.change_api_key,
             )
         else:
             self.overlay = None
@@ -243,6 +251,49 @@ class TypelessLocalApp:
             menubar.set_active_preset(preset)
         LOGGER.info("Refinement model switched to %s (%s)", preset, refine.model)
 
+    def change_api_key(self) -> None:
+        """Replace the key for the active preset from the menu bar."""
+
+        user_paths = getattr(self.config, "user_paths", None)
+        if user_paths is None:
+            return
+        if set_api_key(
+            self.config.refine.api_key_env,
+            self.config.refine.model,
+            user_paths.env_path,
+        ):
+            LOGGER.info("%s updated", self.config.refine.api_key_env)
+
+    def _start_model_prefetch(self) -> None:
+        """Pull the ASR weights now, with a progress bar, instead of inside the
+        first F5 where a 1.5 GB download looks like the app has hung."""
+
+        asr_config = self.config.jarvis_config.get("asr") or {}
+        repo_id = str(asr_config.get("mlx_whisper_model") or "").strip()
+        if not repo_id or model_is_cached(repo_id):
+            return
+
+        def report(fraction: float) -> None:
+            self._call_ui(
+                self.overlay.show_thinking,
+                progress=fraction,
+                message="Downloading model",
+            )
+
+        def run() -> None:
+            try:
+                report(0.0)
+                download_model(repo_id, report)
+                LOGGER.info("ASR model %s is ready", repo_id)
+            except Exception:
+                # The first dictation will download it the slow way; that is a
+                # worse experience, not a broken one, so the app stays up.
+                LOGGER.exception("Model prefetch failed for %s", repo_id)
+            finally:
+                self._call_ui(self.overlay.hide)
+
+        threading.Thread(target=run, daemon=True, name="model-prefetch").start()
+
     def _set_menubar(self, state: str) -> None:
         """Update the menu-bar status icon. No-op when menubar is unavailable."""
 
@@ -271,7 +322,8 @@ class TypelessLocalApp:
             self._set_menubar("error")
             self._call_ui(self.overlay.show_error, "Enable Access")
             return
-        LOGGER.info("Typeless Local ready. Press F5 to start/stop dictation.")
+        self._start_model_prefetch()
+        LOGGER.info("Typlus ready. Press F5 to start/stop dictation.")
 
     def _on_hotkey(self, action: str) -> None:
         with self._lock:
@@ -737,7 +789,8 @@ class TypelessLocalApp:
                 self._stop_processing_progress()
                 self.state = "idle"
                 self._set_menubar("error")
-                self._call_ui(self.overlay.show_error, "Retry")
+                reason = "No API key" if isinstance(exc, MissingAPIKey) else "Retry"
+                self._call_ui(self.overlay.show_error, reason)
                 time.sleep(1.4)
                 self._call_ui(self.overlay.hide)
                 return
@@ -855,7 +908,9 @@ def configure_logging() -> None:
     level = getattr(logging, level_name, logging.INFO)
     handlers: list[logging.Handler] = [logging.StreamHandler()]
     try:
-        log_dir = Path.home() / ".typeless-local"
+        # Runs before load_config, so it is the first thing to touch the config
+        # directory and therefore the one that has to carry the old one over.
+        log_dir = migrate_legacy_config_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = log_dir / "app.log"
         handlers.append(
@@ -877,6 +932,12 @@ def main() -> None:
     configure_logging()
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-    coordinator = TypelessLocalApp(load_config())
+    config = load_config()
+    ensure_api_key(
+        config.refine.api_key_env,
+        config.refine.model,
+        config.user_paths.env_path,
+    )
+    coordinator = TypelessLocalApp(config)
     coordinator.start()
     app.run()

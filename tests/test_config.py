@@ -58,9 +58,9 @@ def test_config_resolves_user_paths(monkeypatch, tmp_path):
     from typeless_local import config as cfg_mod
     monkeypatch.setenv("HOME", str(tmp_path))
     paths = cfg_mod.resolve_user_paths()
-    assert paths.vocab_path == tmp_path / ".typeless-local" / "vocab.yaml"
-    assert paths.trace_db_path == tmp_path / ".typeless-local" / "trace.db"
-    assert paths.log_path == tmp_path / ".typeless-local" / "app.log"
+    assert paths.vocab_path == tmp_path / ".typlus" / "vocab.yaml"
+    assert paths.trace_db_path == tmp_path / ".typlus" / "trace.db"
+    assert paths.log_path == tmp_path / ".typlus" / "app.log"
     assert paths.stopwords_dir.name == "assets"
 
 
@@ -68,7 +68,45 @@ def test_resolve_user_paths_creates_directory(monkeypatch, tmp_path):
     from typeless_local import config as cfg_mod
     monkeypatch.setenv("HOME", str(tmp_path))
     cfg_mod.resolve_user_paths()
-    assert (tmp_path / ".typeless-local").is_dir()
+    assert (tmp_path / ".typlus").is_dir()
+
+
+def test_rename_carries_the_old_config_directory_over(monkeypatch, tmp_path):
+    """The rename must not read as a fresh install: keys, vocabulary and the
+    whole trace history live in the directory being renamed."""
+
+    from typeless_local import config as cfg_mod
+    monkeypatch.setenv("HOME", str(tmp_path))
+    legacy = tmp_path / ".typeless-local"
+    legacy.mkdir()
+    (legacy / "env").write_text("OPENAI_API_KEY=sk-kept\n", encoding="utf-8")
+    (legacy / "trace.db").write_bytes(b"sqlite-bytes")
+
+    paths = cfg_mod.resolve_user_paths()
+
+    assert paths.config_dir == tmp_path / ".typlus"
+    assert (tmp_path / ".typlus" / "env").read_text(encoding="utf-8") == "OPENAI_API_KEY=sk-kept\n"
+    assert (tmp_path / ".typlus" / "trace.db").read_bytes() == b"sqlite-bytes"
+    assert not legacy.exists()
+
+
+def test_rename_leaves_an_existing_new_directory_alone(monkeypatch, tmp_path):
+    """Someone who already runs Typlus must not have it overwritten by a stale
+    pre-rename directory that happens to still be on disk."""
+
+    from typeless_local import config as cfg_mod
+    monkeypatch.setenv("HOME", str(tmp_path))
+    legacy = tmp_path / ".typeless-local"
+    legacy.mkdir()
+    (legacy / "env").write_text("OPENAI_API_KEY=sk-stale\n", encoding="utf-8")
+    current = tmp_path / ".typlus"
+    current.mkdir()
+    (current / "env").write_text("OPENAI_API_KEY=sk-current\n", encoding="utf-8")
+
+    cfg_mod.resolve_user_paths()
+
+    assert (current / "env").read_text(encoding="utf-8") == "OPENAI_API_KEY=sk-current\n"
+    assert legacy.exists()
 
 
 def test_load_config_reads_own_config_not_jarvis(monkeypatch, tmp_path):
@@ -81,7 +119,7 @@ def test_load_config_reads_own_config_not_jarvis(monkeypatch, tmp_path):
     bundled = cfg_mod.load_config()
     assert bundled.refine.model == "gpt-5.6-terra"  # from assets/config.yaml
 
-    user_cfg = tmp_path / ".typeless-local" / "config.yaml"
+    user_cfg = tmp_path / ".typlus" / "config.yaml"
     user_cfg.write_text("llm:\n  presets:\n    fast:\n      model: user-override\n")
     assert cfg_mod.load_config().refine.model == "user-override"
 

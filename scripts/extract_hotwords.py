@@ -272,7 +272,7 @@ def run(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Extract auto-hotwords from trace.db")
-    home_dir = Path.home() / ".typeless-local"
+    home_dir = Path.home() / ".typlus"
     repo_root = Path(__file__).resolve().parent.parent
     parser.add_argument("--db", type=Path, default=home_dir / "trace.db")
     parser.add_argument("--vocab", type=Path, default=home_dir / "vocab.yaml")
