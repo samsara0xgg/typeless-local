@@ -251,6 +251,18 @@ class TypelessLocalApp:
             menubar.set_active_preset(preset)
         LOGGER.info("Refinement model switched to %s (%s)", preset, refine.model)
 
+    def _prompt_for_missing_api_key(self) -> None:
+        """Ask for the key on first launch, once the app can show a window."""
+
+        user_paths = getattr(self.config, "user_paths", None)
+        if user_paths is None:
+            return
+        ensure_api_key(
+            self.config.refine.api_key_env,
+            self.config.refine.model,
+            user_paths.env_path,
+        )
+
     def change_api_key(self) -> None:
         """Replace the key for the active preset from the menu bar."""
 
@@ -323,6 +335,10 @@ class TypelessLocalApp:
             self._call_ui(self.overlay.show_error, "Enable Access")
             return
         self._start_model_prefetch()
+        # Deferred onto the run loop: this app is LSUIElement, and before
+        # -[NSApplication run] it is not active yet, so a modal alert can open
+        # behind whatever the user is looking at or not come up at all.
+        AppHelper.callLater(0.3, self._prompt_for_missing_api_key)
         LOGGER.info("Typlus ready. Press F5 to start/stop dictation.")
 
     def _on_hotkey(self, action: str) -> None:
@@ -932,12 +948,6 @@ def main() -> None:
     configure_logging()
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-    config = load_config()
-    ensure_api_key(
-        config.refine.api_key_env,
-        config.refine.model,
-        config.user_paths.env_path,
-    )
-    coordinator = TypelessLocalApp(config)
+    coordinator = TypelessLocalApp(load_config())
     coordinator.start()
     app.run()
