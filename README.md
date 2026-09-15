@@ -63,14 +63,10 @@ notarizes through Apple, staples the ticket, and produces a `.dmg`:
 /tmp/build-venv/bin/python scripts/build_app.py --release
 ```
 
-It needs a **Developer ID Application** certificate in the keychain (an "Apple
-Development" certificate cannot be notarized) and notary credentials stored
-once with:
-
-```bash
-xcrun notarytool store-credentials "Typlus" \
-  --apple-id <your-apple-id> --team-id <your-team-id>
-```
+`docs/RELEASING.md` is the full procedure: the one-time certificate and notary
+setup, what each build step is working around, the traps that each cost a
+notarization round trip, and how to verify a build the way a downloader's Mac
+will.
 
 The bundle is fully self-contained: it includes its own Python interpreter,
 all wheels, and the vendored Jarvis core subset (`speech_recognizer` +
