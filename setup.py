@@ -33,6 +33,10 @@ OPTIONS = {
         "openai",
         "yaml",
         "mlx_whisper",
+        # mlx, llvmlite and _sounddevice_data also carry dylibs, but they
+        # cannot be listed here: mlx is a namespace package and py2app's
+        # collect_packagedirs still uses imp.find_module, which cannot find
+        # one. build_app.py moves them out of the bundle zip after the build.
     ],
     "includes": [
         "ctypes",
@@ -51,8 +55,14 @@ OPTIONS = {
         # the bundle zip alongside the wrapper-only mlx/__init__.pyc.
         "mlx._reprlib_fix",
         "mlx.utils",
+        # core.so imports this from C during its own initialisation; without it
+        # the extension raises "error while initializing the extension".
+        "mlx.__array_api_info",
+        "mlx.optimizers",
     ],
     "excludes": [
+        # CPython's own test suite, which ships extension modules of its own.
+        "test",
         "tkinter",
         "PIL",
         "matplotlib",

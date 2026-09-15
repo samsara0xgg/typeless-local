@@ -25,6 +25,13 @@ ENTITLEMENTS = ROOT / "assets" / "entitlements.plist"
 BUNDLE_ID = "com.alllllenshi.typlus"
 APP_NAME = "Typlus"
 VERSION = "0.2.0"
+# 64-bit Mach-O, plus the fat/universal wrapper around it.
+MACHO_MAGIC = {
+    b"\xcf\xfa\xed\xfe",
+    b"\xfe\xed\xfa\xcf",
+    b"\xca\xfe\xba\xbe",
+    b"\xbe\xba\xfe\xca",
+}
 # The keychain profile `xcrun notarytool store-credentials` wrote.
 NOTARY_PROFILE = os.environ.get("TYPLUS_NOTARY_PROFILE", "Typlus")
 
@@ -108,7 +115,7 @@ def sign_release(app: Path, identity: str) -> None:
         for path in (app / "Contents").rglob("*")
         if path.is_file()
         and not path.is_symlink()
-        and (path.suffix in {".so", ".dylib"} or _is_macho_executable(path))
+        and (path.suffix in {".so", ".dylib"} or _is_macho(path))
     )
     for path in nested:
         subprocess.check_call(
@@ -130,21 +137,71 @@ def sign_release(app: Path, identity: str) -> None:
     subprocess.check_call(["codesign", "--verify", "--strict", "--verbose=2", str(app)])
 
 
-def _is_macho_executable(path: Path) -> bool:
-    if not os.access(path, os.X_OK):
-        return False
+def _is_macho(path: Path) -> bool:
+    """Mach-O by magic number. The execute bit is deliberately not consulted:
+    Python.framework/Versions/3.13/Python is mode 644 and still has to be
+    signed, and skipping it alone is enough to fail notarization."""
+
     try:
         with path.open("rb") as handle:
-            magic = handle.read(4)
+            return handle.read(4) in MACHO_MAGIC
     except OSError:
         return False
-    # 64-bit Mach-O, and the fat/universal wrapper around it.
-    return magic in {
-        b"\xcf\xfa\xed\xfe",
-        b"\xfe\xed\xfa\xcf",
-        b"\xca\xfe\xba\xbe",
-        b"\xbe\xba\xfe\xca",
-    }
+
+
+def audit_signatures(app: Path) -> None:
+    """Refuse to upload if any Mach-O in the bundle is not Developer ID signed.
+
+    Notarization reports this one file at a time, twenty minutes per round
+    trip, so the whole class is enumerated here instead of guessed at. Binaries
+    inside py2app's bundle zip are included: they are not files on disk, so
+    codesign silently never saw them, which is exactly how the first
+    submission failed.
+    """
+
+    import zipfile
+
+    bad: list[str] = []
+    for path in sorted((app / "Contents").rglob("*")):
+        if not path.is_file() or path.is_symlink() or not _is_macho(path):
+            continue
+        proc = subprocess.run(
+            ["codesign", "-dv", "--verbose=2", str(path)],
+            capture_output=True,
+            text=True,
+        )
+        if "Authority=Developer ID Application" not in proc.stderr:
+            bad.append(f"{path.relative_to(app)} (unsigned or ad-hoc)")
+
+    for archive in sorted((app / "Contents").rglob("*.zip")):
+        try:
+            with zipfile.ZipFile(archive) as zf:
+                for name in zf.namelist():
+                    with zf.open(name) as handle:
+                        if handle.read(4) in MACHO_MAGIC:
+                            bad.append(f"{archive.relative_to(app)} -> {name} (inside a zip)")
+        except zipfile.BadZipFile:
+            continue
+
+    if bad:
+        raise SystemExit(
+            "signature audit failed; notarization would reject these:\n  "
+            + "\n  ".join(bad)
+        )
+    print("signature audit: every Mach-O in the bundle is Developer ID signed")
+
+    # The other half of what notarization rejects is archives it cannot open:
+    # scipy .npz fixtures and CPython's sparse zip64 test parts both came back
+    # as errors. Only a warning, because plenty of data files are legitimate.
+    suspect = [
+        str(path.relative_to(app))
+        for path in sorted((app / "Contents").rglob("*"))
+        if path.is_file() and path.suffix in {".npz", ".part"}
+    ]
+    if suspect:
+        print("warning: notarization will try to unpack these and may object:")
+        for name in suspect:
+            print(f"  {name}")
 
 
 def notarize(target: Path) -> None:
@@ -213,7 +270,10 @@ def main() -> int:
     bake_version()
     clean()
     app = build()
+    unzip_native_packages(app)
     patch_native_dylibs(app)
+    prune_bundle(app)
+    smoke_test(app)
 
     if not args.release:
         sign_adhoc(app)
@@ -230,6 +290,7 @@ def main() -> int:
             "be notarized and will not work on anyone else's Mac."
         )
     sign_release(app, identity)
+    audit_signatures(app)
     notarize(app)
     dmg = make_dmg(app)
     subprocess.check_call(
@@ -241,6 +302,103 @@ def main() -> int:
     verify_gatekeeper(dmg)
     print(f"\nBuilt: {dmg}")
     return 0
+
+
+def unzip_native_packages(app: Path) -> None:
+    """Move packages carrying dylibs out of py2app's bundle zip onto disk.
+
+    codesign only ever sees files, so a .dylib sitting inside python313.zip is
+    never signed and notarization rejects the whole submission. Listing these
+    in py2app's `packages` is not an option: mlx is a namespace package, and
+    py2app's collect_packagedirs still goes through imp.find_module, which
+    cannot find one.
+
+    Whole packages are moved rather than just their binaries. Python resolves a
+    package from a single sys.path entry, so leaving the code in the zip while
+    the libraries sat on disk would have the code look for them at a path that
+    no longer holds them.
+    """
+
+    import zipfile
+
+    zip_path = app / "Contents" / "Resources" / "lib" / "python313.zip"
+    lib_dir = app / "Contents" / "Resources" / "lib" / "python3.13"
+    if not zip_path.exists():
+        print(f"warning: {zip_path} not found; nothing to move out")
+        return
+
+    with zipfile.ZipFile(zip_path) as archive:
+        names = archive.namelist()
+        roots = sorted(
+            {
+                name.split("/", 1)[0]
+                for name in names
+                if "/" in name
+                and not name.endswith("/")
+                and _zip_entry_is_macho(archive, name)
+            }
+        )
+        if not roots:
+            print("no native packages left in the bundle zip")
+            return
+        moving = [n for n in names if n.split("/", 1)[0] in roots]
+        keeping = [n for n in names if n.split("/", 1)[0] not in roots]
+        archive.extractall(lib_dir, members=moving)
+        rebuilt = zip_path.with_suffix(".zip.new")
+        with zipfile.ZipFile(rebuilt, "w", zipfile.ZIP_DEFLATED) as out:
+            for name in keeping:
+                out.writestr(archive.getinfo(name), archive.read(name))
+    rebuilt.replace(zip_path)
+    print(f"moved out of the bundle zip: {', '.join(roots)}")
+
+
+def _zip_entry_is_macho(archive, name: str) -> bool:
+    try:
+        with archive.open(name) as handle:
+            return handle.read(4) in MACHO_MAGIC
+    except (KeyError, OSError):
+        return False
+
+
+def smoke_test(app: Path) -> None:
+    """Run what the app cannot start without, through the bundle's own Python.
+
+    py2app's modulegraph finds imports by reading source, so anything a C
+    extension imports during its own initialisation is silently left out and
+    only fails once a user presses the key. mlx is asked to compute, not just
+    to import, because loading the module succeeds well before its Metal
+    library does.
+    """
+
+    python = app / "Contents" / "MacOS" / "python"
+    env = {**os.environ, "PYTHONHOME": str(app / "Contents" / "Resources")}
+    code = (
+        "import mlx.core as mx, mlx_whisper, sounddevice, llvmlite.binding\n"
+        "assert (mx.array([1.0, 2.0]) * 2).tolist() == [2.0, 4.0]\n"
+    )
+    result = subprocess.run(
+        [str(python), "-c", code], env=env, capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        raise SystemExit("bundle smoke test failed:\n" + result.stderr.strip())
+    print("smoke test: mlx computes, and mlx_whisper/sounddevice/llvmlite import")
+
+
+def prune_bundle(app: Path) -> None:
+    """Drop test payloads that nothing imports and notarization chokes on.
+
+    Apple opens every archive it finds in the bundle. scipy ships .npz test
+    fixtures its unpacker cannot read, and the submission comes back Invalid
+    over a file the app never touches.
+    """
+
+    lib = app / "Contents" / "Resources" / "lib" / "python3.13"
+    removed = 0
+    for tests_dir in sorted(lib.glob("scipy/**/tests")):
+        if tests_dir.is_dir():
+            shutil.rmtree(tests_dir)
+            removed += 1
+    print(f"pruned {removed} scipy test directories")
 
 
 def patch_native_dylibs(app: Path) -> None:
@@ -255,18 +413,16 @@ def patch_native_dylibs(app: Path) -> None:
     if not src_lib.exists():
         print(f"warning: mlx/lib not found at {src_lib}; mlx will fail to load")
         return
-    bundle_mlx = (
-        app
-        / "Contents"
-        / "Resources"
-        / "lib"
-        / "python3.13"
-        / "lib-dynload"
-        / "mlx"
-    )
-    if not bundle_mlx.exists():
-        print(f"warning: bundled mlx not found at {bundle_mlx}; skipping dylib copy")
+    # core.so resolves its libraries through @rpath -> @loader_path/lib, so
+    # lib/ has to sit next to core.so itself. py2app puts extension modules in
+    # lib-dynload while the Python half of the package lives elsewhere, so the
+    # directory is found from core.so rather than assumed.
+    lib_root = app / "Contents" / "Resources" / "lib" / "python3.13"
+    core = next(iter(sorted(lib_root.rglob("mlx/core*.so"))), None)
+    if core is None:
+        print(f"warning: mlx/core.so not found under {lib_root}; mlx will fail to load")
         return
+    bundle_mlx = core.parent
     dst_lib = bundle_mlx / "lib"
     if dst_lib.exists():
         shutil.rmtree(dst_lib)
