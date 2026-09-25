@@ -142,3 +142,31 @@ def test_exception_path_logs_error_row(tmp_path: Path) -> None:
     rows = _read_rows(cfg.user_paths.trace_db_path)
     assert len(rows) == 1
     assert "boom" in (rows[0]["error"] or "")
+
+
+def test_kept_recordings_include_dropped_audio_and_prune_to_the_newest(tmp_path: Path) -> None:
+    import dataclasses
+    import wave
+
+    cfg = dataclasses.replace(_make_app_config(tmp_path), keep_recordings=2)
+    with patch("typeless_local.app.TypelessLocalApp._build_components") as build:
+        from typeless_local.app import TypelessLocalApp
+
+        build.return_value = SimpleNamespace(
+            asr=MagicMock(model_name="fake:test"),
+            refiner=MagicMock(),
+            recorder=MagicMock(
+                get_volume_level=MagicMock(return_value=0.0),
+                is_quality_ok=MagicMock(return_value=(False, "silence")),
+            ),
+        )
+        app = TypelessLocalApp(cfg, headless=True)
+
+    ctx = FocusContext(app_name="x", window_title="y", can_insert_text=False)
+    for _ in range(3):
+        app._process_audio(np.full(1600, 0.01, dtype=np.float32), ctx, session_id=1)
+
+    kept = sorted((tmp_path / "recordings").glob("*.wav"))
+    assert [p.stem[-6:] for p in kept] == ["000002", "000003"]
+    with wave.open(str(kept[-1])) as handle:
+        assert (handle.getframerate(), handle.getnframes()) == (16000, 1600)

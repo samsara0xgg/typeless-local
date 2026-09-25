@@ -20,7 +20,7 @@ from PyObjCTools import AppHelper
 
 from typeless_local import app_version
 from typeless_local.asr import JarvisASR, mlx_whisper_repo
-from typeless_local.audio import MicrophoneRecorder
+from typeless_local.audio import MicrophoneRecorder, keep_recording
 from typeless_local import devices
 from typeless_local.config import (
     AppConfig,
@@ -895,6 +895,24 @@ class TypelessLocalApp:
             trace = getattr(self, "trace", None)
             if trace is not None:
                 self._last_trace_id = trace.log(record)
+            self._keep_recording(audio, sample_rate, started)
+
+    def _keep_recording(self, audio: np.ndarray, sample_rate: int, started: float) -> None:
+        """Save this dictation's audio, dropped ones included, when configured to."""
+
+        keep = int(getattr(self.config, "keep_recordings", 0) or 0)
+        user_paths = getattr(self.config, "user_paths", None)
+        if keep <= 0 or user_paths is None:
+            return
+        # Named by start time plus the trace.db session id it belongs to.
+        name = time.strftime("%Y%m%d-%H%M%S", time.localtime(started))
+        trace_id = getattr(self, "_last_trace_id", None)
+        if trace_id is not None:
+            name = f"{name}-{int(trace_id):06d}"
+        try:
+            keep_recording(user_paths.config_dir / "recordings", name, audio, sample_rate, keep)
+        except Exception:
+            LOGGER.warning("Could not keep the recording", exc_info=True)
 
     def _start_processing_progress(self) -> None:
         self._stop_processing_progress()

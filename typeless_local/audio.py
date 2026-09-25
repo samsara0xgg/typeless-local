@@ -3,14 +3,37 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 import threading
 import time
+import wave
 from typing import Callable
 
 import numpy as np
 
 LOGGER = logging.getLogger(__name__)
 LevelCallback = Callable[[float], None]
+
+
+def keep_recording(
+    folder: Path, name: str, audio: np.ndarray, sample_rate: int, keep: int
+) -> Path:
+    """Write ``audio`` to ``folder/name.wav`` and delete all but the newest ``keep``.
+
+    Names must sort in time order, since pruning goes by name.
+    """
+
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{name}.wav"
+    samples = np.clip(np.asarray(audio, dtype=np.float32).reshape(-1), -1.0, 1.0)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sample_rate)
+        handle.writeframes((samples * 32767).astype("<i2").tobytes())
+    for old in sorted(folder.glob("*.wav"))[:-keep]:
+        old.unlink()
+    return path
 
 
 class VoiceActivityAnalyzer:
