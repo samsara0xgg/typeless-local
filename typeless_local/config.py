@@ -228,7 +228,10 @@ def _absolutize_jarvis_paths(config: dict[str, Any], jarvis_root: Path) -> dict[
         value = asr.get(key)
         if value and not Path(str(value)).is_absolute():
             asr[key] = str((jarvis_root / str(value)).resolve())
-    asr["language"] = os.environ.get("TYPELESS_LOCAL_ASR_LANGUAGE", "").strip()
+    asr["language"] = os.environ.get(
+        "TYPELESS_LOCAL_ASR_LANGUAGE",
+        str(asr.get("language") or ""),
+    ).strip()
     asr["mlx_whisper_initial_prompt"] = os.environ.get(
         "TYPELESS_LOCAL_MLX_INITIAL_PROMPT",
         "",

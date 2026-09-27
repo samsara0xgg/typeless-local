@@ -28,7 +28,8 @@ def test_resolve_refine_config_uses_jarvis_fast_preset() -> None:
     assert refine.max_tokens == 1024
 
 
-def test_absolutize_jarvis_paths_disables_jarvis_command_language_bias_by_default() -> None:
+def test_absolutize_jarvis_paths_keeps_the_configured_language(monkeypatch) -> None:
+    monkeypatch.delenv("TYPELESS_LOCAL_ASR_LANGUAGE", raising=False)
     cfg = {
         "asr": {
             "language": "zh",
@@ -40,7 +41,7 @@ def test_absolutize_jarvis_paths_disables_jarvis_command_language_bias_by_defaul
 
     resolved = _absolutize_jarvis_paths(cfg, Path("/repo/jarvis"))
 
-    assert resolved["asr"]["language"] == ""
+    assert resolved["asr"]["language"] == "zh"
     assert resolved["asr"]["mlx_whisper_initial_prompt"] == ""
     assert resolved["asr"]["sensevoice_model_dir"] == "/repo/jarvis/data/sensevoice"
     assert resolved["audio"]["vad_model_path"] == "/repo/jarvis/models/vad.onnx"
