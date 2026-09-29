@@ -79,6 +79,11 @@ TEXT_INPUT_ROLES = {
     "AXTextField",
     "AXComboBox",
     "AXSearchField",
+    # Claude's desktop app (Electron) reports its whole page, composer
+    # included, as the focused AXWebArea, so a dictation into its message box
+    # went to the copy panel. As with apps that publish no focused element, a
+    # paste that lands nowhere costs one Cmd+V and the text stays in the panel.
+    "AXWebArea",
 }
 
 @dataclass(frozen=True)

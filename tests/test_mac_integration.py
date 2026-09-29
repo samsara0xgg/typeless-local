@@ -41,6 +41,7 @@ def test_copy_ax_attribute_returns_none_on_error(monkeypatch) -> None:
 
 def test_focused_element_accepts_text_roles() -> None:
     assert mac_integration._focused_element_accepts_text(object(), "AXTextArea") is True
+    assert mac_integration._focused_element_accepts_text(object(), "AXWebArea") is True
 
 
 
