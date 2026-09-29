@@ -92,6 +92,8 @@ Default behavior:
 - After recording stops, audio is transcribed through Jarvis ASR, refined with
   the Jarvis fast OpenAI preset (`gpt-5.4-mini`), then pasted into the previously
   focused app.
+- If refinement fails, times out, or its reply is cut off, the raw transcript is
+  pasted instead, so a dictation is never lost to the polish step.
 
 Permissions macOS may require:
 

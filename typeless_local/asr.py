@@ -7,6 +7,8 @@ import inspect
 import logging
 import re
 import sys
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +16,22 @@ import numpy as np
 LOGGER = logging.getLogger(__name__)
 
 _PROMPT_ECHO_RE = re.compile(r"^\s*Common terms:[^\n]*\n", re.IGNORECASE)
+DEFAULT_MLX_WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
+
+
+def mlx_whisper_repo(asr_config: dict) -> str:
+    """The Whisper weights the recognizer will load for this ``asr`` section.
+
+    Typlus' config names the key ``mlx_whisper_model`` while the vendored
+    recognizer reads ``mlx_whisper_repo``. Both are accepted, ours first, so the
+    model that is prefetched, loaded, and recorded in the trace is one model.
+    """
+
+    return str(
+        asr_config.get("mlx_whisper_model")
+        or asr_config.get("mlx_whisper_repo")
+        or DEFAULT_MLX_WHISPER_REPO
+    ).strip()
 
 
 @dataclass(frozen=True)
@@ -38,8 +56,17 @@ class JarvisASR:
                 sys.path.insert(0, str(jarvis_root))
             from core.speech_recognizer import SpeechRecognizer
 
+        config = dict(config)
+        asr_config = dict(config.get("asr") or {})
+        asr_config["mlx_whisper_repo"] = mlx_whisper_repo(asr_config)
+        config["asr"] = asr_config
+        self._asr_config = asr_config
+
         self._recognizer = SpeechRecognizer(config)
         self._accepts_per_call_prompt = self._detect_per_call_prompt()
+        # The prompt swap below mutates the recognizer, so two transcriptions
+        # (a warm-up and a dictation) must never overlap it.
+        self._prompt_lock = threading.Lock()
         LOGGER.info(
             "ASR provider: %s (per-call prompt: %s)",
             self._recognizer.provider,
@@ -48,11 +75,12 @@ class JarvisASR:
 
     @property
     def model_name(self) -> str:
-        cfg = getattr(self._recognizer, "_config", None) or {}
-        asr_cfg = cfg.get("asr", {}) if isinstance(cfg, dict) else {}
-        provider = getattr(self._recognizer, "provider", "unknown")
-        model = asr_cfg.get(f"{provider}_model") or asr_cfg.get("model") or ""
-        return f"{provider}:{model}" if model else str(provider)
+        provider = str(getattr(self._recognizer, "provider", "unknown"))
+        if provider == "mlx_whisper":
+            model = str(getattr(self._recognizer, "_mlx_whisper_repo", "") or "")
+        else:
+            model = str(self._asr_config.get(f"{provider}_model") or self._asr_config.get("model") or "")
+        return f"{provider}:{model}" if model else provider
 
     def _detect_per_call_prompt(self) -> bool:
         try:
@@ -61,6 +89,22 @@ class JarvisASR:
         except (TypeError, ValueError):
             return False
 
+    def warmup(self) -> None:
+        """Load the weights and run one pass now, so the first dictation doesn't.
+
+        MLX loads the model and compiles on the first transcribe; paying that
+        at launch keeps it out of the wait after the user's first dictation.
+        """
+
+        started = time.monotonic()
+        try:
+            with self._prompt_lock:
+                self._recognizer.transcribe(np.zeros(16000, dtype=np.float32))
+        except Exception:
+            LOGGER.warning("ASR warm-up failed; the first dictation will load the model", exc_info=True)
+            return
+        LOGGER.info("ASR warm-up done in %.2fs", time.monotonic() - started)
+
     def transcribe(
         self,
         audio: np.ndarray,
@@ -68,29 +112,45 @@ class JarvisASR:
     ) -> Transcript:
         """Transcribe mono float32 audio with an optional Whisper initial prompt."""
 
-        prior_prompt = None
-        if initial_prompt is not None:
-            if self._accepts_per_call_prompt:
+        effective_prompt = initial_prompt
+        with self._prompt_lock:
+            if not initial_prompt:
+                result = self._recognizer.transcribe(audio)
+            elif self._accepts_per_call_prompt:
                 result = self._recognizer.transcribe(audio, initial_prompt=initial_prompt)
-            else:
-                cfg = getattr(self._recognizer, "_config", None)
-                if isinstance(cfg, dict):
-                    cfg.setdefault("asr", {})
-                    prior_prompt = cfg["asr"].get("mlx_whisper_initial_prompt")
-                    cfg["asr"]["mlx_whisper_initial_prompt"] = initial_prompt
+            elif hasattr(self._recognizer, "_mlx_whisper_initial_prompt"):
+                # The vendored recognizer reads its prompt once at construction
+                # and has no per-call parameter, and the vendored file is kept
+                # verbatim, so the prompt is swapped around the call. The base
+                # prompt (TYPELESS_LOCAL_MLX_INITIAL_PROMPT) stays in front.
+                prior = self._recognizer._mlx_whisper_initial_prompt
+                effective_prompt = " ".join(p for p in (prior, initial_prompt) if p)
+                self._recognizer._mlx_whisper_initial_prompt = effective_prompt
                 try:
                     result = self._recognizer.transcribe(audio)
                 finally:
-                    if isinstance(cfg, dict) and prior_prompt is not None:
-                        cfg["asr"]["mlx_whisper_initial_prompt"] = prior_prompt
-        else:
-            result = self._recognizer.transcribe(audio)
+                    self._recognizer._mlx_whisper_initial_prompt = prior
+            else:
+                LOGGER.warning("ASR backend takes no initial prompt; vocabulary not applied")
+                result = self._recognizer.transcribe(audio)
 
         text = str(getattr(result, "text", "") or "")
         if initial_prompt:
-            text = _PROMPT_ECHO_RE.sub("", text, count=1)
+            text = _strip_prompt_echo(text, effective_prompt or initial_prompt, initial_prompt)
         return Transcript(
             text=text.strip(),
             language=str(getattr(result, "language", "") or "unknown"),
             confidence=float(getattr(result, "confidence", 0.0) or 0.0),
         )
+
+
+def _strip_prompt_echo(text: str, *prompts: str) -> str:
+    """Remove a leading copy of the prompt, which Whisper emits on near-silence."""
+
+    stripped = text.lstrip()
+    for prompt in prompts:
+        prompt = (prompt or "").strip()
+        if prompt and stripped.startswith(prompt):
+            return stripped[len(prompt):]
+    return _PROMPT_ECHO_RE.sub("", text, count=1)
+

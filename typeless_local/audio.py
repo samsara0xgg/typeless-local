@@ -197,7 +197,7 @@ class MicrophoneRecorder:
             if self.on_level is not None and chunk.size:
                 self.on_level(self._analyzer.analyze(chunk))
 
-        self._stream = sd.InputStream(
+        stream = sd.InputStream(
             samplerate=self.sample_rate,
             channels=self.channels,
             dtype="float32",
@@ -205,7 +205,14 @@ class MicrophoneRecorder:
             callback=callback,
             device=self.device,
         )
-        self._stream.start()
+        try:
+            stream.start()
+        except Exception:
+            # Left assigned, a stream that never started would make the next
+            # start() return early and "record" nothing.
+            stream.close()
+            raise
+        self._stream = stream
         LOGGER.info("Microphone recording started")
 
     def stop(self) -> np.ndarray:

@@ -80,7 +80,7 @@ def test_ensure_api_key_reports_a_cancelled_prompt(tmp_path, monkeypatch) -> Non
 
 
 def test_refiner_raises_a_typed_error_when_the_key_is_missing(monkeypatch) -> None:
-    """app.py tells the user 'No API key' off this type, not a blind retry."""
+    """app.py pastes the raw transcript and asks for the key off this type."""
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     refiner = TextRefiner(
