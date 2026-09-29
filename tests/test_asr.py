@@ -1,77 +1,113 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import MagicMock
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 
 import typeless_local.asr as asr_module
 
 
-def test_transcribe_passes_initial_prompt_through(monkeypatch, tmp_path: Path) -> None:
+def _fake_mlx_whisper(monkeypatch, text: str = "hello") -> list[dict]:
+    """Install a fake ``mlx_whisper`` so the real vendored recognizer runs."""
+
+    calls: list[dict] = []
+    module = ModuleType("mlx_whisper")
+
+    def transcribe(audio, **kwargs):
+        calls.append(kwargs)
+        return {"text": text, "language": "en", "segments": []}
+
+    module.transcribe = transcribe
+    monkeypatch.setitem(sys.modules, "mlx_whisper", module)
+    return calls
+
+
+def _mlx_config(**asr) -> dict:
+    return {"asr": {"provider": "mlx_whisper", "mlx_whisper_initial_prompt": "", "language": "", **asr}}
+
+
+def test_vocab_prompt_reaches_the_vendored_recognizer(monkeypatch, tmp_path: Path) -> None:
+    """The recognizer reads its prompt once at construction; the per-call
+    prompt used to be written to a config dict it never had, so it was lost."""
+
+    calls = _fake_mlx_whisper(monkeypatch)
+    j = asr_module.JarvisASR(tmp_path, _mlx_config())
+
+    j.transcribe(np.ones(16000, dtype=np.float32) * 0.1, initial_prompt="Common terms: Jarvis, Typeless.")
+    j.transcribe(np.ones(16000, dtype=np.float32) * 0.1)
+
+    assert calls[0]["initial_prompt"] == "Common terms: Jarvis, Typeless."
+    assert calls[1]["initial_prompt"] is None
+
+
+def test_vocab_prompt_follows_the_configured_base_prompt(monkeypatch, tmp_path: Path) -> None:
+    calls = _fake_mlx_whisper(monkeypatch)
+    j = asr_module.JarvisASR(tmp_path, _mlx_config(mlx_whisper_initial_prompt="以下是简体中文。"))
+
+    j.transcribe(np.ones(16000, dtype=np.float32) * 0.1, initial_prompt="Common terms: Jarvis.")
+
+    assert calls[0]["initial_prompt"] == "以下是简体中文。 Common terms: Jarvis."
+    assert j._recognizer._mlx_whisper_initial_prompt == "以下是简体中文。"
+
+
+def test_configured_model_is_the_one_loaded_and_reported(monkeypatch, tmp_path: Path) -> None:
+    calls = _fake_mlx_whisper(monkeypatch)
+    j = asr_module.JarvisASR(tmp_path, _mlx_config(mlx_whisper_model="mlx-community/whisper-large-v3"))
+
+    j.transcribe(np.ones(16000, dtype=np.float32) * 0.1)
+
+    assert calls[0]["path_or_hf_repo"] == "mlx-community/whisper-large-v3"
+    assert j.model_name == "mlx_whisper:mlx-community/whisper-large-v3"
+
+
+def test_mlx_whisper_repo_defaults_and_accepts_both_keys() -> None:
+    assert asr_module.mlx_whisper_repo({}) == asr_module.DEFAULT_MLX_WHISPER_REPO
+    assert asr_module.mlx_whisper_repo({"mlx_whisper_repo": "a/b"}) == "a/b"
+    assert asr_module.mlx_whisper_repo({"mlx_whisper_model": "c/d", "mlx_whisper_repo": "a/b"}) == "c/d"
+
+
+def test_warmup_runs_one_silent_pass(monkeypatch, tmp_path: Path) -> None:
+    calls = _fake_mlx_whisper(monkeypatch)
+    j = asr_module.JarvisASR(tmp_path, _mlx_config())
+
+    j.warmup()
+
+    assert len(calls) == 1
+
+
+def test_transcribe_passes_prompt_to_backends_that_take_it(monkeypatch, tmp_path: Path) -> None:
     captured: dict = {}
 
     class FakeRecognizer:
-        def __init__(self, config):
-            self._config = dict(config)
-            self.provider = "fake"
+        provider = "fake"
 
-        def transcribe(self, audio, **kwargs):
-            captured["initial_prompt"] = kwargs.get(
-                "initial_prompt",
-                self._config.get("asr", {}).get("mlx_whisper_initial_prompt"),
-            )
+        def __init__(self, config):
+            pass
+
+        def transcribe(self, audio, initial_prompt=None):
+            captured["initial_prompt"] = initial_prompt
             return SimpleNamespace(text="hello", language="en", confidence=0.9)
 
-    import sys
-
     fake_module = SimpleNamespace(SpeechRecognizer=FakeRecognizer)
-    fake_pkg = SimpleNamespace(speech_recognizer=fake_module)
-    monkeypatch.setitem(sys.modules, "core", fake_pkg)
-    monkeypatch.setitem(sys.modules, "core.speech_recognizer", fake_module)
-    monkeypatch.setitem(
-        sys.modules,
-        "typeless_local._vendor.jarvis_core.speech_recognizer",
-        fake_module,
-    )
+    monkeypatch.setitem(sys.modules, "typeless_local._vendor.jarvis_core.speech_recognizer", fake_module)
 
     j = asr_module.JarvisASR(tmp_path, {"asr": {"provider": "fake"}})
-    audio = np.zeros(16000, dtype=np.float32)
-    j.transcribe(audio, initial_prompt="Common terms: Jarvis, Typeless.")
+    j.transcribe(np.zeros(16000, dtype=np.float32), initial_prompt="Common terms: Jarvis, Typeless.")
 
-    # The wrapper must either pass per-call OR mutate config; check both possible paths
-    assert captured["initial_prompt"] == "Common terms: Jarvis, Typeless." or \
-           j._recognizer._config["asr"]["mlx_whisper_initial_prompt"] == "Common terms: Jarvis, Typeless."
+    assert captured["initial_prompt"] == "Common terms: Jarvis, Typeless."
 
 
-def test_transcribe_strips_prompt_echo_from_short_outputs(monkeypatch, tmp_path: Path) -> None:
-    class FakeRecognizer:
-        def __init__(self, config):
-            self._config = dict(config)
-            self.provider = "fake"
+def test_transcribe_strips_prompt_echo(monkeypatch, tmp_path: Path) -> None:
+    for echoed, expected in (
+        ("Common terms: Jarvis, Typeless.\nhello", "hello"),
+        ("Common terms: Jarvis, Typeless. hello", "hello"),
+        ("Common terms: Jarvis, Typeless.", ""),
+    ):
+        _fake_mlx_whisper(monkeypatch, text=echoed)
+        j = asr_module.JarvisASR(tmp_path, _mlx_config())
 
-        def transcribe(self, audio, **kwargs):
-            return SimpleNamespace(
-                text="Common terms: Jarvis, Typeless.\nhello",
-                language="en",
-                confidence=0.9,
-            )
+        result = j.transcribe(np.ones(16000, dtype=np.float32) * 0.1, initial_prompt="Common terms: Jarvis, Typeless.")
 
-    import sys
-
-    fake_module = SimpleNamespace(SpeechRecognizer=FakeRecognizer)
-    fake_pkg = SimpleNamespace(speech_recognizer=fake_module)
-    monkeypatch.setitem(sys.modules, "core", fake_pkg)
-    monkeypatch.setitem(sys.modules, "core.speech_recognizer", fake_module)
-    monkeypatch.setitem(
-        sys.modules,
-        "typeless_local._vendor.jarvis_core.speech_recognizer",
-        fake_module,
-    )
-
-    j = asr_module.JarvisASR(tmp_path, {"asr": {"provider": "fake"}})
-    audio = np.zeros(16000, dtype=np.float32)
-    result = j.transcribe(audio, initial_prompt="Common terms: Jarvis, Typeless.")
-
-    assert result.text == "hello"
+        assert result.text == expected

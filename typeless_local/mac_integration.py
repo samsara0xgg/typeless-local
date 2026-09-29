@@ -92,9 +92,31 @@ class FocusContext:
     can_insert_text: bool = False
 
 
+# Seconds an AX query may wait on the target app. The default is about six,
+# and focus is read on the hotkey path, so a hung app would stall the keyboard.
+AX_MESSAGING_TIMEOUT_S = 0.25
+_ax_timeout_set = False
+
+
+def _limit_ax_messaging_timeout() -> None:
+    """Set the global AX timeout once (it applies via the system-wide element)."""
+
+    global _ax_timeout_set
+    if _ax_timeout_set:
+        return
+    _ax_timeout_set = True
+    try:
+        ApplicationServices.AXUIElementSetMessagingTimeout(
+            ApplicationServices.AXUIElementCreateSystemWide(), AX_MESSAGING_TIMEOUT_S
+        )
+    except Exception as exc:
+        LOGGER.debug("Unable to limit the AX messaging timeout: %s", exc)
+
+
 def capture_focus_context() -> FocusContext:
     """Capture focused app/window metadata without reading document contents."""
 
+    _limit_ax_messaging_timeout()
     app = NSWorkspace.sharedWorkspace().frontmostApplication()
     app_name = str(app.localizedName() if app else "")
     pid = app.processIdentifier() if app else 0

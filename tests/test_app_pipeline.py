@@ -327,8 +327,10 @@ def test_recording_restores_audio_when_microphone_start_fails(monkeypatch) -> No
 
     app._start_recording("tap")
 
+    # The mic opens before the speakers are muted, so a mic that never opens
+    # leaves them alone; the restore on the error path is then a no-op.
     assert app.state == "idle"
-    assert app.audio_ducker.calls == ["duck", "restore_all"]
+    assert app.audio_ducker.calls == ["restore_all"]
     assert ("error", "Mic error") in app.overlay.calls
 
 
@@ -553,3 +555,109 @@ def test_countdown_formats_last_minute() -> None:
     assert app._format_countdown(60.0) == "1:00"
     assert app._format_countdown(59.2) == "1:00"
     assert app._format_countdown(58.9) == "0:59"
+
+
+class _FailingRefiner:
+    def __init__(self, exc: Exception) -> None:
+        self.exc = exc
+
+    def refine(self, text, context, vocab=None):
+        raise self.exc
+
+
+def test_refine_failure_pastes_the_raw_transcript(monkeypatch) -> None:
+    pasted = []
+    monkeypatch.setattr("typeless_local.app.paste_text", pasted.append)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("我们明天下午三点开会")
+    app.asr = _FakeASR("我们明天下午三点开会", language="zh")
+    app.refiner = _FailingRefiner(TimeoutError("refine timed out"))
+    app._schedule_overlay_dismiss = lambda: None
+
+    app._process_audio(
+        np.ones(16000, dtype=np.float32),
+        FocusContext("TextEdit", "Untitled", can_insert_text=True),
+    )
+
+    assert pasted == ["我们明天下午三点开会"]
+    assert not any(call[0] == "error" for call in app.overlay.calls)
+
+
+def test_short_confident_english_is_kept(monkeypatch) -> None:
+    pasted = []
+    monkeypatch.setattr("typeless_local.app.paste_text", pasted.append)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("OK.")
+    app.asr = _FakeASR("OK.", language="en", confidence=0.82)
+    app._schedule_overlay_dismiss = lambda: None
+
+    app._process_audio(
+        np.ones(16000, dtype=np.float32),
+        FocusContext("Slack", "#general", can_insert_text=True),
+    )
+
+    assert app.refiner.calls
+    assert pasted == ["Refined text."]
+
+
+def test_short_fragment_in_another_language_is_still_dropped(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.time.sleep", lambda seconds: None)
+    app = _make_app("はい")
+    app.asr = _FakeASR("はい", language="ja", confidence=0.9)
+
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("", ""))
+
+    assert app.refiner.calls == []
+
+
+def test_mic_opens_before_focus_probe_and_mute_runs_off_the_hotkey_path(monkeypatch) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    order = []
+    monkeypatch.setattr(
+        "typeless_local.app.capture_focus_context",
+        lambda: order.append("focus") or FocusContext(app_name="TextEdit", window_title="Untitled"),
+    )
+    app = TypelessLocalApp.__new__(TypelessLocalApp)
+    app._lock = threading.RLock()
+    app._recording_timer = None
+    app.config = SimpleNamespace(sample_rate=16000, min_recording_seconds=0.25, max_recording_seconds=0)
+    app.state = "idle"
+    app.mode = "tap"
+    app.overlay = _FakeOverlay()
+    app.recorder = _FakeRecorder()
+    original_start = app.recorder.start
+    app.recorder.start = lambda: (order.append("mic"), original_start())
+    release = threading.Event()
+
+    class SlowDucker(_FakeDucker):
+        def duck(self) -> bool:
+            release.wait(2)
+            return super().duck()
+
+    app.audio_ducker = SlowDucker()
+    app._audio_io = ThreadPoolExecutor(max_workers=1)
+    app.executor = _FakeExecutor()
+    app._start_processing_progress = lambda: None
+
+    app._start_recording("tap")
+    # The slow mute has not finished, yet the recording is already running.
+    assert order == ["mic", "focus"]
+    assert app.state == "recording"
+    app._finish_recording()
+    release.set()
+    app._audio_io.shutdown(wait=True)
+
+    assert app.audio_ducker.calls == ["duck", "restore_all"]
+
+
+def test_prefetch_warms_the_recognizer_when_weights_are_cached(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.model_is_cached", lambda repo: True)
+    app = TypelessLocalApp.__new__(TypelessLocalApp)
+    app.config = SimpleNamespace(jarvis_config={"asr": {"provider": "mlx_whisper"}})
+    app.asr = SimpleNamespace(warmup=lambda: None)
+    app.executor = _FakeExecutor()
+
+    app._start_model_prefetch()
+
+    assert app.executor.submissions == [(app.asr.warmup, ())]

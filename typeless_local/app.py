@@ -19,7 +19,7 @@ import numpy as np
 from PyObjCTools import AppHelper
 
 from typeless_local import app_version
-from typeless_local.asr import JarvisASR
+from typeless_local.asr import JarvisASR, mlx_whisper_repo
 from typeless_local.audio import MicrophoneRecorder
 from typeless_local import devices
 from typeless_local.config import (
@@ -47,7 +47,7 @@ from typeless_local.first_run import (
     set_api_key,
 )
 from typeless_local.overlay import FloatingOverlay
-from typeless_local.refine import MissingAPIKey, TextRefiner
+from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
 from typeless_local.vocab import as_initial_prompt, load_vocab, write_starter_file
 
@@ -57,6 +57,11 @@ DOUBLE_CLICK_SECONDS = 0.4
 LONG_PRESS_SECONDS = 0.6
 COUNTDOWN_BUFFER_SECONDS = 60.0
 MIN_MIC_STARTUP_SECONDS = 0.75
+# A non-Chinese transcript this short is usually Whisper inventing a word over
+# noise ("you", "Bye."), but it is also how "OK" and "Yes" come out. Whisper's
+# own confidence tells them apart: invented words score low.
+SHORT_FRAGMENT_CHARS = 5
+MIN_SHORT_ENGLISH_CONFIDENCE = 0.4
 PROCESSING_PROGRESS_POINTS = (
     (0.0, 0.0),
     (1.0, 0.80),
@@ -134,6 +139,10 @@ class TypelessLocalApp:
             self.menubar = None
 
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="typeless-local")
+        # Muting and unmuting shell out to osascript, which is too slow to run
+        # between the hotkey and the microphone opening. One worker keeps every
+        # restore behind the duck it undoes.
+        self._audio_io = ThreadPoolExecutor(max_workers=1, thread_name_prefix="typeless-audio-io")
         self.state = "idle"
         self._set_menubar("idle")
         self.mode: Mode = "tap"
@@ -183,7 +192,10 @@ class TypelessLocalApp:
         what decides whether the speakers still need ducking.
         """
 
-        devices.refresh()
+        devices.refresh_if_changed()
+        return self._resolve_capture_device()
+
+    def _resolve_capture_device(self) -> str:
         preferred = getattr(self.config, "input_device", "")
         index = devices.resolve_input_index(preferred)
         recorder = getattr(self, "recorder", None)
@@ -281,8 +293,10 @@ class TypelessLocalApp:
         first F5 where a 1.5 GB download looks like the app has hung."""
 
         asr_config = self.config.jarvis_config.get("asr") or {}
-        repo_id = str(asr_config.get("mlx_whisper_model") or "").strip()
-        if not repo_id or model_is_cached(repo_id):
+        provider = str(asr_config.get("provider") or "").strip().lower()
+        repo_id = mlx_whisper_repo(asr_config)
+        if provider != "mlx_whisper" or model_is_cached(repo_id):
+            self._warm_up_asr()
             return
 
         def report(fraction: float) -> None:
@@ -297,6 +311,7 @@ class TypelessLocalApp:
                 report(0.0)
                 download_model(repo_id, report)
                 LOGGER.info("ASR model %s is ready", repo_id)
+                self._warm_up_asr()
             except Exception:
                 # The first dictation will download it the slow way; that is a
                 # worse experience, not a broken one, so the app stays up.
@@ -305,6 +320,18 @@ class TypelessLocalApp:
                 self._call_ui(self.overlay.hide)
 
         threading.Thread(target=run, daemon=True, name="model-prefetch").start()
+
+    def _warm_up_asr(self) -> None:
+        """Load the recognizer in the background before the first dictation.
+
+        Queued on the processing worker so it can never run alongside a real
+        transcription; a dictation made meanwhile waits for the load it would
+        have had to do anyway.
+        """
+
+        warmup = getattr(self.asr, "warmup", None)
+        if warmup is not None:
+            self.executor.submit(warmup)
 
     def _set_menubar(self, state: str) -> None:
         """Update the menu-bar status icon. No-op when menubar is unavailable."""
@@ -525,12 +552,14 @@ class TypelessLocalApp:
         self._set_menubar("starting")
         self._recording_started_at = time.monotonic()
         self._countdown_text = ""
-        self.focus_context = capture_focus_context()
+        # The microphone opens first: everything that used to come before it
+        # (focus probing, re-enumerating devices, two osascript runs to mute)
+        # delayed it by enough to lose the first words, and ran inside the
+        # keyboard event tap, stalling typing system-wide meanwhile.
+        capture = self._select_capture_device()
         self._call_ui(self.overlay.show_starting)
-        if self._speakers_need_ducking(self._select_capture_device()):
-            self.audio_ducker.duck()
         try:
-            self.recorder.start()
+            capture = self._start_microphone(capture)
         except Exception:
             LOGGER.exception("Failed to start microphone")
             self._restore_audio_ducking()
@@ -538,10 +567,40 @@ class TypelessLocalApp:
             self._set_menubar("error")
             self._call_ui(self.overlay.show_error, "Mic error")
             return
+        self.focus_context = capture_focus_context()
+        if self._speakers_need_ducking(capture):
+            self._run_audio_io(self.audio_ducker.duck)
         self.state = "recording"
         self._set_menubar("recording")
         self._show_recording_ui()
         self._start_recording_timeout()
+
+    def _start_microphone(self, capture: str) -> str:
+        """Open the mic; if it fails, re-read the devices once and try again.
+
+        Devices are only re-enumerated when CoreAudio reports a change, so a
+        change that slipped past that check surfaces here as a failed open.
+        Returns the name of the device actually being captured.
+        """
+
+        try:
+            self.recorder.start()
+            return capture
+        except Exception:
+            LOGGER.warning("Microphone failed to open; re-reading devices and retrying", exc_info=True)
+        devices.refresh()
+        capture = self._resolve_capture_device()
+        self.recorder.start()
+        return capture
+
+    def _run_audio_io(self, job) -> None:
+        """Run a system-audio side effect off the hotkey path, in order."""
+
+        executor = getattr(self, "_audio_io", None)
+        if executor is None:
+            job()
+            return
+        executor.submit(job)
 
     def _finish_recording(self) -> None:
         if self.state != "recording":
@@ -585,10 +644,7 @@ class TypelessLocalApp:
 
     def _restore_audio_ducking(self) -> None:
         restore_all = getattr(self.audio_ducker, "restore_all", None)
-        if restore_all is not None:
-            restore_all()
-        else:
-            self.audio_ducker.restore()
+        self._run_audio_io(restore_all if restore_all is not None else self.audio_ducker.restore)
 
     def _start_recording_timeout(self) -> None:
         self._cancel_recording_timeout()
@@ -686,6 +742,7 @@ class TypelessLocalApp:
         session_id = getattr(self, "_active_session_id", 0) if session_id is None else session_id
         headless = bool(getattr(self, "headless", False))
         started = time.time()
+        missing_api_key = False
 
         sample_rate = int(getattr(self.config, "sample_rate", 16000))
         try:
@@ -728,6 +785,8 @@ class TypelessLocalApp:
             if not headless and not self._is_current_processing_session(session_id):
                 return
             self._set_processing_message("Thinking")
+            if not headless:
+                self._prewarm_refiner()
             LOGGER.info("Starting ASR")
 
             asr_start = time.monotonic()
@@ -756,7 +815,21 @@ class TypelessLocalApp:
             self._set_processing_message("Thinking")
             LOGGER.info("Starting refinement")
             refine_start = time.monotonic()
-            refined = self.refiner.refine(transcript.text, context, vocab=vocab_terms)
+            try:
+                refined = self.refiner.refine(transcript.text, context, vocab=vocab_terms)
+            except Exception as exc:
+                # The transcript is already in hand; losing the whole dictation
+                # because the polish step failed is the worst outcome available.
+                LOGGER.exception("Refinement failed; pasting the raw transcript")
+                record.error = f"refine failed, pasted raw transcript: {exc!r}"
+                refined = RefineResult(
+                    text=transcript.text, raw_text=transcript.text, model=refine_model, fallback="error"
+                )
+                missing_api_key = isinstance(exc, MissingAPIKey)
+            else:
+                fallback = getattr(refined, "fallback", "")
+                if fallback:
+                    record.error = f"refine {fallback}, pasted raw transcript"
             record.refined_text = refined.text or transcript.text
             record.latency_refine_ms = int((time.monotonic() - refine_start) * 1000)
             final_text = record.refined_text
@@ -785,6 +858,10 @@ class TypelessLocalApp:
                 # and the next key is usually Return there, which dismisses this.
                 self._call_ui(self.overlay.show_copy_fallback, final_text, True, False)
                 self._schedule_overlay_dismiss()
+                if missing_api_key:
+                    # Only after the paste: the prompt takes focus, and a Cmd+V
+                    # posted after it would land in the key field instead.
+                    self._call_ui(self._prompt_for_missing_api_key)
                 return
 
             LOGGER.info(
@@ -798,6 +875,8 @@ class TypelessLocalApp:
             self.state = "idle"
             self._set_menubar("idle")
             self._call_ui(self.overlay.show_copy_fallback, final_text, True, True)
+            if missing_api_key:
+                self._call_ui(self._prompt_for_missing_api_key)
         except Exception as exc:
             record.error = repr(exc)
             LOGGER.exception("Dictation failed")
@@ -805,8 +884,7 @@ class TypelessLocalApp:
                 self._stop_processing_progress()
                 self.state = "idle"
                 self._set_menubar("error")
-                reason = "No API key" if isinstance(exc, MissingAPIKey) else "Retry"
-                self._call_ui(self.overlay.show_error, reason)
+                self._call_ui(self.overlay.show_error, "Retry")
                 time.sleep(1.4)
                 self._call_ui(self.overlay.hide)
                 return
@@ -869,13 +947,28 @@ class TypelessLocalApp:
     def _is_current_processing_session(self, session_id: int) -> bool:
         return self.state == "processing" and session_id == getattr(self, "_active_session_id", 0)
 
+    def _prewarm_refiner(self) -> None:
+        """Connect to the refinement API while the recognizer is still running."""
+
+        prewarm = getattr(self.refiner, "prewarm", None)
+        if prewarm is not None:
+            threading.Thread(target=prewarm, daemon=True, name="refine-prewarm").start()
+
     def _should_drop_transcript(self, transcript) -> bool:
         text = str(getattr(transcript, "text", "") or "").strip()
         if not text:
             return True
         language = str(getattr(transcript, "language", "") or "").lower()
-        if language and language != "zh" and len(text) <= 5:
-            LOGGER.info("Dropping short non-zh ASR fragment: lang=%s text=%r", language, text)
+        if language and language != "zh" and len(text) <= SHORT_FRAGMENT_CHARS:
+            confidence = float(getattr(transcript, "confidence", 0.0) or 0.0)
+            if language == "en" and confidence >= MIN_SHORT_ENGLISH_CONFIDENCE:
+                return False
+            LOGGER.info(
+                "Dropping short non-zh ASR fragment: lang=%s conf=%.2f text=%r",
+                language,
+                confidence,
+                text,
+            )
             return True
         return False
 

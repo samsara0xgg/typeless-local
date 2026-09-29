@@ -169,3 +169,40 @@ def test_quality_gate_keeps_short_utterance_surrounded_by_silence() -> None:
 
     near_silence = (0.002 * np.sin(2 * np.pi * 220 * np.arange(16000, dtype=np.float32) / 16000)).astype(np.float32)
     assert recorder.is_quality_ok(near_silence, min_duration=0.15, low_volume_threshold=0.02)[0] is False
+
+
+def test_microphone_recorder_can_retry_after_a_stream_fails_to_start(monkeypatch) -> None:
+    streams = []
+
+    class FakeInputStream:
+        fail = True
+
+        def __init__(self, samplerate, channels, dtype, blocksize, callback, device=None):
+            self.closed = False
+            self.started = False
+            streams.append(self)
+
+        def start(self) -> None:
+            if FakeInputStream.fail:
+                raise RuntimeError("Internal PortAudio error")
+            self.started = True
+
+        def stop(self) -> None:
+            pass
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setitem(sys.modules, "sounddevice", SimpleNamespace(InputStream=FakeInputStream))
+    recorder = MicrophoneRecorder(sample_rate=16000)
+
+    try:
+        recorder.start()
+    except RuntimeError:
+        pass
+    FakeInputStream.fail = False
+    recorder.start()
+
+    assert streams[0].closed is True
+    assert len(streams) == 2 and streams[1].started is True
+    assert recorder.is_recording

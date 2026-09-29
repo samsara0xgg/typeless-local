@@ -9,6 +9,8 @@ still needed. ``has_hardware_aec`` answers exactly that question.
 
 from __future__ import annotations
 
+import ctypes
+import ctypes.util
 import logging
 import os
 import shutil
@@ -93,6 +95,92 @@ def current_output_device() -> str:
     return _default_name(1)
 
 
+class _PropertyAddress(ctypes.Structure):
+    _fields_ = [
+        ("mSelector", ctypes.c_uint32),
+        ("mScope", ctypes.c_uint32),
+        ("mElement", ctypes.c_uint32),
+    ]
+
+
+def _fourcc(code: str) -> int:
+    return int.from_bytes(code.encode("ascii"), "big")
+
+
+_SYSTEM_OBJECT = 1  # kAudioObjectSystemObject
+_SCOPE_GLOBAL = _fourcc("glob")
+_ELEMENT_MAIN = 0
+_HARDWARE_SELECTORS = (
+    _fourcc("dev#"),  # kAudioHardwarePropertyDevices
+    _fourcc("dIn "),  # kAudioHardwarePropertyDefaultInputDevice
+    _fourcc("dOut"),  # kAudioHardwarePropertyDefaultOutputDevice
+)
+_coreaudio: Any = None
+_coreaudio_loaded = False
+_last_signature: tuple | None = None
+
+
+def _load_coreaudio() -> Any:  # noqa: ANN401 - ctypes library handle
+    global _coreaudio, _coreaudio_loaded
+    if _coreaudio_loaded:
+        return _coreaudio
+    _coreaudio_loaded = True
+    try:
+        path = ctypes.util.find_library("CoreAudio")
+        if not path:
+            return None
+        lib = ctypes.CDLL(path)
+        address = ctypes.POINTER(_PropertyAddress)
+        size = ctypes.POINTER(ctypes.c_uint32)
+        lib.AudioObjectGetPropertyDataSize.argtypes = [
+            ctypes.c_uint32, address, ctypes.c_uint32, ctypes.c_void_p, size,
+        ]
+        lib.AudioObjectGetPropertyDataSize.restype = ctypes.c_int32
+        lib.AudioObjectGetPropertyData.argtypes = [
+            ctypes.c_uint32, address, ctypes.c_uint32, ctypes.c_void_p, size, ctypes.c_void_p,
+        ]
+        lib.AudioObjectGetPropertyData.restype = ctypes.c_int32
+        _coreaudio = lib
+    except Exception:
+        LOGGER.debug("CoreAudio unavailable; devices re-read on every recording", exc_info=True)
+    return _coreaudio
+
+
+def _read_object_ids(lib: Any, selector: int) -> tuple[int, ...] | None:  # noqa: ANN401
+    address = _PropertyAddress(selector, _SCOPE_GLOBAL, _ELEMENT_MAIN)
+    size = ctypes.c_uint32(0)
+    if lib.AudioObjectGetPropertyDataSize(
+        _SYSTEM_OBJECT, ctypes.byref(address), 0, None, ctypes.byref(size)
+    ):
+        return None
+    buffer = (ctypes.c_uint32 * max(1, size.value // 4))()
+    if lib.AudioObjectGetPropertyData(
+        _SYSTEM_OBJECT, ctypes.byref(address), 0, None, ctypes.byref(size), buffer
+    ):
+        return None
+    return tuple(buffer[: size.value // 4])
+
+
+def hardware_signature() -> tuple | None:
+    """CoreAudio's device IDs and default input/output, or None if unreadable.
+
+    A few microseconds to read, unlike re-initialising PortAudio, so it can sit
+    on the hotkey path and decide whether that heavier re-read is needed.
+    """
+
+    lib = _load_coreaudio()
+    if lib is None:
+        return None
+    try:
+        parts = tuple(_read_object_ids(lib, selector) for selector in _HARDWARE_SELECTORS)
+    except Exception:
+        LOGGER.debug("Unable to read CoreAudio devices", exc_info=True)
+        return None
+    if any(part is None for part in parts):
+        return None
+    return parts
+
+
 def refresh() -> None:
     """Re-read the hardware list so a mic plugged or pulled since launch is seen.
 
@@ -101,12 +189,30 @@ def refresh() -> None:
     open it with an internal error. Only safe while no stream is open.
     """
 
+    global _last_signature
     sd = _sounddevice()
     try:
         sd._terminate()
         sd._initialize()
     except Exception:
         LOGGER.warning("Unable to refresh the audio device list", exc_info=True)
+        return
+    _last_signature = hardware_signature()
+
+
+def refresh_if_changed() -> bool:
+    """``refresh()`` only when CoreAudio's devices or defaults have changed.
+
+    Re-initialising PortAudio on every recording put a full device enumeration
+    between the hotkey and the microphone opening. Where the change can't be
+    detected, it refreshes every time, as before. Returns whether it refreshed.
+    """
+
+    signature = hardware_signature()
+    if signature is not None and signature == _last_signature:
+        return False
+    refresh()
+    return True
 
 
 def resolve_input_index(name: str) -> int | None:

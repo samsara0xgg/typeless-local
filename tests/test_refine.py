@@ -146,3 +146,91 @@ def test_refiner_passes_preset_reasoning_and_extra_body() -> None:
     assert sent["extra_body"] == {"thinking": {"type": "disabled"}}
     plain = kwargs_for(model="gpt-5.4-mini")
     assert "reasoning_effort" not in plain and "extra_body" not in plain
+
+
+def _refiner(fake, max_tokens=128, model="gpt-5.4-mini") -> TextRefiner:
+    return TextRefiner(
+        RefineConfig(model, "https://api.openai.com/v1", "OPENAI_API_KEY", max_tokens),
+        client=fake,
+    )
+
+
+def test_refiner_budget_grows_with_long_dictations() -> None:
+    fake = _FakeClient()
+
+    _refiner(fake, max_tokens=512).refine("字" * 2000)
+
+    assert fake.completions.kwargs["max_completion_tokens"] == 4000
+
+
+def test_refiner_sets_a_timeout_that_scales_with_length() -> None:
+    fake = _FakeClient()
+    _refiner(fake).refine("short")
+    short = fake.completions.kwargs["timeout"]
+    _refiner(fake).refine("字" * 1000)
+    long = fake.completions.kwargs["timeout"]
+
+    assert 5 <= short < long <= 60
+
+
+def test_refiner_falls_back_to_raw_text_when_the_reply_is_cut_off() -> None:
+    fake = _FakeClient()
+    fake.completions.create = lambda **kwargs: SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="前半段"), finish_reason="length")]
+    )
+
+    result = _refiner(fake).refine("前半段和后半段")
+
+    assert result.text == "前半段和后半段"
+    assert result.fallback == "truncated"
+
+
+def test_refiner_retries_once_on_a_dropped_connection_but_not_a_timeout() -> None:
+    from unittest.mock import MagicMock
+
+    from openai import APIConnectionError, APITimeoutError
+
+    request = MagicMock()
+    fake = _FakeClient()
+    attempts = []
+
+    def flaky(**kwargs):
+        attempts.append(kwargs)
+        if len(attempts) == 1:
+            raise APIConnectionError(request=request)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="ok"))])
+
+    fake.completions.create = flaky
+    assert _refiner(fake).refine("hello").text == "ok"
+    assert len(attempts) == 2
+
+    attempts.clear()
+
+    def slow(**kwargs):
+        attempts.append(kwargs)
+        raise APITimeoutError(request=request)
+
+    fake.completions.create = slow
+    try:
+        _refiner(fake).refine("hello")
+    except APITimeoutError:
+        pass
+    assert len(attempts) == 1
+
+
+def test_prewarm_makes_one_cheap_request_and_never_raises() -> None:
+    requests = []
+
+    class Models:
+        def list(self):
+            requests.append("models")
+            raise RuntimeError("offline")
+
+    class Client(_FakeClient):
+        def with_options(self, **options):
+            requests.append(options)
+            return SimpleNamespace(models=Models())
+
+    _refiner(Client()).prewarm()
+
+    assert requests == [{"timeout": 3.0, "max_retries": 0}, "models"]
