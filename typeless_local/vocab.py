@@ -62,6 +62,12 @@ def load_vocab(path: Path) -> list[str]:
     return result
 
 
+def load_user_terms(path: Path) -> list[str]:
+    """The hand-kept `user:` terms only; these, not `auto:`, go into Whisper's prompt."""
+
+    return _load_sections(Path(path))["user"]
+
+
 def load_rejected(path: Path) -> list[str]:
     """Return the case-preserved list of terms the extractor must skip."""
 

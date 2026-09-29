@@ -10,12 +10,14 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
 LOGGER = logging.getLogger(__name__)
 
 _PROMPT_ECHO_RE = re.compile(r"^\s*Common terms:[^\n]*\n", re.IGNORECASE)
+_LOOP_RE = re.compile(r"(.{2,8})\1{2,}")
 DEFAULT_MLX_WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
 
 
@@ -118,18 +120,11 @@ class JarvisASR:
                 result = self._recognizer.transcribe(audio)
             elif self._accepts_per_call_prompt:
                 result = self._recognizer.transcribe(audio, initial_prompt=initial_prompt)
-            elif hasattr(self._recognizer, "_mlx_whisper_initial_prompt"):
-                # The vendored recognizer reads its prompt once at construction
-                # and has no per-call parameter, and the vendored file is kept
-                # verbatim, so the prompt is swapped around the call. The base
-                # prompt (TYPELESS_LOCAL_MLX_INITIAL_PROMPT) stays in front.
-                prior = self._recognizer._mlx_whisper_initial_prompt
-                effective_prompt = " ".join(p for p in (prior, initial_prompt) if p)
-                self._recognizer._mlx_whisper_initial_prompt = effective_prompt
-                try:
-                    result = self._recognizer.transcribe(audio)
-                finally:
-                    self._recognizer._mlx_whisper_initial_prompt = prior
+            elif getattr(self._recognizer, "provider", "") == "mlx_whisper":
+                effective_prompt = " ".join(
+                    p for p in (self._recognizer._mlx_whisper_initial_prompt, initial_prompt) if p
+                )
+                result = self._transcribe_mlx_with_prompt(audio, effective_prompt)
             else:
                 LOGGER.warning("ASR backend takes no initial prompt; vocabulary not applied")
                 result = self._recognizer.transcribe(audio)
@@ -142,6 +137,40 @@ class JarvisASR:
             language=str(getattr(result, "language", "") or "unknown"),
             confidence=float(getattr(result, "confidence", 0.0) or 0.0),
         )
+
+    def _transcribe_mlx_with_prompt(self, audio: np.ndarray, prompt: str):
+        """Whisper with the word list in its prompt, falling back to none if it loops.
+
+        The vendored recognizer takes no per-call prompt and is kept verbatim,
+        so mlx_whisper is called here. condition_on_previous_text=False stops
+        one window's output from feeding the next; with the list in the prompt
+        Whisper still sometimes repeats a phrase on noisy audio, and then the
+        chunk is heard again without it.
+        """
+
+        rec = self._recognizer
+        out = rec._load_mlx_whisper().transcribe(
+            rec._normalize_audio(audio),
+            path_or_hf_repo=rec._mlx_whisper_repo,
+            fp16=rec._mlx_whisper_fp16,
+            temperature=rec._mlx_whisper_temperature,
+            language=rec.language,
+            initial_prompt=prompt,
+            condition_on_previous_text=False,
+            verbose=False,
+        )
+        text = str(out.get("text", "")).strip()
+        if _looks_looped(text):
+            LOGGER.info("Whisper looped with the word list (%r); hearing the chunk without it", text[:80])
+            return rec.transcribe(audio)
+        language = str(out.get("language") or rec.language or "unknown")
+        return SimpleNamespace(text=text, language=language, confidence=rec._estimate_confidence(out))
+
+
+def _looks_looped(text: str) -> bool:
+    """A 2-8 character unit repeated three times in a row, e.g. 我都知道,我都知道,我都知道."""
+
+    return bool(_LOOP_RE.search(re.sub(r"[\s\W_]+", "", text)))
 
 
 def _strip_prompt_echo(text: str, *prompts: str) -> str:

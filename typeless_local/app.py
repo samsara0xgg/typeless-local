@@ -49,7 +49,7 @@ from typeless_local.first_run import (
 from typeless_local.overlay import FloatingOverlay
 from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
-from typeless_local.vocab import load_vocab, write_starter_file
+from typeless_local.vocab import as_initial_prompt, load_user_terms, load_vocab, write_starter_file
 
 LOGGER = logging.getLogger(__name__)
 Mode = Literal["tap", "hands_free"]
@@ -61,6 +61,7 @@ MIN_MIC_STARTUP_SECONDS = 0.75
 # noise ("you", "Bye."), but it is also how "OK" and "Yes" come out. Whisper's
 # own confidence tells them apart: invented words score low.
 SHORT_FRAGMENT_CHARS = 5
+WHISPER_WINDOW_S = 30
 MIN_SHORT_ENGLISH_CONFIDENCE = 0.4
 PROCESSING_PROGRESS_POINTS = (
     (0.0, 0.0),
@@ -86,9 +87,11 @@ class TypelessLocalApp:
         if user_paths is not None:
             write_starter_file(user_paths.vocab_path)
             self.vocab = load_vocab(user_paths.vocab_path)
+            self.whisper_prompt = as_initial_prompt(load_user_terms(user_paths.vocab_path))
             self.trace = DictationTrace(user_paths.trace_db_path)
         else:
             self.vocab = []
+            self.whisper_prompt = ""
             self.trace = None
 
         components = self._build_components()
@@ -183,6 +186,7 @@ class TypelessLocalApp:
         if user_paths is None:
             return
         self.vocab = load_vocab(user_paths.vocab_path)
+        self.whisper_prompt = as_initial_prompt(load_user_terms(user_paths.vocab_path))
         LOGGER.info("Reloaded vocab: %d terms", len(self.vocab))
 
     def _select_capture_device(self) -> str:
@@ -759,7 +763,15 @@ class TypelessLocalApp:
         floor = float(getattr(self.config, "low_volume_threshold", 0.02))
         if peak_level(audio, int(getattr(self.config, "sample_rate", 16000))) < floor:
             return Transcript(text="", language="unknown", confidence=0.0)
-        return self.asr.transcribe(audio)
+        return self._whisper(audio)
+
+    def _whisper(self, audio: np.ndarray) -> Transcript:
+        """The user's word list goes into Whisper's prompt only for a chunk that
+        fits one 30 s window: across windows it used to loop on longer speech."""
+
+        sample_rate = int(getattr(self.config, "sample_rate", 16000))
+        prompt = getattr(self, "whisper_prompt", "") if audio.size <= WHISPER_WINDOW_S * sample_rate else ""
+        return self.asr.transcribe(audio, initial_prompt=prompt or None)
 
     def _process_audio(
         self,
@@ -822,13 +834,11 @@ class TypelessLocalApp:
             asr_start = time.monotonic()
             vocab_terms = getattr(self, "vocab", []) or []
             # Stretches cut at his pauses were heard while he talked (on this
-            # executor, so they are done); only the rest is left. The word list
-            # goes to refine only: in Whisper's prompt it looped on longer speech.
-            # Without a cut the whole recording already passed the quality gate;
+            # executor, so they are done); only the rest is left. Without a cut the whole recording already passed the quality gate;
             # after one, the rest may be only his closing pause.
             parts = [stretch.result() for stretch in stretches]
             rest = audio[heard_until:]
-            parts.append(self._hear(rest) if parts else self.asr.transcribe(rest))
+            parts.append(self._hear(rest) if parts else self._whisper(rest))
             transcript = _join(parts)
             record.raw_asr_text = transcript.text
             record.raw_asr_language = transcript.language

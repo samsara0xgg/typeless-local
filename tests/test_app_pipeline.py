@@ -54,9 +54,11 @@ class _FakeASR:
         self.language = language
         self.confidence = confidence
         self.calls = []
+        self.prompts = []
 
     def transcribe(self, audio: np.ndarray, initial_prompt: str | None = None) -> Transcript:
         self.calls.append(audio)
+        self.prompts.append(initial_prompt)
         return Transcript(text=self.text, language=self.language, confidence=self.confidence)
 
 
@@ -181,6 +183,16 @@ def test_process_audio_joins_stretches_heard_while_talking_with_the_rest(monkeyp
     (tail,) = app.asr.calls
     assert tail.size == 8000
     assert app.refiner.calls == [("第一段。the rest", context)]
+
+
+def test_word_list_goes_to_whisper_only_for_chunks_within_one_window() -> None:
+    app = _make_app("hi")
+    app.whisper_prompt = "Common terms: Jarvis, StarTrial."
+
+    app._hear(np.full(16000 * 10, 0.5, dtype=np.float32))
+    app._hear(np.full(16000 * 31, 0.5, dtype=np.float32))
+
+    assert app.asr.prompts == ["Common terms: Jarvis, StarTrial.", None]
 
 
 def test_process_audio_shows_copy_fallback_when_focus_is_not_editable(monkeypatch) -> None:

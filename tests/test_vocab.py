@@ -128,3 +128,12 @@ def test_reject_term_creates_file_if_missing(tmp_path: Path) -> None:
     path = tmp_path / "vocab.yaml"
     vocab.reject_term(path, "Mishear")
     assert vocab.load_rejected(path) == ["Mishear"]
+
+
+def test_load_user_terms_leaves_out_auto_terms(tmp_path) -> None:
+    from typeless_local.vocab import load_user_terms
+
+    path = tmp_path / "vocab.yaml"
+    path.write_text("user:\n- Jarvis\n- StarTrial\nauto:\n- mishear\n", encoding="utf-8")
+
+    assert load_user_terms(path) == ["Jarvis", "StarTrial"]

@@ -52,6 +52,34 @@ def test_vocab_prompt_follows_the_configured_base_prompt(monkeypatch, tmp_path: 
     assert j._recognizer._mlx_whisper_initial_prompt == "以下是简体中文。"
 
 
+def test_prompted_whisper_does_not_condition_on_its_own_output(monkeypatch, tmp_path: Path) -> None:
+    calls = _fake_mlx_whisper(monkeypatch)
+    j = asr_module.JarvisASR(tmp_path, _mlx_config())
+
+    j.transcribe(np.ones(16000, dtype=np.float32) * 0.1, initial_prompt="Common terms: Jarvis.")
+
+    assert calls[0]["condition_on_previous_text"] is False
+
+
+def test_a_looping_prompted_chunk_is_heard_again_without_the_word_list(monkeypatch, tmp_path: Path) -> None:
+    calls: list[dict] = []
+    module = ModuleType("mlx_whisper")
+
+    def transcribe(audio, **kwargs):
+        calls.append(kwargs)
+        text = "我都知道,我都知道,我都知道,我都知道" if len(calls) == 1 else "我都知道了"
+        return {"text": text, "language": "zh", "segments": []}
+
+    module.transcribe = transcribe
+    monkeypatch.setitem(sys.modules, "mlx_whisper", module)
+    j = asr_module.JarvisASR(tmp_path, _mlx_config())
+
+    result = j.transcribe(np.ones(16000, dtype=np.float32) * 0.1, initial_prompt="Common terms: Jarvis.")
+
+    assert result.text == "我都知道了"
+    assert calls[1]["initial_prompt"] is None
+
+
 def test_configured_model_is_the_one_loaded_and_reported(monkeypatch, tmp_path: Path) -> None:
     calls = _fake_mlx_whisper(monkeypatch)
     j = asr_module.JarvisASR(tmp_path, _mlx_config(mlx_whisper_model="mlx-community/whisper-large-v3"))
