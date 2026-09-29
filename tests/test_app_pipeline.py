@@ -691,3 +691,23 @@ def test_prefetch_warms_the_recognizer_when_weights_are_cached(monkeypatch) -> N
     app._start_model_prefetch()
 
     assert app.executor.submissions == [(app.asr.warmup, ())]
+
+
+def test_refine_prewarm_runs_at_most_once_every_few_seconds(monkeypatch) -> None:
+    clock = [100.0]
+    monkeypatch.setattr("typeless_local.app.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        "typeless_local.app.threading.Thread",
+        lambda target, **kwargs: SimpleNamespace(start=target),
+    )
+    app = _make_app("hi")
+    prewarms = []
+    app.refiner.prewarm = lambda: prewarms.append(clock[0])
+
+    app._prewarm_refiner()  # recording starts
+    clock[0] += 1.0
+    app._prewarm_refiner()  # a stretch is cut a second later: still warm
+    clock[0] += 3.0
+    app._prewarm_refiner()  # four seconds in: warm it again before it idles out
+
+    assert prewarms == [100.0, 104.0]

@@ -62,6 +62,7 @@ MIN_MIC_STARTUP_SECONDS = 0.75
 # own confidence tells them apart: invented words score low.
 SHORT_FRAGMENT_CHARS = 5
 WHISPER_WINDOW_S = 30
+PREWARM_INTERVAL_S = 3.0
 MIN_SHORT_ENGLISH_CONFIDENCE = 0.4
 PROCESSING_PROGRESS_POINTS = (
     (0.0, 0.0),
@@ -581,6 +582,7 @@ class TypelessLocalApp:
         self._set_menubar("recording")
         self._show_recording_ui()
         self._start_recording_timeout()
+        self._prewarm_refiner()
 
     def _start_microphone(self, capture: str) -> str:
         """Open the mic; if it fails, re-read the devices once and try again.
@@ -756,6 +758,7 @@ class TypelessLocalApp:
         """Audio thread: a stretch cut at his pause is heard now, ahead of the stop."""
 
         self._stretches.append(self.executor.submit(self._hear, stretch))
+        self._prewarm_refiner()
 
     def _hear(self, audio: np.ndarray) -> Transcript:
         """One stretch through Whisper; one too quiet for the recording's own gate is not sent."""
@@ -1012,11 +1015,21 @@ class TypelessLocalApp:
         return self.state == "processing" and session_id == getattr(self, "_active_session_id", 0)
 
     def _prewarm_refiner(self) -> None:
-        """Connect to the refinement API while the recognizer is still running."""
+        """Connect to the refinement API ahead of refine, at most every few seconds.
 
-        prewarm = getattr(self.refiner, "prewarm", None)
-        if prewarm is not None:
-            threading.Thread(target=prewarm, daemon=True, name="refine-prewarm").start()
+        Called when recording starts, as each stretch is cut, and at the stop:
+        with stretches heard while he talks, Whisper is nearly done at the stop,
+        so a prewarm only there no longer runs ahead of refine. The client drops
+        a connection idle for about 5 s, so one at the start alone expires on a
+        long dictation.
+        """
+
+        prewarm = getattr(getattr(self, "refiner", None), "prewarm", None)
+        now = time.monotonic()
+        if prewarm is None or now - getattr(self, "_prewarmed_at", -PREWARM_INTERVAL_S) < PREWARM_INTERVAL_S:
+            return
+        self._prewarmed_at = now
+        threading.Thread(target=prewarm, daemon=True, name="refine-prewarm").start()
 
     def _should_drop_transcript(self, transcript) -> bool:
         text = str(getattr(transcript, "text", "") or "").strip()
