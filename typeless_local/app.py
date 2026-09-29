@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import atexit
 import dataclasses
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 import logging
 import math
 import os
@@ -19,8 +19,8 @@ import numpy as np
 from PyObjCTools import AppHelper
 
 from typeless_local import app_version
-from typeless_local.asr import JarvisASR, mlx_whisper_repo
-from typeless_local.audio import MicrophoneRecorder, keep_recording
+from typeless_local.asr import JarvisASR, Transcript, mlx_whisper_repo
+from typeless_local.audio import MicrophoneRecorder, keep_recording, peak_level
 from typeless_local import devices
 from typeless_local.config import (
     AppConfig,
@@ -49,7 +49,7 @@ from typeless_local.first_run import (
 from typeless_local.overlay import FloatingOverlay
 from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
-from typeless_local.vocab import as_initial_prompt, load_vocab, write_starter_file
+from typeless_local.vocab import load_vocab, write_starter_file
 
 LOGGER = logging.getLogger(__name__)
 Mode = Literal["tap", "hands_free"]
@@ -160,6 +160,7 @@ class TypelessLocalApp:
         self._primary_down_at = 0.0
         self._last_short_tap_at = 0.0
         self._active_session_id = 0
+        self._stretches: list[Future[Transcript]] = []
 
     def _build_components(self) -> SimpleNamespace:
         """Construct ASR / refiner / recorder. Patched by tests to inject fakes."""
@@ -171,6 +172,7 @@ class TypelessLocalApp:
             sample_rate=config.sample_rate,
             on_level=self._on_audio_level,
             device=devices.resolve_input_index(getattr(config, "input_device", "")),
+            on_stretch=self._on_stretch,
         )
         return SimpleNamespace(asr=asr, refiner=refiner, recorder=recorder)
 
@@ -558,6 +560,7 @@ class TypelessLocalApp:
         # keyboard event tap, stalling typing system-wide meanwhile.
         capture = self._select_capture_device()
         self._call_ui(self.overlay.show_starting)
+        self._stretches = []
         try:
             capture = self._start_microphone(capture)
         except Exception:
@@ -625,7 +628,11 @@ class TypelessLocalApp:
         self._processing_message = "Thinking"
         self._call_ui(self.overlay.show_thinking, progress=0.0, message=self._processing_message)
         self._start_processing_progress()
-        future = self.executor.submit(self._process_audio, audio, self.focus_context, session_id)
+        stretches, self._stretches = getattr(self, "_stretches", []), []
+        heard_until = int(getattr(self.recorder, "heard_until", 0))
+        future = self.executor.submit(
+            self._process_audio, audio, self.focus_context, session_id, stretches, heard_until
+        )
         future.add_done_callback(self._log_processing_done)
 
     def _cancel(self) -> None:
@@ -637,6 +644,9 @@ class TypelessLocalApp:
                 self.recorder.stop()
             except Exception:
                 LOGGER.exception("Failed to stop microphone during cancel")
+        for stretch in getattr(self, "_stretches", []):
+            stretch.cancel()
+        self._stretches = []
         self._restore_audio_ducking()
         self.state = "idle"
         self._set_menubar("idle")
@@ -738,7 +748,27 @@ class TypelessLocalApp:
                 LOGGER.info("Maximum recording duration reached; finishing dictation.")
                 self._finish_recording()
 
-    def _process_audio(self, audio: np.ndarray, context: FocusContext, session_id: int | None = None) -> None:
+    def _on_stretch(self, stretch: np.ndarray) -> None:
+        """Audio thread: a stretch cut at his pause is heard now, ahead of the stop."""
+
+        self._stretches.append(self.executor.submit(self._hear, stretch))
+
+    def _hear(self, audio: np.ndarray) -> Transcript:
+        """One stretch through Whisper; one too quiet for the recording's own gate is not sent."""
+
+        floor = float(getattr(self.config, "low_volume_threshold", 0.02))
+        if peak_level(audio, int(getattr(self.config, "sample_rate", 16000))) < floor:
+            return Transcript(text="", language="unknown", confidence=0.0)
+        return self.asr.transcribe(audio)
+
+    def _process_audio(
+        self,
+        audio: np.ndarray,
+        context: FocusContext,
+        session_id: int | None = None,
+        stretches: list[Future[Transcript]] | tuple[()] = (),
+        heard_until: int = 0,
+    ) -> None:
         session_id = getattr(self, "_active_session_id", 0) if session_id is None else session_id
         headless = bool(getattr(self, "headless", False))
         started = time.time()
@@ -791,9 +821,15 @@ class TypelessLocalApp:
 
             asr_start = time.monotonic()
             vocab_terms = getattr(self, "vocab", []) or []
-            transcript = self.asr.transcribe(
-                audio, initial_prompt=as_initial_prompt(vocab_terms) or None
-            )
+            # Stretches cut at his pauses were heard while he talked (on this
+            # executor, so they are done); only the rest is left. The word list
+            # goes to refine only: in Whisper's prompt it looped on longer speech.
+            # Without a cut the whole recording already passed the quality gate;
+            # after one, the rest may be only his closing pause.
+            parts = [stretch.result() for stretch in stretches]
+            rest = audio[heard_until:]
+            parts.append(self._hear(rest) if parts else self.asr.transcribe(rest))
+            transcript = _join(parts)
             record.raw_asr_text = transcript.text
             record.raw_asr_language = transcript.language
             record.raw_asr_confidence = float(getattr(transcript, "confidence", 0.0) or 0.0)
@@ -1024,6 +1060,23 @@ class TypelessLocalApp:
             future.result()
         except Exception:
             LOGGER.exception("Processing worker crashed")
+
+
+def _join(parts: list[Transcript]) -> Transcript:
+    """The stretches' words in order; language and confidence from the longest one."""
+
+    text = ""
+    for part in parts:
+        piece = part.text
+        if text and piece and _latin(text[-1]) and _latin(piece[0]):
+            text += " "
+        text += piece
+    longest = max(parts, key=lambda part: len(part.text))
+    return Transcript(text=text, language=longest.language, confidence=longest.confidence)
+
+
+def _latin(char: str) -> bool:
+    return char.isascii() and char.isalnum()
 
 
 def configure_logging() -> None:

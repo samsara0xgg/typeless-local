@@ -165,6 +165,24 @@ def test_process_audio_transcribes_refines_and_pastes(monkeypatch) -> None:
     assert app.overlay.calls[-1] == ("copy-fallback", "Refined text.", True, False)
 
 
+def test_process_audio_joins_stretches_heard_while_talking_with_the_rest(monkeypatch) -> None:
+    from concurrent.futures import Future
+
+    monkeypatch.setattr("typeless_local.app.paste_text", lambda _text: None)
+    app = _make_app("the rest")
+    heard = Future()
+    heard.set_result(Transcript(text="第一段。", language="zh", confidence=0.9))
+    audio = np.concatenate([np.full(16000, 0.5, dtype=np.float32), np.ones(8000, dtype=np.float32)])
+    context = FocusContext(app_name="TextEdit", window_title="Untitled", can_insert_text=True)
+
+    app._process_audio(audio, context, None, [heard], 16000)
+
+    # Only the part after the cut goes to Whisper; the words join in order.
+    (tail,) = app.asr.calls
+    assert tail.size == 8000
+    assert app.refiner.calls == [("第一段。the rest", context)]
+
+
 def test_process_audio_shows_copy_fallback_when_focus_is_not_editable(monkeypatch) -> None:
     """With nowhere to paste, the text still lands on the clipboard by itself.
 

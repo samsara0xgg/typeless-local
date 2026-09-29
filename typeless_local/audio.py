@@ -13,6 +13,34 @@ import numpy as np
 
 LOGGER = logging.getLogger(__name__)
 LevelCallback = Callable[[float], None]
+StretchCallback = Callable[[np.ndarray], None]
+
+# A stretch of at least 5 s that ends in 0.5 s of quiet is handed on while he
+# goes on talking, so the stop leaves only the rest to hear. Quiet = a block
+# under -45 dBFS; measured on 60 recordings, -40 dB cut into soft speech.
+QUIET_RMS = 10 ** (-45 / 20)
+PAUSE_SECONDS = 0.5
+MIN_STRETCH_SECONDS = 5.0
+
+
+def peak_level(audio: np.ndarray, sample_rate: int, window_seconds: float = 0.2) -> float:
+    """RMS of the loudest short window.
+
+    Whole-clip RMS averages a brief phrase into the silence around it, so a
+    short utterance scores lower than the same speech in a long recording
+    and gets dropped as "too quiet". The loudest window is independent of
+    how much silence surrounds it.
+    """
+
+    normalized = np.asarray(audio, dtype=np.float32)
+    window = max(1, int(sample_rate * window_seconds))
+    if normalized.size <= window:
+        if normalized.size == 0:
+            return 0.0
+        return float(np.sqrt(np.mean(np.square(normalized), dtype=np.float64)))
+    cumulative = np.concatenate(([0.0], np.cumsum(np.square(normalized, dtype=np.float64))))
+    window_means = (cumulative[window:] - cumulative[:-window]) / window
+    return float(np.sqrt(window_means.max()))
 
 
 def keep_recording(
@@ -104,6 +132,7 @@ class MicrophoneRecorder:
         block_duration: float = 0.05,
         on_level: LevelCallback | None = None,
         device: int | None = None,
+        on_stretch: StretchCallback | None = None,
     ) -> None:
         self.sample_rate = sample_rate
         self.channels = channels
@@ -116,6 +145,13 @@ class MicrophoneRecorder:
         self._stream = None
         self._started_at = 0.0
         self._analyzer = VoiceActivityAnalyzer(sample_rate)
+        # Called on the audio thread with each stretch cut at a pause; keep it quick.
+        self.on_stretch = on_stretch
+        self.heard_until = 0  # samples already handed to on_stretch this recording
+        self._stretch_from = 0
+        self._stretch_samples = 0
+        self._quiet_samples = 0
+        self._spoke = False
 
     @property
     def is_recording(self) -> bool:
@@ -147,23 +183,29 @@ class MicrophoneRecorder:
         return float(np.sqrt(np.mean(np.square(normalized), dtype=np.float64)))
 
     def peak_window_level(self, audio: np.ndarray, window_seconds: float = 0.2) -> float:
-        """RMS of the loudest short window.
+        """RMS of the loudest short window (see :func:`peak_level`)."""
 
-        Whole-clip RMS averages a brief phrase into the silence around it, so a
-        short utterance scores lower than the same speech in a long recording
-        and gets dropped as "too quiet". The loudest window is independent of
-        how much silence surrounds it.
-        """
+        return peak_level(audio, self.sample_rate, window_seconds)
 
-        normalized = np.asarray(audio, dtype=np.float32)
-        window = max(1, int(self.sample_rate * window_seconds))
-        if normalized.size <= window:
-            return self.get_volume_level(normalized)
-        cumulative = np.concatenate(
-            ([0.0], np.cumsum(np.square(normalized, dtype=np.float64)))
-        )
-        window_means = (cumulative[window:] - cumulative[:-window]) / window
-        return float(np.sqrt(window_means.max()))
+    def _track_stretch(self, chunk: np.ndarray) -> None:
+        """Per block: after 0.5 s of quiet, hand the stretch before it to ``on_stretch``."""
+
+        if self.on_stretch is None or chunk.size == 0:
+            return
+        quiet = self.get_volume_level(chunk) < QUIET_RMS
+        self._quiet_samples = self._quiet_samples + chunk.size if quiet else 0
+        self._spoke = self._spoke or not quiet
+        self._stretch_samples += chunk.size
+        if not self._spoke or self._quiet_samples < PAUSE_SECONDS * self.sample_rate:
+            return
+        if self._stretch_samples < MIN_STRETCH_SECONDS * self.sample_rate:
+            return
+        with self._lock:
+            stretch = np.concatenate(self._chunks[self._stretch_from :])
+            self._stretch_from = len(self._chunks)
+        self.heard_until += stretch.size
+        self._stretch_samples, self._spoke = 0, False
+        self.on_stretch(stretch)
 
     def is_quality_ok(
         self,
@@ -208,6 +250,8 @@ class MicrophoneRecorder:
 
         self._chunks = []
         self._started_at = time.monotonic()
+        self.heard_until = self._stretch_from = self._stretch_samples = self._quiet_samples = 0
+        self._spoke = False
         blocksize = max(1, int(self.sample_rate * self.block_duration))
 
         def callback(indata, frames, time_info, status) -> None:
@@ -217,6 +261,7 @@ class MicrophoneRecorder:
             chunk = np.asarray(indata[:, 0], dtype=np.float32).copy()
             with self._lock:
                 self._chunks.append(chunk)
+            self._track_stretch(chunk)
             if self.on_level is not None and chunk.size:
                 self.on_level(self._analyzer.analyze(chunk))
 

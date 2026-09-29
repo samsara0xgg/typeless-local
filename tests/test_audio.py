@@ -206,3 +206,29 @@ def test_microphone_recorder_can_retry_after_a_stream_fails_to_start(monkeypatch
     assert streams[0].closed is True
     assert len(streams) == 2 and streams[1].started is True
     assert recorder.is_recording
+
+
+def test_a_stretch_ending_in_half_a_second_of_quiet_is_handed_on_while_recording() -> None:
+    stretches = []
+    recorder = MicrophoneRecorder(sample_rate=16000, on_stretch=stretches.append)
+    speech = np.full(800, 0.05, dtype=np.float32)  # 50 ms blocks, as the stream delivers them
+    quiet = np.zeros(800, dtype=np.float32)
+
+    def feed(block, count):
+        for _ in range(count):
+            recorder._chunks.append(block)
+            recorder._track_stretch(block)
+
+    feed(speech, 60)  # 3 s of talk, then a pause: too short to cut
+    feed(quiet, 12)
+    assert stretches == []
+    feed(speech, 50)  # 2.5 s more puts it past 5 s; the next half second of quiet cuts it
+    feed(quiet, 9)
+    assert stretches == []
+    feed(quiet, 1)
+    (first,) = stretches
+    assert first.size == (60 + 12 + 50 + 10) * 800
+    assert recorder.heard_until == first.size
+    feed(quiet, 40)  # a long pause with no new words is not a stretch
+    feed(speech, 10)
+    assert len(stretches) == 1
