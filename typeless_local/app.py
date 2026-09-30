@@ -46,6 +46,7 @@ from typeless_local.mac_integration import (
     frontmost_pid,
     has_accessibility_trust,
     paste_text,
+    press_play_pause,
     request_accessibility_trust,
     set_clipboard_text,
     undo_last_edit,
@@ -262,7 +263,8 @@ class TypelessLocalApp:
 
         playback = devices.current_output_device()
         pairs = list(getattr(self.config, "aec_pairs", ()) or ())
-        if devices.has_hardware_aec(capture, playback, pairs):
+        # The paired mic cancels the speakers only on its first channel.
+        if not getattr(self.config, "input_channel", 0) and devices.has_hardware_aec(capture, playback, pairs):
             LOGGER.info(
                 "Leaving system audio up: %s + %s cancels the speakers in hardware",
                 capture,
@@ -1094,6 +1096,7 @@ class TypelessLocalApp:
         duck = self._speakers_need_ducking(capture)
         if duck:
             self._run_audio_io(self.audio_ducker.duck)
+            self._run_audio_io(self._pause_media)
         self._ducked = duck and bool(getattr(self.audio_ducker, "enabled", True))
         self.state = "recording"
         self._set_menubar("recording")
@@ -1233,6 +1236,20 @@ class TypelessLocalApp:
     def _restore_audio_ducking(self) -> None:
         restore_all = getattr(self.audio_ducker, "restore_all", None)
         self._run_audio_io(restore_all if restore_all is not None else self.audio_ducker.restore)
+        self._run_audio_io(self._resume_media)
+
+    def _pause_media(self) -> None:
+        """Pause music like Typeless does: a lowered song still reaches a mic without echo cancellation."""
+
+        self._media_paused = devices.other_app_is_playing()
+        if self._media_paused:
+            LOGGER.info("Pausing media while recording")
+            press_play_pause()
+
+    def _resume_media(self) -> None:
+        if getattr(self, "_media_paused", False):
+            self._media_paused = False
+            press_play_pause()
 
     def _start_recording_timeout(self) -> None:
         """Finish by itself at the length limit; the capsule counts down the last minute."""

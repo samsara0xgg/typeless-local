@@ -10,7 +10,7 @@ import time
 from typing import Callable
 
 import ApplicationServices
-from AppKit import NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSWorkspace
+from AppKit import NSEvent, NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSWorkspace
 from Foundation import NSData
 import Quartz
 
@@ -422,6 +422,16 @@ def _post_command_key(keycode: int) -> None:
             pass
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
     Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+
+
+def press_play_pause() -> None:
+    """Tap the keyboard's play/pause media key, which macOS hands to whatever is playing."""
+
+    for flags, state in ((0xA00, 0xA), (0xB00, 0xB)):
+        event = NSEvent.otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2_(
+            14, (0, 0), flags, 0, 0, None, 8, (16 << 16) | (state << 8), -1  # NSSystemDefined, NX_KEYTYPE_PLAY
+        )
+        Quartz.CGEventPost(Quartz.kCGHIDEventTap, event.CGEvent())
 
 
 def _snapshot_pasteboard(pasteboard) -> list[list[tuple[object, object]]]:

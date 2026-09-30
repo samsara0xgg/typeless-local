@@ -200,6 +200,16 @@ def _make_app(raw_text: str) -> TypelessLocalApp:
     return app
 
 
+@pytest.fixture(autouse=True)
+def _media_keys(monkeypatch) -> list[str]:
+    """Never tap the real play/pause key or read the real mixer from a test."""
+
+    presses: list[str] = []
+    monkeypatch.setattr(app_module.devices, "other_app_is_playing", lambda: False)
+    monkeypatch.setattr(app_module, "press_play_pause", lambda: presses.append("play_pause"))
+    return presses
+
+
 def _recording_app() -> TypelessLocalApp:
     app = TypelessLocalApp.__new__(TypelessLocalApp)
     app._lock = threading.RLock()
@@ -1387,3 +1397,17 @@ def test_text_before_the_caret_is_only_read_when_the_setting_is_on(monkeypatch) 
     app._finish_recording()
 
     assert asked == [False, True]
+
+
+def test_music_playing_elsewhere_is_paused_for_the_recording_and_resumed(monkeypatch, _media_keys) -> None:
+    monkeypatch.setattr(
+        "typeless_local.app.capture_focus_context",
+        lambda **_: FocusContext(app_name="TextEdit", window_title="Untitled"),
+    )
+    monkeypatch.setattr(app_module.devices, "other_app_is_playing", lambda: True)
+    app = _recording_app()
+
+    app._start_recording("tap")
+    assert _media_keys == ["play_pause"]
+    app._finish_recording()
+    assert _media_keys == ["play_pause", "play_pause"]

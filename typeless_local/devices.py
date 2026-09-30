@@ -181,6 +181,48 @@ def hardware_signature() -> tuple | None:
     return parts
 
 
+def _read_u32(lib: Any, obj: int, selector: str) -> int | None:  # noqa: ANN401
+    address = _PropertyAddress(_fourcc(selector), _SCOPE_GLOBAL, _ELEMENT_MAIN)
+    value = ctypes.c_uint32(0)
+    size = ctypes.c_uint32(4)
+    if lib.AudioObjectGetPropertyData(obj, ctypes.byref(address), 0, None, ctypes.byref(size), ctypes.byref(value)):
+        return None
+    return value.value
+
+
+def other_app_is_playing() -> bool:
+    """Whether a Dock app other than this one is sending audio out right now.
+
+    CoreAudio lists which processes are running output. Background daemons are
+    skipped (Jarvis holds a silent output stream open all day) by requiring
+    the process, or its parent for a helper such as Chrome's audio service, to
+    be a regular app.
+    """
+
+    lib = _load_coreaudio()
+    if lib is None:
+        return False
+    try:
+        from AppKit import NSApplicationActivationPolicyRegular, NSRunningApplication
+
+        def regular(pid: int) -> bool:
+            app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+            return app is not None and app.activationPolicy() == NSApplicationActivationPolicyRegular
+
+        for process in _read_object_ids(lib, _fourcc("prs#")) or ():
+            pid = _read_u32(lib, process, "ppid")
+            if not pid or pid == os.getpid() or not _read_u32(lib, process, "piro"):
+                continue
+            if regular(pid):
+                return True
+            parent = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+            if parent.isdigit() and int(parent) != os.getpid() and regular(int(parent)):
+                return True
+    except Exception:
+        LOGGER.debug("Unable to read which apps are playing", exc_info=True)
+    return False
+
+
 def refresh() -> None:
     """Re-read the hardware list so a mic plugged or pulled since launch is seen.
 
