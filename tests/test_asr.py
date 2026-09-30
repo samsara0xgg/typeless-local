@@ -157,3 +157,22 @@ def test_set_language_applies_from_the_next_chunk(monkeypatch, tmp_path: Path) -
 
     assert calls[0]["language"] == "zh"
     assert calls[1]["language"] is None
+
+
+def test_a_looping_chunk_is_heard_again_with_temperature_fallback(monkeypatch, tmp_path: Path) -> None:
+    calls: list[dict] = []
+    module = ModuleType("mlx_whisper")
+
+    def transcribe(audio, **kwargs):
+        calls.append(kwargs)
+        text = "目前是" + "Turbo V3加上" * 30 if len(calls) == 1 else "模型是Turbo V3加上terra"
+        return {"text": text, "language": "zh", "segments": []}
+
+    module.transcribe = transcribe
+    monkeypatch.setitem(sys.modules, "mlx_whisper", module)
+    j = asr_module.JarvisASR(tmp_path, _mlx_config())
+
+    result = j.transcribe(np.ones(16000, dtype=np.float32) * 0.1)
+
+    assert result.text == "模型是Turbo V3加上terra"
+    assert isinstance(calls[1]["temperature"], tuple)

@@ -17,8 +17,9 @@ import numpy as np
 LOGGER = logging.getLogger(__name__)
 
 _PROMPT_ECHO_RE = re.compile(r"^\s*Common terms:[^\n]*\n", re.IGNORECASE)
-_LOOP_RE = re.compile(r"(.{2,8})\1{2,}")
+_LOOP_RE = re.compile(r"(.{2,16})\1{2,}")
 _RUN_RE = re.compile(r"(\S)\1{7,}")
+_FALLBACK_TEMPERATURES = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
 DEFAULT_MLX_WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
 
 
@@ -140,6 +141,10 @@ class JarvisASR:
             else:
                 LOGGER.warning("ASR backend takes no initial prompt; vocabulary not applied")
                 result = self._recognizer.transcribe(audio)
+            if _looks_looped(str(getattr(result, "text", "") or "")) and (
+                getattr(self._recognizer, "provider", "") == "mlx_whisper"
+            ):
+                result = self._rehear_looped(audio)
 
         text = str(getattr(result, "text", "") or "")
         if initial_prompt:
@@ -149,6 +154,29 @@ class JarvisASR:
             language=str(getattr(result, "language", "") or "unknown"),
             confidence=float(getattr(result, "confidence", 0.0) or 0.0),
         )
+
+    def _rehear_looped(self, audio: np.ndarray):
+        """Decode a looped chunk again with Whisper's temperature fallback.
+
+        At a fixed temperature of 0 greedy decoding can repeat one phrase for the
+        whole window; with a temperature schedule mlx_whisper re-samples any
+        segment whose compression ratio shows it repeating.
+        """
+
+        rec = self._recognizer
+        LOGGER.info("Whisper looped; hearing the chunk again with temperature fallback")
+        out = rec._load_mlx_whisper().transcribe(
+            rec._normalize_audio(audio),
+            path_or_hf_repo=rec._mlx_whisper_repo,
+            fp16=rec._mlx_whisper_fp16,
+            temperature=_FALLBACK_TEMPERATURES,
+            language=rec.language,
+            initial_prompt=rec._mlx_whisper_initial_prompt,
+            condition_on_previous_text=False,
+            verbose=False,
+        )
+        language = str(out.get("language") or rec.language or "unknown")
+        return SimpleNamespace(text=str(out.get("text", "")).strip(), language=language, confidence=rec._estimate_confidence(out))
 
     def _transcribe_mlx_with_prompt(self, audio: np.ndarray, prompt: str):
         """Whisper with the word list in its prompt, falling back to none if it loops.
@@ -180,7 +208,7 @@ class JarvisASR:
 
 
 def _looks_looped(text: str) -> bool:
-    """A 2-8 character unit repeated three times in a row (我都知道,我都知道,我都知道),
+    """A 2-16 character unit repeated three times in a row (我都知道,我都知道,我都知道),
     or one character, punctuation included, eight times (……… by the hundred)."""
 
     return bool(_LOOP_RE.search(re.sub(r"[\s\W_]+", "", text)) or _RUN_RE.search(text))
