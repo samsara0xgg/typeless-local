@@ -5,7 +5,7 @@ from typeless_local import brand
 
 def test_join_spaces_chinese_copy_like_the_style_guide() -> None:
     assert brand.join("退出", "言字") == "退出言字"
-    assert brand.join("退出", "Yancy") == "退出 Yancy"
+    assert brand.join("退出", "Yana") == "退出 Yana"
     assert brand.join("言字", "0.2.0") == "言字 0.2.0"
     assert brand.join("GPT-5.6", "Terra") == "GPT-5.6 Terra"
     assert brand.join("", "言字", None) == "言字"

@@ -366,13 +366,30 @@ def test_hands_free_hotkey_upgrades_active_tap_recording() -> None:
 def test_start_shows_permission_state_when_hotkey_install_fails(monkeypatch) -> None:
     monkeypatch.setattr("typeless_local.app.has_accessibility_trust", lambda: False)
     monkeypatch.setattr("typeless_local.app.request_accessibility_trust", lambda: False)
+    later = []
+    monkeypatch.setattr("typeless_local.app.AppHelper.callLater", lambda delay, fn: later.append((delay, fn)))
     app = TypelessLocalApp.__new__(TypelessLocalApp)
     overlay = _attach(app)
     app.hotkeys = _FailingHotkeys()
+    app._start_model_prefetch = lambda: None
 
     app.start()
 
     assert overlay.calls == [("setup",), ("handle", True), ("show", "perm", {})]
+    retry = [fn for delay, fn in later if fn == app._retry_hotkeys]
+    assert retry, "a retry is scheduled while Accessibility is missing"
+
+    # Still missing: it keeps looking.
+    later.clear()
+    app._retry_hotkeys()
+    assert [fn for _, fn in later] == [app._retry_hotkeys]
+
+    # Granted: the tap goes in and the permission capsule goes away.
+    app.hotkeys.start = lambda: None
+    later.clear()
+    app._retry_hotkeys()
+    assert later == []
+    assert overlay.calls[-1] == ("hide",)
 
 
 def test_recording_timeout_finishes_and_submits_processing() -> None:
@@ -994,3 +1011,145 @@ def test_count_units_counts_chinese_characters_and_latin_words() -> None:
     assert count_units("明天下午四点跟设计组过一下。") == 13
     assert count_units("Refined text.") == 2
     assert count_units("过一下 Typlus 的新版浮窗，then ship it") == 12
+
+
+# ------------------------------------------------------------- menu bar
+
+
+class _FakeMenubar:
+    def __init__(self) -> None:
+        self.issues = None
+        self.states = []
+
+    def set_issues(self, issues) -> None:
+        self.issues = tuple(issues)
+
+    def set_state(self, state) -> None:
+        self.states.append(state)
+
+
+def _menu_app(monkeypatch, env=None) -> TypelessLocalApp:
+    for name, value in (env or {}).items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(app_module, "has_accessibility_trust", lambda: True)
+    app = _recording_app()
+    app.menubar = _FakeMenubar()
+    jarvis = {
+        "llm": {
+            "default_preset": "mini",
+            "presets": {
+                "mini": {"model": "gpt-mini", "api_key_env": "TEST_KEY_A"},
+                "deep": {"model": "deepseek-chat", "api_key_env": "TEST_KEY_B"},
+            },
+        }
+    }
+    app.config = SimpleNamespace(
+        jarvis_config=jarvis,
+        refine=app_module.refine_config_for(jarvis, "mini"),
+        input_device="",
+        user_paths=None,
+        sample_rate=16000,
+        min_recording_seconds=0.25,
+        max_recording_seconds=0,
+    )
+    return app
+
+
+def test_missing_key_accessibility_and_mic_badge_the_icon(monkeypatch) -> None:
+    monkeypatch.delenv("TEST_KEY_A", raising=False)
+    app = _menu_app(monkeypatch)
+    assert app._refresh_issues() == ("key",)
+    assert app.menubar.issues == ("key",)
+
+    monkeypatch.setenv("TEST_KEY_A", "sk-test")
+    monkeypatch.setattr(app_module, "has_accessibility_trust", lambda: False)
+    monkeypatch.setattr(app_module.permissions, "microphone_status", lambda: "denied")
+    assert app._refresh_issues() == ("perm", "mic")
+
+
+def test_refine_off_needs_no_key(monkeypatch) -> None:
+    monkeypatch.delenv("TEST_KEY_A", raising=False)
+    app = _menu_app(monkeypatch)
+    app.prefs = Preferences(refine=False)
+    assert app._current_issues() == ()
+
+
+def test_menu_snapshot_reads_presets_devices_and_the_last_dictation(monkeypatch) -> None:
+    monkeypatch.delenv("TEST_KEY_B", raising=False)
+    app = _menu_app(monkeypatch, env={"TEST_KEY_A": "sk-test"})
+    monkeypatch.setattr(app_module.devices, "refresh_if_changed", lambda: False)
+    monkeypatch.setattr(app_module.devices, "list_input_devices", lambda: ["MacBook Pro 麦克风"])
+    app._remember("明天开会", "备忘录")
+
+    snap = app._menu_snapshot()
+
+    assert snap.state == "idle" and snap.issues == ()
+    assert [(p.name, p.needs_key) for p in snap.presets] == [("mini", False), ("deep", True)]
+    assert snap.active_preset == "mini"
+    assert snap.inputs == ("MacBook Pro 麦克风",)
+    assert (snap.recent.text, snap.recent.app) == ("明天开会", "备忘录")
+    assert app._copy_fallback_text == "明天开会"
+
+
+def test_menu_actions_reach_the_app(monkeypatch) -> None:
+    app = _menu_app(monkeypatch, env={"TEST_KEY_A": "sk-test"})
+    calls = []
+    app._start_recording = lambda mode: calls.append(("start", mode))
+    app.select_model = lambda name: calls.append(("model", name))
+    app.select_input_device = lambda name: calls.append(("input", name))
+    app.open_settings = lambda pane=None: calls.append(("settings", pane))
+    app.open_history = lambda: calls.append(("history",))
+    monkeypatch.setattr(app_module.permissions, "open_url", lambda url: calls.append(("url", url)))
+    monkeypatch.setattr(app_module, "request_accessibility_trust", lambda: calls.append(("ask-ax",)))
+
+    for key in ("toggle", "latch", "preset:deep", "input:", "settings:", "settings:vocab", "history", "fix:key", "fix:perm"):
+        app._on_menu_action(key)
+
+    assert calls == [
+        ("start", "tap"),
+        ("start", "hands_free"),
+        ("model", "deep"),
+        ("input", ""),
+        ("settings", None),
+        ("settings", "vocab"),
+        ("history",),
+        ("settings", "model"),
+        ("ask-ax",),
+        ("url", app_module.permissions.ACCESSIBILITY_SETTINGS),
+    ]
+
+
+def test_menu_toggle_finishes_a_recording(monkeypatch) -> None:
+    app = _menu_app(monkeypatch, env={"TEST_KEY_A": "sk-test"})
+    finished = []
+    app.state = "recording"
+    app._finish_recording = lambda: finished.append(True)
+    app._on_menu_action("toggle")
+    app._on_menu_action("latch")  # only starts from idle
+    assert finished == [True]
+
+
+def test_menu_copy_puts_the_last_dictation_back(monkeypatch) -> None:
+    copied = []
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", copied.append)
+    app = _menu_app(monkeypatch, env={"TEST_KEY_A": "sk-test"})
+    app._remember("上一段话", "Notes")
+    app._on_menu_action("copy")
+    assert copied == ["上一段话"]
+    assert app.overlay.calls[-1] == ("show", "copied", {})
+
+
+def test_a_failed_dictation_leaves_the_icon_idle(monkeypatch) -> None:
+    app = _make_app("hello there friend")
+    app.menubar = _FakeMenubar()
+    app.headless = False
+    app.state = "processing"
+    app._active_session_id = 1
+    app.refiner.refine = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+    monkeypatch.setattr("typeless_local.app.paste_text", lambda text: (_ for _ in ()).throw(RuntimeError("no paste")))
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("TextEdit", "x", can_insert_text=True), 1)
+
+    assert app.menubar.states[-1] == "idle"
+    assert app.overlay.calls[-1][:2] == ("show", "error")

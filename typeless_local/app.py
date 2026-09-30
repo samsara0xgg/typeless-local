@@ -54,7 +54,8 @@ from typeless_local.first_run import (
     model_is_cached,
     set_api_key,
 )
-from typeless_local.history import purge_older_than
+from typeless_local.history import median_refine_ms, purge_older_than
+from typeless_local.menubar import MenuBarIcon, Preset, Recent, Snapshot
 from typeless_local.overlay import FloatingOverlay
 from typeless_local.preferences import Preferences, load_preferences, save_preference
 from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner
@@ -76,6 +77,8 @@ MIN_SHORT_ENGLISH_CONFIDENCE = 0.4
 # After a card gives the keyboard back, before Cmd+Z is sent: the undo has to
 # reach the app the text went to, not the card.
 KEY_HANDBACK_S = 0.25
+# How often to look again for the Accessibility permission while it is missing.
+HOTKEY_RETRY_S = 2.0
 # Between taking the old text back and pasting the new one.
 UNDO_SETTLE_S = 0.15
 _DEFAULT_PREFERENCES = Preferences()
@@ -143,25 +146,7 @@ class TypelessLocalApp:
                 watch_keys_fn=lambda: self._keys_wanted,
             )
 
-            from typeless_local.menubar import MenuBarIcon
-            from AppKit import NSApp
-
-            self.menubar = MenuBarIcon(
-                on_reload_vocab=self.reload_vocab,
-                on_quit=lambda: NSApp().terminate_(None),
-                trace_folder=user_paths.config_dir if user_paths else None,
-                log_path=user_paths.log_path if user_paths else None,
-                presets=preset_names(config.jarvis_config),
-                active_preset=config.refine.preset,
-                on_select_model=self.select_model,
-                input_devices=devices.list_input_devices(),
-                output_devices=devices.list_output_devices(),
-                active_input=getattr(config, "input_device", "") or devices.current_input_device(),
-                active_output=devices.current_output_device(),
-                on_select_input=self.select_input_device,
-                on_select_output=self.select_output_device,
-                on_set_api_key=self.change_api_key,
-            )
+            self.menubar = MenuBarIcon(on_action=self._on_menu_action, snapshot=self._menu_snapshot)
         else:
             self.overlay = None
             self.audio_ducker = None
@@ -194,6 +179,7 @@ class TypelessLocalApp:
         self._capture_device = ""
         self._ducked = False
         self._insertion: Insertion | None = None
+        self._recent: Recent | None = None
         # Read inside the keyboard event tap on every key press: a plain attribute.
         self._keys_wanted = False
         self._download: tuple[float, float] | None = None
@@ -283,18 +269,7 @@ class TypelessLocalApp:
         user_paths = getattr(self.config, "user_paths", None)
         if user_paths is not None:
             save_input_device(user_paths, name)
-        menubar = getattr(self, "menubar", None)
-        if menubar is not None:
-            menubar.set_active_input(name)
         LOGGER.info("Capture device set to %s", name or "(system default)")
-
-    def select_output_device(self, name: str) -> None:
-        """Switch the system default output; the menu follows what actually took."""
-
-        devices.set_output_device(name)
-        menubar = getattr(self, "menubar", None)
-        if menubar is not None:
-            menubar.set_active_output(devices.current_output_device())
 
     def select_model(self, preset: str) -> None:
         """Switch the refinement preset live and persist it to the user config."""
@@ -305,9 +280,7 @@ class TypelessLocalApp:
         user_paths = getattr(self.config, "user_paths", None)
         if user_paths is not None:
             save_default_preset(user_paths, preset)
-        menubar = getattr(self, "menubar", None)
-        if menubar is not None:
-            menubar.set_active_preset(preset)
+        self._refresh_issues()
         LOGGER.info("Refinement model switched to %s (%s)", preset, refine.model)
 
     def set_preference(self, key: str, value) -> Preferences:
@@ -334,6 +307,8 @@ class TypelessLocalApp:
             self.config = dataclasses.replace(config, max_recording_seconds=prefs.max_minutes * 60.0)
         if changed in (None, "history_days"):
             self._purge_history()
+        if changed in (None, "refine"):
+            self._refresh_issues()
 
     def _purge_history(self) -> None:
         """Drop dictations older than the limit the user picked; none by default."""
@@ -370,6 +345,7 @@ class TypelessLocalApp:
             user_paths.env_path,
         ):
             LOGGER.info("%s updated", self.config.refine.api_key_env)
+        self._refresh_issues()
 
     def open_settings(self, pane: str | None = None) -> None:
         """Bring up Settings at ``pane``."""
@@ -379,6 +355,109 @@ class TypelessLocalApp:
             self._call_ui(windows.show_settings, pane)
         elif pane == "model":
             self._call_ui(self.change_api_key)
+
+    def open_history(self) -> None:
+        windows = getattr(self, "windows", None)
+        if windows is not None:
+            self._call_ui(windows.show_history)
+
+    # ------------------------------------------------------------ menu bar
+
+    def _on_menu_action(self, key: str) -> None:
+        """A menu-bar item was chosen (main thread)."""
+
+        kind, _, arg = key.partition(":")
+        if kind == "toggle":
+            with self._lock:
+                if self.state == "idle":
+                    self._start_recording("tap")
+                elif self.state == "recording":
+                    self._finish_recording()
+        elif kind == "latch":
+            with self._lock:
+                if self.state == "idle":
+                    self._start_recording("hands_free")
+        elif kind == "copy":
+            self._copy_last_transcript()
+        elif kind == "preset":
+            self.select_model(arg)
+        elif kind == "input":
+            self.select_input_device(arg)
+        elif kind == "settings":
+            self.open_settings(arg or None)
+        elif kind == "history":
+            self.open_history()
+        elif kind == "fix":
+            self._fix_issue(arg)
+        elif kind == "quit":
+            NSApplication.sharedApplication().terminate_(None)
+
+    def _fix_issue(self, issue: str) -> None:
+        if issue == "perm":
+            request_accessibility_trust()
+            permissions.open_url(permissions.ACCESSIBILITY_SETTINGS)
+        elif issue == "mic":
+            if permissions.microphone_status() == "not_determined":
+                permissions.request_microphone()
+            else:
+                permissions.open_url(permissions.MICROPHONE_SETTINGS)
+        elif issue == "key":
+            self.open_settings("model")
+
+    def _current_issues(self) -> tuple[str, ...]:
+        """What only the user can fix right now; the menu-bar icon wears a badge for it."""
+
+        issues = []
+        if not has_accessibility_trust():
+            issues.append("perm")
+        if permissions.microphone_status() in ("denied", "restricted"):
+            issues.append("mic")
+        refine = getattr(self.config, "refine", None)
+        if self.prefs.refine and refine is not None and not os.environ.get(refine.api_key_env or ""):
+            issues.append("key")
+        return tuple(issues)
+
+    def _refresh_issues(self) -> tuple[str, ...]:
+        menubar = getattr(self, "menubar", None)
+        if menubar is None:
+            return ()
+        issues = self._current_issues()
+        menubar.set_issues(issues)
+        return issues
+
+    def _menu_snapshot(self) -> Snapshot:
+        """Everything the menu shows, read as it opens."""
+
+        config = self.config
+        jarvis = getattr(config, "jarvis_config", {}) or {}
+        user_paths = getattr(config, "user_paths", None)
+        history = user_paths.trace_db_path if user_paths is not None and self.prefs.save_history else None
+        presets = []
+        for name in preset_names(jarvis):
+            try:
+                refine = refine_config_for(jarvis, name)
+            except Exception:
+                continue
+            median = median_refine_ms(history, refine.model) if history is not None else None
+            presets.append(Preset(name, needs_key=not os.environ.get(refine.api_key_env or ""), median_ms=median))
+        devices.refresh_if_changed()
+        recent = getattr(self, "_recent", None)
+        return Snapshot(
+            state=self.state,
+            issues=self._refresh_issues(),
+            recent=recent,
+            presets=tuple(presets),
+            active_preset=config.refine.preset,
+            inputs=tuple(devices.list_input_devices()),
+            active_input=getattr(config, "input_device", "") or "",
+            refine=self.prefs.refine,
+        )
+
+    def _remember(self, text: str, app: str = "") -> None:
+        """The menu's "最近一次" and the clipboard fallback."""
+
+        self._copy_fallback_text = text
+        self._recent = Recent(text=text, app=app, at=time.time())
 
     def show_log(self) -> None:
         user_paths = getattr(self.config, "user_paths", None)
@@ -469,19 +548,35 @@ class TypelessLocalApp:
         if menubar is not None:
             menubar.setup()
             menubar.set_state("idle")
-        try:
-            self.hotkeys.start()
-        except RuntimeError:
-            LOGGER.exception("Failed to install global hotkey monitor")
-            self._set_menubar("error")
+        if not self._start_hotkeys():
+            # Picked up by itself once Accessibility is granted: no restart.
             self.capsule.show("perm")
-            return
+            AppHelper.callLater(HOTKEY_RETRY_S, self._retry_hotkeys)
+        self._refresh_issues()
         self._start_model_prefetch()
         # Deferred onto the run loop: this app is LSUIElement, and before
         # -[NSApplication run] it is not active yet, so a modal alert can open
         # behind whatever the user is looking at or not come up at all.
         AppHelper.callLater(0.3, self._prompt_for_missing_api_key)
         LOGGER.info("%s ready. Press F5 to start/stop dictation.", brand.ENGLISH_NAME)
+
+    def _start_hotkeys(self) -> bool:
+        try:
+            self.hotkeys.start()
+            return True
+        except RuntimeError:
+            if not getattr(self, "_hotkeys_failed", False):
+                LOGGER.warning("Global hotkey monitor unavailable until Accessibility is granted")
+            self._hotkeys_failed = True
+            return False
+
+    def _retry_hotkeys(self) -> None:
+        if self._start_hotkeys():
+            LOGGER.info("Accessibility granted; hotkeys are live")
+            self.capsule.hide_if("perm")
+            self._refresh_issues()
+            return
+        AppHelper.callLater(HOTKEY_RETRY_S, self._retry_hotkeys)
 
     # ----------------------------------------------------------------- keys
 
@@ -773,7 +868,7 @@ class TypelessLocalApp:
         with self._lock:
             self._insertion = dataclasses.replace(insertion, text=new_text)
             self._keys_wanted = True
-            self._copy_fallback_text = new_text
+            self._remember(new_text, insertion.context.app_name)
         self.capsule.show("replaced", n=count_units(new_text))
         if from_card:
             self._record_correction(insertion.text, new_text)
@@ -790,7 +885,8 @@ class TypelessLocalApp:
         set_clipboard_text(corrected)
         if corrected != before:
             self._record_correction(before, corrected)
-        self._copy_fallback_text = corrected
+        recent = getattr(self, "_recent", None)
+        self._remember(corrected, recent.app if recent else "")
         self.capsule.show("copied")
 
     def _end_edit(self) -> None:
@@ -814,7 +910,7 @@ class TypelessLocalApp:
             self._show_download()
             return
         if permissions.microphone_status() in ("denied", "restricted"):
-            self._set_menubar("error")
+            self._refresh_issues()
             self.capsule.show("mic", why="denied")
             return
         self._active_session_id = getattr(self, "_active_session_id", 0) + 1
@@ -842,7 +938,8 @@ class TypelessLocalApp:
             LOGGER.exception("Failed to start microphone")
             self._restore_audio_ducking()
             self.state = "idle"
-            self._set_menubar("error")
+            self._set_menubar("idle")
+            self._refresh_issues()
             denied = permissions.microphone_status() in ("denied", "restricted")
             self.capsule.show("mic", why="denied" if denied else "busy")
             return
@@ -938,7 +1035,7 @@ class TypelessLocalApp:
             LOGGER.exception("Failed to stop microphone")
             self._restore_audio_ducking()
             self.state = "idle"
-            self._set_menubar("error")
+            self._set_menubar("idle")
             self.capsule.show("error", msg="麦克风出错")
             return
         self._restore_audio_ducking()
@@ -1188,7 +1285,7 @@ class TypelessLocalApp:
             if not headless:
                 if self._is_current_processing_session(session_id):
                     self.state = "idle"
-                    self._set_menubar("error")
+                    self._set_menubar("idle")
                     self.capsule.show("error", msg=_FAILED_STEP.get(step, "处理失败"))
                 return
             raise
@@ -1215,10 +1312,11 @@ class TypelessLocalApp:
             LOGGER.info("Dictation inserted %d characters", len(text))
             self.state = "idle"
             self._set_menubar("idle")
-            self._copy_fallback_text = text
+            self._remember(text, context.app_name)
             self._insertion = Insertion(text=text, raw=raw, pid=frontmost_pid(), context=context)
             self._keys_wanted = True
             if fallback == "key":
+                self._refresh_issues()
                 self.capsule.show("inserted-raw-key")
             elif fallback:
                 self.capsule.show("inserted-raw-net", why=fallback)
@@ -1231,7 +1329,7 @@ class TypelessLocalApp:
             context.app_name or "unknown",
             context.focused_role or "unknown",
         )
-        self._copy_fallback_text = text
+        self._remember(text, context.app_name)
         set_clipboard_text(text)
         self.state = "idle"
         self._set_menubar("idle")

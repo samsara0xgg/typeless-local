@@ -14,7 +14,8 @@ from __future__ import annotations
 import unicodedata
 
 DISPLAY_NAME = "言字"
-ENGLISH_NAME = "Yancy"
+# Placeholder until the English name is chosen; everything else follows it.
+ENGLISH_NAME = "Yana"
 BUNDLE_ID = "com.alllllenshi.typlus"
 # Service name for the API keys kept in the login keychain.
 KEYCHAIN_SERVICE = BUNDLE_ID
@@ -33,8 +34,8 @@ def join(*parts: str) -> str:
     """Join UI words the way Chinese copy spaces them.
 
     No space between two CJK characters, one space between CJK and Latin:
-    ``join("退出", "言字")`` is "退出言字", ``join("退出", "Yancy")`` is
-    "退出 Yancy".
+    ``join("退出", "言字")`` is "退出言字", ``join("退出", "Yana")`` is
+    "退出 Yana".
     """
 
     out = ""
