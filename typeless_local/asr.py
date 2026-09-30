@@ -20,6 +20,13 @@ _PROMPT_ECHO_RE = re.compile(r"^\s*Common terms:[^\n]*\n", re.IGNORECASE)
 _LOOP_RE = re.compile(r"(.{2,16})\1{2,}")
 _RUN_RE = re.compile(r"(\S)\1{7,}")
 _FALLBACK_TEMPERATURES = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0)
+# What Whisper says to silence or room noise: video-subtitle credits from its
+# training data. Only a transcript that is nothing but one of these is dropped.
+_SILENCE_PHRASE_RE = re.compile(
+    r"^(优优独播剧场.*|字幕.{0,20}(提供|制作|by.*)|.*请不吝点赞.*|明镜与点点栏目|(谢谢|感谢)(大家)?(收看|观看)"
+    r"|thanks? (you )?(so much )?for watching|subtitles by.*)$",
+    re.IGNORECASE,
+)
 DEFAULT_MLX_WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
 
 
@@ -149,6 +156,9 @@ class JarvisASR:
         text = str(getattr(result, "text", "") or "")
         if initial_prompt:
             text = _strip_prompt_echo(text, effective_prompt or initial_prompt, initial_prompt)
+        if _SILENCE_PHRASE_RE.match(re.sub(r"[\s\W_]+$|^[\s\W_]+", "", text)):
+            LOGGER.info("Dropping Whisper's silence phrase %r", text[:80])
+            text = ""
         return Transcript(
             text=text.strip(),
             language=str(getattr(result, "language", "") or "unknown"),

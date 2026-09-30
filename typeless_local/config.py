@@ -51,7 +51,7 @@ class AppConfig:
     sample_rate: int = 16000
     max_recording_seconds: float = 900.0
     min_recording_seconds: float = 0.15
-    low_volume_threshold: float = 0.02
+    low_volume_threshold: float = 0.003  # a dead or muted mic, not quiet speech
     keep_recordings: int = 0
     debug_hotkey: bool = False
     user_paths: UserPaths | None = None
@@ -287,7 +287,7 @@ def load_config() -> AppConfig:
         jarvis_config=jarvis_config,
         refine=_resolve_refine_config(jarvis_config),
         min_recording_seconds=float(audio_config.get("min_duration") or 0.15),
-        low_volume_threshold=float(audio_config.get("low_volume_threshold") or 0.02),
+        low_volume_threshold=float(audio_config.get("low_volume_threshold") or 0.003),
         keep_recordings=int(audio_config.get("keep_recordings") or 0),
         input_device=str(audio_config.get("input_device") or "").strip(),
         input_channel=int(audio_config.get("input_channel") or 0),
