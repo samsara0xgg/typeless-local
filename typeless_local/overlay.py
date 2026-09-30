@@ -70,7 +70,7 @@ STATES = frozenset({
 })
 CARD_STATES = frozenset({"edit-notarget", "edit-modify"})
 ACTIONS = frozenset({
-    "primary", "cancel", "finish",                          # idle handle, recording
+    "primary", "cancel", "finish", "extend",                # idle handle, recording
     "undo", "edit", "rerefine", "setkey", "input", "micperm", "perm", "log",  # buds
     "close", "done", "replace",                             # cards
 })

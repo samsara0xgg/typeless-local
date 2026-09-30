@@ -82,6 +82,8 @@ MIN_SHORT_ENGLISH_CONFIDENCE = 0.4
 KEY_HANDBACK_S = 0.25
 # How often to look again for the Accessibility permission while it is missing.
 HOTKEY_RETRY_S = 2.0
+# What the capsule's 延长 button adds to a recording nearing its limit.
+EXTEND_RECORDING_S = 15 * 60.0
 # Between taking the old text back and pasting the new one.
 UNDO_SETTLE_S = 0.15
 _DEFAULT_PREFERENCES = Preferences()
@@ -855,6 +857,8 @@ class TypelessLocalApp:
             elif action == "finish":
                 if self.state == "recording":
                     self._finish_recording()
+            elif action == "extend":
+                self._extend_recording()
             elif action == "undo":
                 self._undo_insertion()
             elif action == "edit":
@@ -1043,6 +1047,7 @@ class TypelessLocalApp:
         self.state = "starting"
         self._set_menubar("starting")
         self._recording_started_at = time.monotonic()
+        self._recording_limit_s = float(getattr(self.config, "max_recording_seconds", 0.0) or 0.0)
         caret = self.prefs.capsule_position == "caret"
         # The microphone opens first: everything that used to come before it
         # (focus probing, re-enumerating devices, two osascript runs to mute)
@@ -1126,9 +1131,18 @@ class TypelessLocalApp:
             mode=mode,
             sel=bool(focus and focus.selected_text) and self.prefs.rewrite_selection,
             ducked=bool(getattr(self, "_ducked", False)) and self.prefs.show_ducked,
-            max=float(getattr(self.config, "max_recording_seconds", 0.0) or 0.0),
+            max=self._recording_limit(),
+            ext=int(EXTEND_RECORDING_S // 60),
             elapsed=round(max(0.0, time.monotonic() - started), 2) if started else 0.0,
         )
+
+    def _recording_limit(self) -> float:
+        """This recording's length limit: the setting, plus any 延长 presses."""
+
+        limit = getattr(self, "_recording_limit_s", None)
+        if limit is None:
+            limit = float(getattr(self.config, "max_recording_seconds", 0.0) or 0.0)
+        return float(limit)
 
     def _play_sound(self, name: str) -> None:
         """The optional start/stop sounds (off by default)."""
@@ -1207,12 +1221,30 @@ class TypelessLocalApp:
         """Finish by itself at the length limit; the capsule counts down the last minute."""
 
         self._cancel_recording_timeout()
-        max_seconds = float(getattr(self.config, "max_recording_seconds", 0.0) or 0.0)
+        max_seconds = self._recording_limit()
         if max_seconds <= 0:
             return
-        self._recording_timer = threading.Timer(max_seconds, self._finish_recording_after_timeout)
+        self._arm_recording_timer(max_seconds)
+
+    def _arm_recording_timer(self, delay: float) -> None:
+        self._recording_timer = threading.Timer(delay, self._finish_recording_after_timeout)
         self._recording_timer.daemon = True
         self._recording_timer.start()
+
+    def _extend_recording(self) -> None:
+        """The countdown's 延长 button: fifteen more minutes on this recording."""
+
+        limit = self._recording_limit()
+        if self.state != "recording" or limit <= 0:
+            return
+        self._recording_limit_s = limit + EXTEND_RECORDING_S
+        timer = getattr(self, "_recording_timer", None)
+        if timer is not None:
+            timer.cancel()
+        elapsed = time.monotonic() - getattr(self, "_recording_started_at", time.monotonic())
+        self._arm_recording_timer(max(1.0, self._recording_limit_s - elapsed))
+        self._show_recording_ui()
+        LOGGER.info("Recording limit extended to %.0f minutes", self._recording_limit_s / 60)
 
     def _cancel_recording_timeout(self) -> None:
         recording_timer = getattr(self, "_recording_timer", None)

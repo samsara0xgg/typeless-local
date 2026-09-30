@@ -77,6 +77,7 @@ const BUD = {
   perm: `<button class="pri" data-act="perm">${I('a11y')}<span>打开设置…</span></button>`,
   log: `<button data-act="log">${I('doc')}<span>显示日志</span></button>`,
 };
+const extendBud = min => `<button data-act="extend">${I('plus')}<span>延长 ${min | 0} 分钟</span></button>`;
 const WHY = { timeout: '润色超时', error: '润色失败', truncated: '润色被截断', empty: '润色没有返回' };
 const etaText = eta => eta ? ` · ${esc(eta)}` : '';
 // Announced in steps of ten, not on every progress report.
@@ -101,7 +102,7 @@ function recHTML() {
     const rem = S.max - t, p = Math.max(0, Math.min(1, rem / 60));
     S.tmrText = fmt(rem, true);
     return [`${btnCancel}${waveHTML()}<span class="tmr warn">${S.tmrText}</span><span class="ringwrap"><svg class="ring" viewBox="0 0 36 36" aria-hidden="true"><circle class="bg" cx="18" cy="18" r="16.5"/><circle class="fg" cx="18" cy="18" r="16.5" stroke-dasharray="103.7" stroke-dashoffset="${(103.7 * (1 - p)).toFixed(1)}"/></svg>${btnFinish}</span>`,
-      `还剩 ${Math.ceil(rem)} 秒，到点会自动结束`];
+      `还剩 ${Math.ceil(rem)} 秒，到点会自动结束${o.ext > 0 ? `，可以延长 ${o.ext | 0} 分钟` : ''}`];
   }
   S.tmrText = fmt(t);
   if (S.quiet && S.mode !== 'hold') {
@@ -119,7 +120,8 @@ function recHTML() {
 function view(st, o) {
   switch (st) {
     case 'starting': return [`<span class="solo">${I('mic', 'breathe')}</span>`, 'circle', [], '正在打开麦克风'];
-    case 'rec': { const [h, say] = recHTML(); return [h, 'pill', [], say]; }
+    // The last minute buds a 延长 button off the capsule.
+    case 'rec': { const [h, say] = recHTML(); return [h, 'pill', S.cd && o.ext > 0 ? [extendBud(o.ext)] : [], say]; }
     case 'transcribing': return [`<span class="dots"><i></i><i></i><i></i></span><span class="lbl">转写中</span>`, 'pill', [], '转写中'];
     case 'refining': return [`<span class="spark">${I('sparkles')}</span><span class="raw shimmer">${esc(tail(o.raw))}</span>`, 'pill', [], '润色中'];
     case 'inserted': return [`${CHECK}<span class="lbl">${o.replaced ? '已替换所选' : '已插入'} · ${o.n | 0} 字</span>`, 'pill', [BUD.undo, BUD.edit], `${o.replaced ? '已替换所选' : '已插入'} ${o.n | 0} 字`];
@@ -436,6 +438,8 @@ on('show', m => {
     if (entering) { S.lastVoice = now; S.quiet = false; S.cd = false; }
     S.mode = d.mode || 'click';
     if (d.max != null) S.max = +d.max;
+    // Extended: back from the countdown to the running timer.
+    if (S.cd && S.max - (now - S.recAt) / 1000 > 60) S.cd = false;
   }
   if (m.st === 'download' && S.st === 'download' && !S.hidden && S.layer) { updateDownload(d); return; }
   S.d = d;

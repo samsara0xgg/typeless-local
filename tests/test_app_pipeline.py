@@ -1298,3 +1298,37 @@ def test_switching_model_or_mic_redraws_settings(monkeypatch) -> None:
     app.select_model("deep")
     app.select_input_device("USB Mic")
     assert app.windows.calls == [("refresh", False), ("refresh", False)]
+
+
+def test_extend_adds_fifteen_minutes_to_a_recording_near_its_limit(monkeypatch) -> None:
+    monkeypatch.setattr(app_module.threading, "Timer", _ManualTimer)
+    clock = [1000.0]
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: clock[0])
+    app = _recording_app()
+    app.config = SimpleNamespace(sample_rate=16000, min_recording_seconds=0.25, max_recording_seconds=900.0)
+    app.prefs = app_module.Preferences()
+    app.state = "recording"
+    app._recording_started_at = 1000.0
+    app._recording_limit_s = 900.0
+    app._start_recording_timeout()
+    (first,) = _ManualTimer.made
+    assert first.delay == 900.0
+
+    clock[0] += 870.0  # 30 seconds left: the countdown is up
+    app._on_overlay_action("extend")
+
+    assert first.cancelled
+    second = _ManualTimer.made[-1]
+    assert second.delay == 930.0 and not second.cancelled
+    kind, state, data = app.overlay.calls[-1]
+    assert (kind, state, data["max"], data["ext"]) == ("show", "rec", 1800.0, 15)
+    assert data["elapsed"] == 870.0
+
+
+def test_extend_does_nothing_once_the_recording_is_over(monkeypatch) -> None:
+    monkeypatch.setattr(app_module.threading, "Timer", _ManualTimer)
+    app = _recording_app()
+    app.state = "processing"
+    app._recording_limit_s = 900.0
+    app._on_overlay_action("extend")
+    assert _ManualTimer.made == [] and app.overlay.calls == []
