@@ -53,22 +53,23 @@ def microphone_status() -> str:
 
 
 def request_microphone() -> None:
-    """Make macOS ask, by opening the microphone for a moment.
+    """Make macOS show its microphone prompt; the answer is read back with microphone_status().
 
-    Opening a stream is what triggers the prompt for this app, and it needs no
-    completion block, which a bare runtime lookup could not pass. The answer
-    is read back with microphone_status().
+    Opening a PortAudio stream does not reliably prompt (it did nothing on a
+    fresh install, leaving the guide waiting), so ask AVFoundation directly.
     """
 
     try:
-        import sounddevice as sd  # noqa: PLC0415
+        import objc  # noqa: PLC0415
 
-        stream = sd.InputStream(samplerate=16000, channels=1, dtype="float32")
-        stream.start()
-        stream.stop()
-        stream.close()
+        objc.registerMetaDataForSelector(
+            b"AVCaptureDevice",
+            b"requestAccessForMediaType:completionHandler:",
+            {"arguments": {3: {"callable": {"retval": {"type": b"v"}, "arguments": {0: {"type": b"^v"}, 1: {"type": b"Z"}}}}}},
+        )
+        _capture_device_class().requestAccessForMediaType_completionHandler_(_AUDIO, lambda _granted: None)
     except Exception:
-        LOGGER.info("Microphone probe did not open (the prompt may still be up)", exc_info=True)
+        LOGGER.warning("Could not ask for the microphone", exc_info=True)
 
 
 def accessibility_trusted() -> bool:

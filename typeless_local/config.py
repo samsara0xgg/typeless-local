@@ -82,9 +82,10 @@ def resolve_jarvis_root(app_root: Path | None = None) -> Path:
     if home_projects.exists():
         return home_projects.resolve()
 
-    raise FileNotFoundError(
-        "Jarvis root not found. Set JARVIS_PROJECT_ROOT to reuse the ASR pipeline."
-    )
+    # Anyone who is not the developer has no Jarvis checkout. The app runs on
+    # the vendored copy in typeless_local/_vendor, so the app root stands in:
+    # it only anchors relative model paths, which the shipped config leaves empty.
+    return root
 
 
 def migrate_legacy_config_dir() -> Path:

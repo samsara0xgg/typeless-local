@@ -50,3 +50,9 @@ def test_refresh_uses_the_layout_it_reads(monkeypatch) -> None:
     keyboard_layout.refresh()
 
     assert keyboard_layout.keycode("z") == 13
+
+
+def test_layout_change_handler_returns_none(monkeypatch) -> None:
+    # The ObjC block is void; a non-None return aborted the app on every input-source switch.
+    monkeypatch.setattr(keyboard_layout, "refresh", lambda: {"v": 9})
+    assert keyboard_layout._on_layout_changed(None) is None

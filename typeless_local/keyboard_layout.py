@@ -70,6 +70,11 @@ def refresh() -> dict[str, int]:
     return _codes
 
 
+def _on_layout_changed(_note) -> None:
+    # A void ObjC block: returning refresh()'s dict makes PyObjC raise, which kills the app.
+    refresh()
+
+
 def watch() -> None:
     """Re-read the layout whenever the user switches it. Main thread only."""
 
@@ -81,7 +86,7 @@ def watch() -> None:
         from Foundation import NSDistributedNotificationCenter, NSOperationQueue  # noqa: PLC0415
 
         _observer = NSDistributedNotificationCenter.defaultCenter().addObserverForName_object_queue_usingBlock_(
-            LAYOUT_CHANGED, None, NSOperationQueue.mainQueue(), lambda _note: refresh()
+            LAYOUT_CHANGED, None, NSOperationQueue.mainQueue(), _on_layout_changed
         )
     except Exception:
         LOGGER.debug("Cannot watch for layout changes; the layout is read once", exc_info=True)
