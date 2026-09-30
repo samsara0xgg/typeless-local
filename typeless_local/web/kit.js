@@ -18,6 +18,7 @@
     copy: '<rect x="8.5" y="8.5" width="11" height="12" rx="2.2"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2H6.5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h2"/>',
     doc: '<path d="M7 3.5h7l4.5 4.5v11a1.5 1.5 0 0 1-1.5 1.5H7A1.5 1.5 0 0 1 5.5 19V5A1.5 1.5 0 0 1 7 3.5z"/><path d="M13.5 3.5V8.5h5M8.5 13h7M8.5 16.5h5"/>',
     gear: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="7"/><path d="M12 2.5V5M12 19v2.5M2.5 12H5M19 12h2.5M5.3 5.3l1.8 1.8M16.9 16.9l1.8 1.8M5.3 18.7l1.8-1.8M16.9 7.1l1.8-1.8"/>',
+    chart: '<path d="M4 20h16"/><path d="M7 16.5V11"/><path d="M12 16.5V6"/><path d="M17 16.5v-4"/>',
     wave: '<path d="M4 10v4M7.5 7v10M11 4.5v15M14.5 8v8M18 6v12M21 10.5v3"/>',
     keyboard: '<rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6 9.8h.01M9 9.8h.01M12 9.8h.01M15 9.8h.01M18 9.8h.01M7.5 14.3h9"/>',
     clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',

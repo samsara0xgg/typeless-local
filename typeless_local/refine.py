@@ -45,6 +45,19 @@ class RefineResult:
     # Why ``text`` is the raw transcript rather than the model's output ("" when
     # the model's output was used).
     fallback: str = ""
+    # What the request was billed for, as the API reported it (0 when unknown).
+    prompt_tokens: int = 0
+    cached_tokens: int = 0
+    completion_tokens: int = 0
+
+
+def _count(value) -> int:
+    """A token count from the API response; anything unusable is 0."""
+
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 SYSTEM_PROMPT = """You are the auto-editing layer of a system-wide dictation app, in the
@@ -244,6 +257,7 @@ class TextRefiner:
             LOGGER.warning("Refine request failed to connect (%s); retrying once", exc)
             response = client.chat.completions.create(**kwargs)
         usage = getattr(response, "usage", None)
+        tokens = {}
         if usage is not None:
             details = getattr(usage, "prompt_tokens_details", None)
             LOGGER.info(
@@ -252,16 +266,21 @@ class TextRefiner:
                 getattr(details, "cached_tokens", None),
                 getattr(usage, "completion_tokens", None),
             )
+            tokens = {
+                "prompt_tokens": _count(getattr(usage, "prompt_tokens", 0)),
+                "cached_tokens": _count(getattr(details, "cached_tokens", 0)),
+                "completion_tokens": _count(getattr(usage, "completion_tokens", 0)),
+            }
         choice = response.choices[0]
         text = str(choice.message.content or "").strip()
         if getattr(choice, "finish_reason", None) == "length":
             # A cut-off rewrite would silently drop the end of the dictation;
             # the unpolished transcript at least keeps all of it.
             LOGGER.warning("Refinement hit the %d-token limit; using the raw transcript", max_tokens)
-            return RefineResult(text=stripped, raw_text=raw_text, model=self.config.model, fallback="truncated")
+            return RefineResult(text=stripped, raw_text=raw_text, model=self.config.model, fallback="truncated", **tokens)
         if not text:
-            return RefineResult(text=stripped, raw_text=raw_text, model=self.config.model, fallback="empty")
-        return RefineResult(text=text, raw_text=raw_text, model=self.config.model)
+            return RefineResult(text=stripped, raw_text=raw_text, model=self.config.model, fallback="empty", **tokens)
+        return RefineResult(text=text, raw_text=raw_text, model=self.config.model, **tokens)
 
 
 def _is_retryable_connection_error(exc: Exception) -> bool:

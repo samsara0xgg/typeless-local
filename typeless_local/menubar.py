@@ -123,6 +123,7 @@ class Snapshot:
     inputs: tuple[str, ...] = ()
     active_input: str = ""
     refine: bool = True
+    usage: str = ""  # "今天 23 次 · 约 $0.04"; "" when history is off
 
 
 def ago(seconds: float) -> str:
@@ -192,6 +193,10 @@ def build_menu(snap: Snapshot, now: float | None = None) -> list[Item]:
         Item("输入设备", badge=active_input or SYSTEM_DEFAULT, children=inputs, symbol="waveform"),
         Item("词库…", key="settings:vocab", symbol="book"),
         Item("历史记录…", key="history", shortcut="⌘Y", symbol="clock"),
+    ]
+    if snap.usage:
+        items.append(Item(snap.usage, key="settings:usage", symbol="chart.bar"))
+    items += [
         SEPARATOR,
         Item("设置…", key="settings:", shortcut="⌘,", symbol="gearshape"),
         Item(brand.quit_label(), key="quit", shortcut="⌘Q", symbol="power"),

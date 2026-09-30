@@ -12,6 +12,7 @@ const PANES = [
   ['model', '润色模型', 'sparkles', '#AF52DE'],
   ['vocab', '词库', 'book', '#FF9500'],
   ['audio', '音频', 'speaker', '#FF3B30'],
+  ['usage', '用量', 'chart', '#34C759'],
   ['privacy', '历史与隐私', 'shield', '#0A84FF'],
 ];
 const DAYS = { 30: '30 天', 90: '90 天', 365: '1 年', 0: '永久' };
@@ -20,7 +21,7 @@ const LANGS = [['', '自动（中英混说）'], ['zh', '中文'], ['en', 'Engli
 let S = null;            // the state Python sent
 let pane = 'general';
 // What is being edited here and not yet sent.
-const UI = { keyEdit: '', keyBusy: '', keyMsg: {}, test: null, confirm: null, vocabMsg: '' };
+const UI = { keyEdit: '', keyBusy: '', keyMsg: {}, test: null, confirm: null, vocabMsg: '', usageBy: '' };
 
 /* ---------------- building blocks ---------------- */
 const sw = (key, on_, label, disabled = false) =>
@@ -152,6 +153,38 @@ function audio() {
     ]);
 }
 
+const money = v => v == null ? '—' : v === 0 ? '$0' : v < 0.01 ? '<$0.01' : `$${v.toFixed(2)}`;
+const kilo = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n);
+const dayLabel = iso => { const [, m, d] = iso.split('-'); return `${+m}月${+d}日`; };
+
+function usage() {
+  const u = S.usage;
+  if (!u) return head('用量') + grp([row('<span class="empty">用量从听写历史里统计。打开「历史与隐私 › 保存听写历史」后开始记录。</span>', '')]);
+  const hasCost = u.daily.some(d => d.cost);
+  const by = UI.usageBy || (hasCost ? 'cost' : 'n');
+  const tile = (label, t) => `<div class="ustat"><small>${label}</small><b>${t.n} 次</b><span>${t.refined > t.untracked ? '约 ' + money(t.cost) : '—'}</span></div>`;
+  const val = d => by === 'cost' ? (d.cost || 0) : d.n;
+  const max = Math.max(...u.daily.map(val), by === 'cost' ? 0.01 : 1);
+  const bars = u.daily.map((d, i) => {
+    const h = val(d) ? Math.max(2, Math.round(val(d) / max * 100)) : 0;
+    const tip = `${dayLabel(d.day)} · ${d.n} 次${d.refined > d.untracked ? ` · 约 ${money(d.cost)}` : ''}`;
+    return `<i tabindex="-1" data-tip="${esc(tip)}" aria-label="${esc(tip)}"${i === u.daily.length - 1 ? ' class="now"' : ''}><s style="height:${h}%"></s></i>`;
+  }).join('');
+  const peak = by === 'cost' ? money(max) : `${max} 次`;
+  const m = u.month;
+  const cacheRate = m.prompt ? Math.round(m.cached / m.prompt * 100) : null;
+  const models = u.models.length ? u.models.map(x => row(esc(x.model),
+    `<span class="val">${x.refined} 次 · ${x.cost == null ? '没有价格' : '约 ' + money(x.cost)}</span>`,
+    x.prompt ? `输入 ${kilo(x.prompt)} token（缓存 ${kilo(x.cached)}）· 输出 ${kilo(x.completion)}` : '这段时间没有记下 token 数')) : [row('<span class="empty">最近 30 天没有润色。</span>', '')];
+  return head('用量')
+    + `<div class="ustats">${tile('今天', u.today)}${tile('最近 7 天', u.week)}${tile(`最近 ${u.days} 天`, m)}</div>`
+    + `<div class="grp uchart"><div class="uhead"><b>每天${by === 'cost' ? '花费' : '听写次数'}</b>${seg('usageBy', by, [['cost', '花费'], ['n', '次数']])}</div>`
+    + `<div class="ubars" role="img" aria-label="最近 ${u.days} 天每天的${by === 'cost' ? '花费' : '听写次数'}">${bars}</div>`
+    + `<div class="uaxis"><span>${dayLabel(u.daily[0].day)}</span><span class="utip" data-rest="最高 ${esc(peak)}">最高 ${esc(peak)}</span><span>今天</span></div></div>`
+    + `<div class="grp-l">按模型 · 最近 ${u.days} 天</div>` + grp(models)
+    + `<p class="note">只算这台 Mac 上言字发出的润色请求，按 API 返回的 token 数和官方价格估算，语音识别在本地不花钱。${cacheRate != null ? `输入里 ${cacheRate}% 走了缓存，按一成计价。` : ''}${m.untracked ? `有 ${m.untracked} 次是更新前的记录，没有 token 数，只计次数。` : ''}</p>`;
+}
+
 function privacy() {
   const p = S.prefs, c = UI.confirm;
   const confirmBox = !c ? '' : c.kind === 'days'
@@ -173,7 +206,7 @@ function privacy() {
     + `<div class="grp" style="background:transparent; box-shadow:none">${c && c.kind === 'clear' ? `<div class="grp">${confirmBox}</div>` : ''}<div class="btnrow left"><button class="mbtn" data-act="open" data-what="data">${I('folder')} 在访达中显示数据</button><button class="mbtn danger" data-act="clear">${I('trash')} 清除历史…</button></div></div>`;
 }
 
-const RENDER = { general, dictation, keys, model, vocab, audio, privacy };
+const RENDER = { general, dictation, keys, model, vocab, audio, usage, privacy };
 
 /* ---------------- drawing ---------------- */
 function drawSide() {
@@ -227,6 +260,7 @@ const NUMERIC = new Set(['dismiss_seconds', 'max_minutes', 'history_days']);
 function setting(el) {
   const key = el.dataset.set;
   let v = value(el);
+  if (key === 'usageBy') { UI.usageBy = v; draw(); return; }  // only how this page draws
   if (NUMERIC.has(key)) v = Number(v);
   if (key === 'history_days' && v !== 0 && v !== S.prefs.history_days) {
     // Shortening the history deletes what is older: ask first, in place.
@@ -241,6 +275,15 @@ function setting(el) {
   post({ t: 'set', key, value: v });
   draw();
 }
+
+// The usage chart: the axis line under it reads out the day under the pointer.
+document.addEventListener('pointerover', e => {
+  const tip = document.querySelector('.utip');
+  if (!tip) return;
+  const bar = e.target.closest('.ubars i');
+  tip.textContent = bar ? bar.dataset.tip : tip.dataset.rest;
+  tip.classList.toggle('on', !!bar);
+});
 
 document.addEventListener('click', e => {
   const tab = e.target.closest('[data-pane]');
@@ -281,7 +324,7 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); saveKey(e.target.id.slice(4)); }
     if (e.key === 'Escape') { e.preventDefault(); UI.keyEdit = ''; draw(); }
   } else if (e.key === 'Escape' && UI.confirm) { UI.confirm = null; draw(); }
-  else if ((e.metaKey || e.ctrlKey) && /^[1-7]$/.test(e.key)) { e.preventDefault(); show(PANES[+e.key - 1][0]); }
+  else if ((e.metaKey || e.ctrlKey) && /^[1-8]$/.test(e.key)) { e.preventDefault(); show(PANES[+e.key - 1][0]); }
 });
 
 function saveKey(envName) {

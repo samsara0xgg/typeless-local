@@ -22,7 +22,7 @@ from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 import numpy as np
 from PyObjCTools import AppHelper
 
-from typeless_local import app_version, brand, keychain, permissions
+from typeless_local import app_version, brand, keychain, permissions, usage
 from typeless_local.asr import JarvisASR, Transcript, mlx_whisper_repo
 from typeless_local.audio import MicrophoneRecorder, keep_recording, peak_level
 from typeless_local import devices
@@ -63,7 +63,7 @@ from typeless_local.preferences import Preferences, load_preferences, save_prefe
 from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
 from typeless_local.vocab import as_initial_prompt, load_user_terms, load_vocab, write_starter_file
-from typeless_local.windows import Windows, install_main_menu
+from typeless_local.windows import Windows, install_main_menu, prices
 
 LOGGER = logging.getLogger(__name__)
 Mode = Literal["tap", "hands_free"]
@@ -534,6 +534,7 @@ class TypelessLocalApp:
             inputs=tuple(devices.list_input_devices()),
             active_input=getattr(config, "input_device", "") or "",
             refine=self.prefs.refine,
+            usage=usage.today_line(history, prices(jarvis)) if history is not None else "",
         )
 
     def _remember(self, text: str, app: str = "") -> None:
@@ -1425,6 +1426,9 @@ class TypelessLocalApp:
                     )
                 else:
                     fallback = getattr(refined, "fallback", "") or ""
+                    record.prompt_tokens = int(getattr(refined, "prompt_tokens", 0) or 0)
+                    record.cached_tokens = int(getattr(refined, "cached_tokens", 0) or 0)
+                    record.completion_tokens = int(getattr(refined, "completion_tokens", 0) or 0)
                     if fallback:
                         record.error = f"refine {fallback}, pasted raw transcript"
                 record.latency_refine_ms = int((time.monotonic() - refine_start) * 1000)

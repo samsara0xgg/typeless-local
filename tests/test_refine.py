@@ -244,3 +244,21 @@ def test_prewarm_makes_one_cheap_request_and_never_raises() -> None:
     _refiner(Client()).prewarm()
 
     assert requests == [{"timeout": 3.0, "max_retries": 0}, "models"]
+
+
+def test_refiner_reports_the_tokens_it_was_billed_for() -> None:
+    fake = _FakeClient()
+    usage = SimpleNamespace(prompt_tokens=1500, completion_tokens=90, prompt_tokens_details=SimpleNamespace(cached_tokens=1469))
+    fake.completions.create = lambda **kwargs: SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="好的。"), finish_reason="stop")], usage=usage
+    )
+    result = _refiner(fake).refine("好的")
+    assert (result.prompt_tokens, result.cached_tokens, result.completion_tokens) == (1500, 1469, 90)
+
+    # Providers that report no usage, or no cache details, count as zero.
+    fake.completions.create = lambda **kwargs: SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="好的。"))],
+        usage=SimpleNamespace(prompt_tokens=800, completion_tokens=None, prompt_tokens_details=None),
+    )
+    result = _refiner(fake).refine("好的")
+    assert (result.prompt_tokens, result.cached_tokens, result.completion_tokens) == (800, 0, 0)

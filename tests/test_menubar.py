@@ -179,3 +179,11 @@ def test_items_survive_a_failing_snapshot() -> None:
     icon = MenuBarIcon(on_action=MagicMock(), snapshot=MagicMock(side_effect=RuntimeError))
     icon.set_state("recording")
     assert _find(icon.items(), "结束听写")
+
+
+def test_the_menu_shows_todays_usage_and_opens_the_usage_pane() -> None:
+    items = build_menu(Snapshot(usage="今天 23 次 · 约 $0.04"))
+    titles = _titles(items)
+    assert titles.index("今天 23 次 · 约 $0.04") == titles.index("历史记录…") + 1
+    assert _find(items, "今天 23 次 · 约 $0.04").key == "settings:usage"
+    assert "今天" not in " ".join(_titles(build_menu(Snapshot())))

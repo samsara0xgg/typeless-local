@@ -52,7 +52,7 @@ def test_initial_log_creates_db_and_schema(tmp_path: Path) -> None:
     conn = sqlite3.connect(db)
     try:
         cur = conn.execute("PRAGMA user_version")
-        assert cur.fetchone()[0] == 1
+        assert cur.fetchone()[0] == 2
         cur = conn.execute("SELECT COUNT(*) FROM sessions")
         assert cur.fetchone()[0] == 1
     finally:
@@ -167,3 +167,32 @@ def test_unchanged_correction_records_nothing(tmp_path: Path) -> None:
 def test_changed_terms_marks_insertions_and_deletions() -> None:
     assert changed_terms("能听见吗", "能听见吗67") == [("", "67")]
     assert changed_terms("二三四五六", "二三四") == [("五六", "")]
+
+
+def test_token_usage_is_stored_and_old_databases_gain_the_columns(tmp_path: Path) -> None:
+    db = tmp_path / "trace.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE sessions (id INTEGER PRIMARY KEY AUTOINCREMENT, started_at REAL NOT NULL, ended_at REAL NOT NULL, refined_text TEXT)")
+    conn.execute("INSERT INTO sessions (started_at, ended_at, refined_text) VALUES (1, 2, 'old')")
+    conn.commit()
+    conn.close()
+    # The first release's full schema, minus the token columns.
+    conn = sqlite3.connect(db)
+    for name, kind in (("audio_duration_s", "REAL"), ("audio_rms", "REAL"), ("audio_sample_rate", "INTEGER"),
+                       ("raw_asr_text", "TEXT"), ("raw_asr_language", "TEXT"), ("raw_asr_confidence", "REAL"),
+                       ("focus_app", "TEXT"), ("focus_window", "TEXT"), ("was_pasted", "INTEGER"),
+                       ("vocab_terms_used", "TEXT"), ("hotwords_count", "INTEGER"), ("latency_asr_ms", "INTEGER"),
+                       ("latency_refine_ms", "INTEGER"), ("latency_total_ms", "INTEGER"), ("asr_model", "TEXT"),
+                       ("refine_model", "TEXT"), ("app_version", "TEXT"), ("error", "TEXT")):
+        conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {kind}")
+    conn.commit()
+    conn.close()
+
+    assert DictationTrace(db).log(_make_record(prompt_tokens=1500, cached_tokens=1469, completion_tokens=90)) is not None
+    conn = sqlite3.connect(db)
+    try:
+        rows = conn.execute("SELECT refined_text, prompt_tokens, cached_tokens, completion_tokens FROM sessions ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    assert rows[0] == ("old", None, None, None)
+    assert rows[1][1:] == (1500, 1469, 90)

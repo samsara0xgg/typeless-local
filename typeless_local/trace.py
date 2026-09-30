@@ -36,7 +36,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   asr_model TEXT,
   refine_model TEXT,
   app_version TEXT,
-  error TEXT
+  error TEXT,
+  prompt_tokens INTEGER,
+  cached_tokens INTEGER,
+  completion_tokens INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_started_at ON sessions(started_at);
 
@@ -67,7 +70,10 @@ def changed_terms(before: str, after: str) -> list[tuple[str, str]]:
         if tag != "equal"
     ]
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+# Columns added after the first release: (name, type). Older databases get them
+# with ALTER TABLE; their earlier rows keep NULL, meaning "not recorded".
+ADDED_COLUMNS = (("prompt_tokens", "INTEGER"), ("cached_tokens", "INTEGER"), ("completion_tokens", "INTEGER"))
 
 
 @dataclass
@@ -93,6 +99,9 @@ class SessionRecord:
     refine_model: str = ""
     app_version: str = ""
     error: str | None = None
+    prompt_tokens: int = 0
+    cached_tokens: int = 0
+    completion_tokens: int = 0
 
 
 _INSERT_SQL = """
@@ -102,14 +111,16 @@ INSERT INTO sessions (
   refined_text, focus_app, focus_window, was_pasted,
   vocab_terms_used, hotwords_count,
   latency_asr_ms, latency_refine_ms, latency_total_ms,
-  asr_model, refine_model, app_version, error
+  asr_model, refine_model, app_version, error,
+  prompt_tokens, cached_tokens, completion_tokens
 ) VALUES (
   :started_at, :ended_at, :audio_duration_s, :audio_rms, :audio_sample_rate,
   :raw_asr_text, :raw_asr_language, :raw_asr_confidence,
   :refined_text, :focus_app, :focus_window, :was_pasted,
   :vocab_terms_used, :hotwords_count,
   :latency_asr_ms, :latency_refine_ms, :latency_total_ms,
-  :asr_model, :refine_model, :app_version, :error
+  :asr_model, :refine_model, :app_version, :error,
+  :prompt_tokens, :cached_tokens, :completion_tokens
 )
 """
 
@@ -128,6 +139,10 @@ class DictationTrace:
         conn = sqlite3.connect(str(self.db_path), isolation_level=None)
         try:
             conn.executescript(SCHEMA_SQL)
+            have = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+            for name, kind in ADDED_COLUMNS:
+                if name not in have:
+                    conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} {kind}")
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             conn.execute("PRAGMA journal_mode = WAL")
         finally:

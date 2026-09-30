@@ -41,6 +41,23 @@ input, textarea{-webkit-user-select:text; user-select:text}
 .note{font-size:12px; color:var(--win-fg-2); margin:-6px 4px 14px}
 .warnrow{background:color-mix(in srgb, var(--orange) 12%, transparent)}
 
+/* ------------------------------------------------------------ usage pane */
+.ustats{display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; margin-bottom:18px}
+.ustat{background:var(--grp); border-radius:12px; box-shadow:0 0 0 .5px var(--win-sep); padding:12px 14px; display:flex; flex-direction:column; gap:2px; min-width:0}
+.ustat small{font-size:11.5px; color:var(--win-fg-2)}
+.ustat b{font-size:20px; font-weight:600; font-variant-numeric:tabular-nums}
+.ustat span{font-size:12.5px; color:var(--win-fg-2); font-variant-numeric:tabular-nums}
+.uchart{padding:12px 14px 10px}
+.uhead{display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px}
+.uhead b{font-size:13px}
+.ubars{display:flex; align-items:flex-end; gap:2px; height:120px; border-bottom:.5px solid var(--win-sep)}
+.ubars i{flex:1; height:100%; display:flex; align-items:flex-end; min-width:0; outline:0}
+.ubars s{display:block; width:100%; background:color-mix(in srgb, var(--accent) 70%, transparent); border-radius:4px 4px 0 0; transition:background .12s}
+.ubars i.now s{background:var(--accent)}
+.ubars i:hover s{background:var(--accent)}
+.utip.on{color:var(--win-fg); font-weight:600}
+.uaxis{display:flex; justify-content:space-between; font-size:11px; color:var(--win-fg-3); margin-top:6px; font-variant-numeric:tabular-nums}
+
 /* ---------------------------------------------------------------- controls */
 .sw{width:36px; height:21px; border-radius:11px; background:var(--accent); position:relative; flex:none; border:0; padding:0}
 .sw::after{content:""; position:absolute; top:2px; left:17px; width:17px; height:17px; border-radius:9px; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.25); transition:left .2s}

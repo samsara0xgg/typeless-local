@@ -64,6 +64,7 @@ def test_successful_pipeline_writes_trace_row(tmp_path: Path) -> None:
         fake_refiner = MagicMock()
         fake_refiner.refine.return_value = SimpleNamespace(
             text="Hi Jarvis.", raw_text="hi jarvas", model="gpt-5.4-mini",
+            prompt_tokens=1200, cached_tokens=1024, completion_tokens=8,
         )
 
         build.return_value = SimpleNamespace(
@@ -87,6 +88,7 @@ def test_successful_pipeline_writes_trace_row(tmp_path: Path) -> None:
     assert row["hotwords_count"] == 1
     assert "Jarvis" in row["vocab_terms_used"]
     assert row["error"] is None
+    assert (row["prompt_tokens"], row["cached_tokens"], row["completion_tokens"]) == (1200, 1024, 8)
 
 
 def test_low_quality_audio_still_logs_trace_row(tmp_path: Path) -> None:

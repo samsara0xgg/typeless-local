@@ -25,7 +25,7 @@ import time
 from typing import Callable
 from urllib.parse import urlparse
 
-from typeless_local import app_version, brand, history, keychain, login_item, permissions, preferences, vocab
+from typeless_local import app_version, brand, history, keychain, login_item, permissions, preferences, usage, vocab
 from typeless_local.asr import mlx_whisper_repo
 from typeless_local.config import preset_names, refine_config_for
 from typeless_local.mac_integration import FocusContext, has_accessibility_trust, request_accessibility_trust, set_clipboard_text
@@ -33,7 +33,7 @@ from typeless_local.trace import load_corrections
 
 LOGGER = logging.getLogger(__name__)
 
-SETTINGS_PANES = ("general", "dictation", "keys", "model", "vocab", "audio", "privacy")
+SETTINGS_PANES = ("general", "dictation", "keys", "model", "vocab", "audio", "usage", "privacy")
 SUGGESTIONS = 8
 HISTORY_ROWS = 500
 FIXES = 6
@@ -66,6 +66,13 @@ def env_file_keys(path: Path | None) -> set[str]:
     except OSError:
         pass
     return names
+
+
+def prices(jarvis: dict) -> dict:
+    """``llm.prices`` from the engine config: per-model price overrides."""
+
+    found = ((jarvis or {}).get("llm") or {}).get("prices")
+    return found if isinstance(found, dict) else {}
 
 
 def short_model(repo: str) -> str:
@@ -249,6 +256,7 @@ class Windows:
             "input": getattr(config, "input_device", "") or "",
             "vocab": self._vocab_state(),
             "history": {"count": history.count_sessions(db) if db is not None else 0},
+            "usage": usage.summary(db, prices(jarvis)) if db is not None and prefs.save_history else None,
             "f5": bool(self._f5_conflict),
         }
 

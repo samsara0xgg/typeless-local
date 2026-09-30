@@ -45,6 +45,12 @@ be changed later in **Settings › 润色模型**.
 - **History** (`⌘Y`) lists every dictation by day, shows what the model changed
   and where the time went, and adds a misheard word to the vocabulary in one
   click. Nothing is ever deleted unless you pick a retention limit.
+- **Usage** (Settings › 用量, and a line in the menu) counts dictations per day
+  and estimates what refinement cost, from the token counts the API returned
+  for this app's own requests. Prices for gpt-5.4-mini / gpt-5.6-terra /
+  gpt-5.6-luna are built in; add others under `llm.prices` in
+  `~/.typlus/config.yaml` as `model: [input, cached input, output]` dollars per
+  million tokens.
 
 ## Build from source
 

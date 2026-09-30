@@ -314,6 +314,18 @@ def test_refresh_only_touches_open_windows(ui) -> None:
     assert window.sent == []
 
 
+def test_settings_state_carries_usage_only_while_history_is_saved(ui) -> None:
+    _log(ui.paths.trace_db_path, at=__import__("time").time(), raw_asr_text="一句", refined_text="一句。",
+         refine_model="gpt-mini", prompt_tokens=1000, cached_tokens=0, completion_tokens=50)
+    ui.app.config.jarvis_config["llm"]["prices"] = {"gpt-mini": [1.0, 0.1, 4.0]}
+    today = ui.windows.settings_state()["usage"]["today"]
+    assert today["n"] == 1 and today["cost"] == pytest.approx((1000 * 1.0 + 50 * 4.0) / 1e6)
+    ui.app.prefs = dataclasses.replace(ui.app.prefs, save_history=False)
+    assert ui.windows.settings_state()["usage"] is None
+    ui.windows.show_settings("usage")
+    assert ui.windows.settings.last("pane") == {"t": "pane", "id": "usage"}
+
+
 def test_reopening_a_closed_window_shows_what_changed_meanwhile(ui) -> None:
     # The menu bar switched the model while Settings was closed.
     window = _open_settings(ui)
