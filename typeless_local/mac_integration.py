@@ -66,14 +66,29 @@ PRIMARY_KEYCODES = frozenset({F5_KEYCODE, DICTATION_KEYCODE})
 RIGHT_OPTION_KEYCODE = 61
 SPACE_KEYCODE = 49
 ESCAPE_KEYCODE = 53
-# Return and the keypad's Enter, so sending a message is noticed either way.
-RETURN_KEYCODES = frozenset({36, 76})
 V_KEYCODE = 9
+Z_KEYCODE = 6
 OPTION_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskAlternate", 1 << 19)
+SHIFT_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskShift", 1 << 17)
 # Right Command arrives as a FlagsChanged event with keycode 54 (kVK_RightCommand).
 RIGHT_COMMAND_KEYCODE = 54
 COMMAND_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskCommand", 1 << 20)
 HOTKEY_EVENT_TAP_LOCATION = getattr(Quartz, "kCGHIDEventTap", Quartz.kCGSessionEventTap)
+# The Cmd+V and Cmd+Z this app posts itself carry this in the event's user-data
+# field, so the event tap can tell them from the user's own keys.
+SYNTHETIC_EVENT_TAG = 0x59414E43
+_USER_DATA_FIELD = getattr(Quartz, "kCGEventSourceUserData", 42)
+_AX_CGRECT_TYPE = getattr(ApplicationServices, "kAXValueCGRectType", None) or getattr(
+    ApplicationServices, "kAXValueTypeCGRect", 3
+)
+_AX_CFRANGE_TYPE = getattr(ApplicationServices, "kAXValueCFRangeType", None) or getattr(
+    ApplicationServices, "kAXValueTypeCFRange", 4
+)
+# How much of what is already written before the caret refinement gets to see:
+# enough for the names and terms of the message being replied to, not the document.
+BEFORE_TEXT_CHARS = 300
+# A field longer than this is only read through a ranged query, never whole.
+_MAX_WHOLE_VALUE_CHARS = 200_000
 TEXT_INPUT_ROLES = {
     "AXTextArea",
     "AXTextField",
@@ -95,6 +110,11 @@ class FocusContext:
     selected_text: str = ""
     focused_role: str = ""
     can_insert_text: bool = False
+    # The frontmost app's process, to tell later whether it is still the one in front.
+    pid: int = 0
+    # What is already written just before the caret, so refinement can spell a
+    # name or term the way the text above it does. Empty for password fields.
+    before_text: str = ""
 
 
 # Seconds an AX query may wait on the target app. The default is about six,
@@ -118,8 +138,8 @@ def _limit_ax_messaging_timeout() -> None:
         LOGGER.debug("Unable to limit the AX messaging timeout: %s", exc)
 
 
-def capture_focus_context() -> FocusContext:
-    """Capture focused app/window metadata without reading document contents."""
+def capture_focus_context(read_before_text: bool = False) -> FocusContext:
+    """Capture focused app/window metadata, and the text before the caret if asked."""
 
     _limit_ax_messaging_timeout()
     app = NSWorkspace.sharedWorkspace().frontmostApplication()
@@ -129,6 +149,7 @@ def capture_focus_context() -> FocusContext:
     selected_text = ""
     focused_role = ""
     can_insert_text = False
+    before_text = ""
 
     if pid:
         try:
@@ -163,6 +184,8 @@ def capture_focus_context() -> FocusContext:
                 )
                 if selection is not None:
                     selected_text = str(selection or "")
+                if read_before_text:
+                    before_text = _text_before_caret(focused_element, focused_role)
             else:
                 # Some apps publish no focused element at all: ChatGPT's
                 # composer is one, and no amount of AXManualAccessibility or
@@ -182,13 +205,155 @@ def capture_focus_context() -> FocusContext:
         selected_text=selected_text,
         focused_role=focused_role,
         can_insert_text=can_insert_text,
+        pid=int(pid or 0),
+        before_text=before_text,
     )
+
+
+def focused_text_value(pid: int) -> str | None:
+    """The text in ``pid``'s focused text field, or None when it has none to read.
+
+    Used only to see what a pasted dictation was sent as; never called unless
+    a dictation was just pasted into that app.
+    """
+
+    if not pid:
+        return None
+    _limit_ax_messaging_timeout()
+    try:
+        app_ref = ApplicationServices.AXUIElementCreateApplication(pid)
+        element = _copy_ax_attribute(app_ref, ApplicationServices.kAXFocusedUIElementAttribute)
+        if not element:
+            return None
+        role = str(_copy_ax_attribute(element, ApplicationServices.kAXRoleAttribute) or "")
+        if role == "AXSecureTextField" or _copy_ax_attribute(element, "AXSubrole") == "AXSecureTextField":
+            return None  # a password is never read
+        if not _focused_element_accepts_text(element, role):
+            return None
+        value = _copy_ax_attribute(element, ApplicationServices.kAXValueAttribute)
+    except Exception as exc:
+        LOGGER.debug("Focused text unavailable: %s", exc)
+        return None
+    return value if isinstance(value, str) else (str(value) if value is not None else None)
+
+
+def _text_before_caret(element, role: str) -> str:
+    """Up to BEFORE_TEXT_CHARS of the focused field's text before the caret.
+
+    Asks for just that range, so a long document is never read whole; falls
+    back to slicing the field's value when the app does not answer ranged
+    queries. Password fields are never read.
+    """
+
+    if role == "AXSecureTextField":
+        return ""
+    try:
+        if _copy_ax_attribute(element, "AXSubrole") == "AXSecureTextField":
+            return ""
+        selection = _copy_ax_attribute(element, ApplicationServices.kAXSelectedTextRangeAttribute)
+        caret = _range_location(selection)
+        if caret is None or caret <= 0:
+            return ""
+        start = max(0, caret - BEFORE_TEXT_CHARS)
+        text = ""
+        wanted = ApplicationServices.AXValueCreate(_AX_CFRANGE_TYPE, (start, caret - start))
+        if wanted is not None:
+            text = _unpack_ax_result(
+                ApplicationServices.AXUIElementCopyParameterizedAttributeValue(
+                    element, ApplicationServices.kAXStringForRangeParameterizedAttribute, wanted, None
+                )
+            )
+        if not isinstance(text, str) or not text:
+            value = _copy_ax_attribute(element, ApplicationServices.kAXValueAttribute)
+            if not isinstance(value, str) or len(value) > _MAX_WHOLE_VALUE_CHARS:
+                return ""
+            text = value[start:caret]
+        return str(text)[-BEFORE_TEXT_CHARS:].strip()
+    except Exception as exc:
+        LOGGER.debug("Unable to read the text before the caret: %s", exc)
+        return ""
+
+
+def _range_location(value) -> int | None:
+    """The location of an AX CFRange value, or None when there is none."""
+
+    if value is None:
+        return None
+    unpacked = ApplicationServices.AXValueGetValue(value, _AX_CFRANGE_TYPE, None)
+    if isinstance(unpacked, tuple) and len(unpacked) == 2 and isinstance(unpacked[0], bool):
+        if not unpacked[0]:
+            return None
+        unpacked = unpacked[1]
+    location = getattr(unpacked, "location", None)
+    if location is None and isinstance(unpacked, tuple) and unpacked:
+        location = unpacked[0]
+    try:
+        return int(location)
+    except (TypeError, ValueError):
+        return None
+
+
+def frontmost_pid() -> int:
+    """The process of the app in front, or 0."""
+
+    try:
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        return int(app.processIdentifier()) if app else 0
+    except Exception:
+        return 0
+
+
+def caret_rect() -> tuple[float, float, float, float] | None:
+    """Where the caret is, as (x, y, w, h) in screen coordinates (origin bottom left).
+
+    None when the focused app does not say, which many do not: the capsule then
+    stays above the Dock.
+    """
+
+    _limit_ax_messaging_timeout()
+    pid = frontmost_pid()
+    if not pid:
+        return None
+    try:
+        app_ref = ApplicationServices.AXUIElementCreateApplication(pid)
+        element = _copy_ax_attribute(app_ref, ApplicationServices.kAXFocusedUIElementAttribute)
+        if not element:
+            return None
+        selection = _copy_ax_attribute(element, ApplicationServices.kAXSelectedTextRangeAttribute)
+        if selection is None:
+            return None
+        result = ApplicationServices.AXUIElementCopyParameterizedAttributeValue(
+            element, ApplicationServices.kAXBoundsForRangeParameterizedAttribute, selection, None
+        )
+        value = _unpack_ax_result(result)
+        if value is None:
+            return None
+        unpacked = ApplicationServices.AXValueGetValue(value, _AX_CGRECT_TYPE, None)
+        rect = unpacked[1] if isinstance(unpacked, tuple) else unpacked
+        x, y = float(rect.origin.x), float(rect.origin.y)
+        width, height = float(rect.size.width), float(rect.size.height)
+        # Some apps answer with an empty rectangle or with the whole text area.
+        if (width <= 0 and height <= 0) or height > 200:
+            return None
+        from AppKit import NSScreen  # noqa: PLC0415
+
+        primary_height = float(NSScreen.screens()[0].frame().size.height)
+    except Exception as exc:
+        LOGGER.debug("Caret position unavailable: %s", exc)
+        return None
+    # AX measures from the top of the main display, AppKit from its bottom.
+    return (x, primary_height - (y + height), max(1.0, width), height)
 
 
 def _copy_ax_attribute(element, attribute: str):
     """Copy an AX attribute while handling PyObjC tuple ordering."""
 
-    result = ApplicationServices.AXUIElementCopyAttributeValue(element, attribute, None)
+    return _unpack_ax_result(ApplicationServices.AXUIElementCopyAttributeValue(element, attribute, None))
+
+
+def _unpack_ax_result(result):
+    """The value from an AX (error, value) pair, whichever order PyObjC returns it in."""
+
     if not isinstance(result, tuple) or len(result) != 2:
         return result
 
@@ -234,15 +399,29 @@ def paste_text(text: str) -> None:
     pasteboard.setString_forType_(text, NSPasteboardTypeString)
     pasteboard.setData_forType_(NSData.data(), TRANSIENT_TYPE)
 
-    source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
-    down = Quartz.CGEventCreateKeyboardEvent(source, V_KEYCODE, True)
-    up = Quartz.CGEventCreateKeyboardEvent(source, V_KEYCODE, False)
-    Quartz.CGEventSetFlags(down, Quartz.kCGEventFlagMaskCommand)
-    Quartz.CGEventSetFlags(up, Quartz.kCGEventFlagMaskCommand)
-    Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
-    Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+    _post_command_key(V_KEYCODE)
     time.sleep(0.12)
     _restore_pasteboard(pasteboard, snapshot)
+
+
+def undo_last_edit() -> None:
+    """Send Cmd+Z to the app in front, to take back the paste just made there."""
+
+    _post_command_key(Z_KEYCODE)
+
+
+def _post_command_key(keycode: int) -> None:
+    source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+    down = Quartz.CGEventCreateKeyboardEvent(source, keycode, True)
+    up = Quartz.CGEventCreateKeyboardEvent(source, keycode, False)
+    for event in (down, up):
+        Quartz.CGEventSetFlags(event, Quartz.kCGEventFlagMaskCommand)
+        try:
+            Quartz.CGEventSetIntegerValueField(event, _USER_DATA_FIELD, SYNTHETIC_EVENT_TAG)
+        except Exception:
+            pass
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
 
 
 def _snapshot_pasteboard(pasteboard) -> list[list[tuple[object, object]]]:
@@ -312,7 +491,7 @@ class GlobalHotkeyMonitor:
         callback: HotkeyCallback,
         debug_hotkey: bool = False,
         is_active_fn: Callable[[], bool] | None = None,
-        wants_return_fn: Callable[[], bool] | None = None,
+        watch_keys_fn: Callable[[], bool] | None = None,
     ) -> None:
         self.callback = callback
         self.debug_hotkey = debug_hotkey
@@ -320,8 +499,11 @@ class GlobalHotkeyMonitor:
         # it passes through to the focused app. Without this, the global tap
         # consumed every Esc system-wide, breaking Esc in any app.
         self.is_active_fn = is_active_fn
-        # Asked on every Return press, so it must stay a plain attribute read.
-        self.wants_return_fn = wants_return_fn
+        # Whether the app wants to hear about ordinary typing: after a paste it
+        # offers to undo or replace it, which is only right until the user types
+        # something else. Asked on every key press, so it must stay a plain
+        # attribute read.
+        self.watch_keys_fn = watch_keys_fn
         self._tap = None
         self._source = None
         self._primary_down: set[int] = set()
@@ -437,19 +619,17 @@ class GlobalHotkeyMonitor:
             if keycode == SPACE_KEYCODE and self._primary_down:
                 self.callback("hands_free")
                 return None
-            if keycode == ESCAPE_KEYCODE:
-                if self.is_active_fn is not None and not self.is_active_fn():
-                    return event
+            if keycode == ESCAPE_KEYCODE and (self.is_active_fn is None or self.is_active_fn()):
                 self.callback("cancel")
                 return None
-            if keycode in RETURN_KEYCODES:
-                # Sending the dictated message means the overlay has served its
-                # purpose. Never swallow the key, and never ask the app anything
-                # unless the overlay is actually up: this runs inside a
-                # synchronous event tap, where slow work stalls the keyboard.
-                if self.wants_return_fn is not None and self.wants_return_fn():
-                    self.callback("return_pressed")
-                return event
+            # Never swallowed, and nothing asked of the app unless it is
+            # watching: this runs inside a synchronous event tap, where slow
+            # work stalls the keyboard.
+            if self.watch_keys_fn is not None and self.watch_keys_fn() and not self._is_synthetic(event):
+                flags = Quartz.CGEventGetFlags(event)
+                undo = keycode == Z_KEYCODE and flags & COMMAND_FLAG_MASK and not flags & SHIFT_FLAG_MASK
+                self.callback("undo" if undo else "typed")
+            return event
         if event_type == Quartz.kCGEventKeyUp and keycode in PRIMARY_KEYCODES:
             if keycode in self._primary_down:
                 self._primary_down.discard(keycode)
@@ -458,6 +638,10 @@ class GlobalHotkeyMonitor:
                     self.callback("primary_up")
             return None
         return event
+
+    @staticmethod
+    def _is_synthetic(event) -> bool:
+        return Quartz.CGEventGetIntegerValueField(event, _USER_DATA_FIELD) == SYNTHETIC_EVENT_TAG
 
     def _event_time(self, event) -> float:
         return _mach_ticks_to_seconds(Quartz.CGEventGetTimestamp(event))

@@ -13,10 +13,12 @@ if [[ -z "$JARVIS_ROOT" && -x "$ROOT/../jarvis/.venv/bin/python" ]]; then
   JARVIS_ROOT="$(cd "$ROOT/../jarvis" && pwd)"
 fi
 
-if [[ -n "$JARVIS_ROOT" && -x "$JARVIS_ROOT/.venv/bin/python" ]]; then
+if [[ -n "${PYTHON:-}" ]]; then
+  :
+elif [[ -n "$JARVIS_ROOT" && -x "$JARVIS_ROOT/.venv/bin/python" ]]; then
   PYTHON="$JARVIS_ROOT/.venv/bin/python"
 else
-  PYTHON="${PYTHON:-python3}"
+  PYTHON=python3
 fi
 
 {

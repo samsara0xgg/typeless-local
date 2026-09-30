@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Build the Typlus self-contained .app via py2app.
+"""Build the self-contained 言字 (Yana) .app via py2app.
 
 Plain ``build_app.py`` produces an ad-hoc signed bundle, which is fine on the
 machine that built it and refused by Gatekeeper anywhere else. ``--release``
@@ -18,13 +18,18 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+from typeless_local import RELEASE, brand  # noqa: E402
+
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
 VERSION_FILE = ROOT / "typeless_local" / "_version.py"
 ENTITLEMENTS = ROOT / "assets" / "entitlements.plist"
-BUNDLE_ID = "com.alllllenshi.typlus"
-APP_NAME = "Typlus"
-VERSION = "0.2.0"
+BUNDLE_ID = brand.BUNDLE_ID
+APP_NAME = brand.ENGLISH_NAME
+VERSION = RELEASE
+# What the app cannot draw its capsule, windows or name without.
+BUNDLED_PAGES = ("kit.js", "kit.css", "overlay.html", "settings.html", "history.html", "onboarding.html", "appicon.svg")
 # 64-bit Mach-O, plus the fat/universal wrapper around it.
 MACHO_MAGIC = {
     b"\xcf\xfa\xed\xfe",
@@ -375,13 +380,20 @@ def smoke_test(app: Path) -> None:
     code = (
         "import mlx.core as mx, mlx_whisper, sounddevice, llvmlite.binding\n"
         "assert (mx.array([1.0, 2.0]) * 2).tolist() == [2.0, 4.0]\n"
+        "import typeless_local.windows\n"
+        "from typeless_local.webview import web_root\n"
+        f"missing = [n for n in {BUNDLED_PAGES!r} if not (web_root() / n).is_file()]\n"
+        "assert not missing, f'pages missing from the bundle: {missing}'\n"
     )
     result = subprocess.run(
         [str(python), "-c", code], env=env, capture_output=True, text=True
     )
     if result.returncode != 0:
         raise SystemExit("bundle smoke test failed:\n" + result.stderr.strip())
-    print("smoke test: mlx computes, and mlx_whisper/sounddevice/llvmlite import")
+    strings = app / "Contents" / "Resources" / "zh-Hans.lproj" / "InfoPlist.strings"
+    if not strings.is_file():
+        raise SystemExit(f"bundle smoke test failed: {strings.relative_to(app)} is missing, so the app is not called 言字")
+    print("smoke test: mlx computes, mlx_whisper/sounddevice/llvmlite import, the pages and the 言字 name are in")
 
 
 def prune_bundle(app: Path) -> None:

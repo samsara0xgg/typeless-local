@@ -1,0 +1,112 @@
+/* The capsule. The page is a transparent sheet over the bottom of the screen;
+   only the capsule, its buds and the idle handle are drawn. With native glass
+   (html.native) the glass itself is an AppKit view under this page, moved to
+   the same rectangles, and the elements here only carry the content. */
+html, body{background:transparent; overflow:hidden; width:100%; height:100%}
+#stage{position:fixed; inset:0}
+
+.gl{position:absolute; left:0; top:0; background:var(--g-fill); box-shadow:var(--g-shadow), inset 0 0 0 .5px var(--g-edge); transform-origin:50% 50%; will-change:transform, opacity}
+/* Without native glass there is nothing behind the page to blur, so the fill
+   has to carry legibility on its own. */
+html:not(.native) .gl{background:color-mix(in srgb, var(--g-solid) 92%, transparent)}
+.gl::before{content:""; position:absolute; inset:0; border-radius:inherit; padding:1px; pointer-events:none;
+  background:linear-gradient(165deg, var(--g-hi) 0%, var(--g-mid) 26%, transparent 46%, transparent 64%, var(--g-mid) 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite:xor; mask-composite:exclude}
+html.native .gl{background:transparent; box-shadow:none}
+html.native .gl::before{display:none}
+html.rt .gl{background:var(--g-solid) !important}
+html.hc .gl{box-shadow:var(--g-shadow), inset 0 0 0 1px var(--label-3)}
+
+.cap{width:40px; height:40px; border-radius:20px; overflow:hidden; opacity:0}
+.cap .layer{position:absolute; top:0; left:50%; transform:translateX(-50%); height:40px; width:max-content; display:flex; align-items:center; gap:8px; padding:0 5px; white-space:nowrap; color:var(--label); transition:opacity .18s ease-out, filter .18s ease-out, transform .18s ease-out}
+.cap .layer.card{height:auto; width:400px; display:block; padding:0; white-space:normal}
+.cap .layer.measure{visibility:hidden; transition:none}
+.cap .layer.enter{opacity:0; filter:blur(4px); transform:translateX(-50%) scale(1.05)}
+.cap .layer.leave{opacity:0; filter:blur(4px); transform:translateX(-50%) scale(.95)}
+html.rm .cap .layer{transition-duration:.18s; transition-timing-function:ease-in-out}
+html.rm .cap .layer.enter, html.rm .cap .layer.leave{filter:none; transform:translateX(-50%)}
+
+.ib{width:30px; height:30px; border-radius:15px; display:grid; place-items:center; border:0; padding:0; background:transparent; color:var(--label); flex:none; transition:transform .22s cubic-bezier(.3,1.3,.5,1), background .15s}
+.ib:hover, .ib.hov{background:var(--hover)}
+.ib:active{transform:scale(.92); background:var(--press)}
+.ib .i{width:16px; height:16px; stroke-width:2}
+.ib.pri{background:var(--accent); color:#fff; box-shadow:inset 0 1px 0 rgba(255,255,255,.35), 0 1px 3px rgba(0,40,120,.25)}
+.ib.pri:hover, .ib.pri.hov{filter:brightness(1.08); background:var(--accent)}
+.ib.sm{width:24px; height:24px}
+.ib.sm .i{width:13px; height:13px}
+.ringwrap{position:relative; width:30px; height:30px; flex:none}
+.ringwrap svg.ring{position:absolute; inset:-3px; width:36px; height:36px; transform:rotate(-90deg); pointer-events:none}
+.ringwrap svg.ring circle{fill:none; stroke-width:2.2}
+.ringwrap svg.ring .bg{stroke:var(--label-3)}
+.ringwrap svg.ring .fg{stroke:var(--orange); stroke-linecap:round; transition:stroke-dashoffset .25s linear}
+
+.wave{display:flex; align-items:center; justify-content:center; gap:2px; height:26px; flex:none}
+.wave i{display:block; width:3px; height:3px; border-radius:2px; background:var(--label); opacity:.92}
+.wave.idle i{opacity:.35}
+.tmr{min-width:36px; text-align:right; font-size:12.5px; font-weight:500; color:var(--label-2); font-variant-numeric:tabular-nums; padding-right:2px}
+.tmr.warn{color:color-mix(in srgb, var(--orange) 55%, var(--label))}
+.hint{font-size:12.5px; font-weight:500; color:var(--label-2); padding-right:10px}
+.hint.warn{color:color-mix(in srgb, var(--orange) 55%, var(--label))}
+.recdot{width:9px; height:9px; border-radius:5px; background:var(--red); margin-left:11px; box-shadow:0 0 0 3px color-mix(in srgb, var(--red) 25%, transparent); animation:recdot 1.4s ease-in-out infinite}
+@keyframes recdot{50%{box-shadow:0 0 0 6px color-mix(in srgb, var(--red) 0%, transparent)}}
+.lockg{display:grid; place-items:center; width:18px; color:var(--label-2)}
+.lockg .i{width:15px; height:15px}
+.chip{display:inline-flex; align-items:center; gap:4px; height:24px; padding:0 8px 0 6px; border-radius:12px; background:color-mix(in srgb, var(--accent) 16%, transparent); color:var(--accent); font-size:12px; font-weight:600}
+.chip .i{width:13px; height:13px; stroke-width:2}
+.solo{display:grid; place-items:center; width:30px; height:30px}
+.solo .i{width:18px; height:18px; stroke-width:1.9}
+.breathe{animation:breathe 1.1s ease-in-out infinite}
+@keyframes breathe{0%,100%{opacity:.5; transform:scale(.92)}50%{opacity:1; transform:scale(1)}}
+.lbl{font-size:13px; font-weight:500; color:var(--label); padding-right:12px}
+.lbl .sub{color:var(--label-2); font-weight:400}
+.lead{display:grid; place-items:center; width:30px; height:30px; margin-left:1px}
+.lead .i{width:18px; height:18px}
+.lead.ok{color:var(--green)} .lead.warn{color:var(--orange)} .lead.err{color:var(--red)}
+.draw path{stroke-dasharray:24; stroke-dashoffset:24; animation:draw .42s .08s ease-out forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+html.rm .draw path{animation:none; stroke-dashoffset:0}
+.wiggle{animation:wiggle .34s ease-in-out 1}
+@keyframes wiggle{20%{transform:translateX(-3px)}45%{transform:translateX(3px)}70%{transform:translateX(-2px)}}
+.dots{display:flex; gap:4px; padding-left:12px}
+.dots i{width:6px; height:6px; border-radius:3px; background:var(--label-2); animation:dot 1s ease-in-out infinite}
+.dots i:nth-child(2){animation-delay:.14s} .dots i:nth-child(3){animation-delay:.28s}
+@keyframes dot{0%,100%{transform:translateY(0); opacity:.45}40%{transform:translateY(-4px); opacity:1}}
+.raw{max-width:300px; overflow:hidden; text-overflow:ellipsis; font-size:13px; padding-right:12px; color:var(--label-2)}
+.shimmer{background:linear-gradient(90deg, var(--label-3) 0%, var(--label) 45%, var(--label-3) 90%); background-size:220% 100%; -webkit-background-clip:text; background-clip:text; color:transparent; animation:shim 1.8s linear infinite}
+@keyframes shim{from{background-position:120% 0}to{background-position:-100% 0}}
+html.rm .shimmer{color:var(--label-2); background:none; animation:none}
+html.rm .breathe, html.rm .dots i, html.rm .recdot{animation:none}
+.spark{display:grid; place-items:center; width:30px; height:30px; color:var(--accent)}
+.spark .i{width:17px; height:17px; animation:spk 1.6s ease-in-out infinite}
+@keyframes spk{50%{transform:rotate(12deg) scale(1.08)}}
+.pct{font-variant-numeric:tabular-nums}
+.pring{width:18px; height:18px; border-radius:9px; margin-left:8px; background:conic-gradient(var(--accent) calc(var(--p,0) * 1turn), var(--label-3) 0); -webkit-mask:radial-gradient(circle, transparent 5px, #000 5.5px); mask:radial-gradient(circle, transparent 5px, #000 5.5px); flex:none}
+
+.bud{display:inline-flex; align-items:center; gap:6px; height:36px; padding:0 14px 0 11px; border-radius:18px; border:0; color:var(--label); font-size:13px; font-weight:500; white-space:nowrap; transition:filter .15s}
+.bud:hover, .bud.hov{filter:brightness(1.06)}
+html.native .bud:hover, html.native .bud.hov{background:var(--hover)}
+.bud:active{filter:brightness(.94)}
+.bud .i{width:15px; height:15px; stroke-width:1.9}
+.bud.pri{background:color-mix(in srgb, var(--accent) 80%, transparent) !important; color:#fff}
+.bud.measure{visibility:hidden; position:absolute; left:-9999px}
+
+.card-in{padding:14px 14px 12px}
+.card-h{display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--label); margin-bottom:10px; padding-left:2px}
+.card-h .i{width:16px; height:16px; color:var(--label-2)}
+.card-h .t{flex:1; min-width:0}
+.card-h .t small{display:block; font-weight:400; color:var(--label-2); font-size:12px}
+.card-field{display:block; width:100%; min-height:64px; max-height:150px; resize:none; border:0; outline:none; border-radius:14px; padding:10px 12px; font:14px/1.6 var(--font); color:var(--label); background:color-mix(in srgb, var(--g-fill-2) 70%, transparent); box-shadow:inset 0 0 0 .5px var(--g-edge); -webkit-user-select:text; user-select:text; cursor:text}
+.card-field:focus{box-shadow:inset 0 0 0 1.5px var(--accent)}
+.card-f{display:flex; align-items:center; gap:8px; margin-top:10px}
+.card-f .sp{flex:1}
+.kh{font-size:11.5px; color:var(--label-2); flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.pbtn{flex:none; white-space:nowrap; height:28px; padding:0 12px; border-radius:14px; border:0; background:var(--hover); color:var(--label); font-size:13px; font-weight:500}
+.pbtn:hover, .pbtn.hov{background:var(--press)}
+.pbtn.pri{background:var(--accent); color:#fff}
+
+/* idle handle: a thin line above the Dock that becomes a mic button */
+#handle{position:absolute; width:44px; height:18px; display:flex; align-items:flex-end; justify-content:center}
+#handle > i{display:block; width:36px; height:5px; border-radius:3px; background:var(--label-3); transition:opacity .2s}
+#handle.hov > i, #handle.away > i{opacity:0}
+#hb{width:40px; height:40px; border-radius:20px; display:grid; place-items:center; color:var(--label); border:0; padding:0; opacity:0}
+#hb .i{width:18px; height:18px; stroke-width:1.9}

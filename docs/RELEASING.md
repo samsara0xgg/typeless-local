@@ -1,4 +1,4 @@
-# Releasing Typlus
+# Releasing 言字 (Yana)
 
 How to ship a build other people can download and open. Everything here was
 learned the expensive way on 2026-09-14; follow it and a release is two
@@ -81,8 +81,8 @@ $PYBUILD -m venv ~/.typlus-build-venv
 3. Publish:
 
    ```sh
-   gh release create v0.3.0 --title "Typlus 0.3.0" \
-     --notes-file notes.md dist/Typlus-0.3.0.dmg
+   gh release create v0.3.0 --title "言字 0.3.0" \
+     --notes-file notes.md dist/Yana-0.3.0.dmg
    ```
 
 The first `codesign` call of the session raises a keychain prompt asking for the
@@ -124,23 +124,23 @@ Checking the `.dmg` is not enough — Gatekeeper judges the `.app`, and the disk
 image can pass while the app inside does not.
 
 ```sh
-hdiutil attach dist/Typlus-0.2.0.dmg
-codesign --verify --deep --strict --verbose=2 /Volumes/Typlus/Typlus.app
-spctl -a -vv /Volumes/Typlus/Typlus.app          # want: accepted, Notarized Developer ID
-xcrun stapler validate /Volumes/Typlus/Typlus.app # want: the ticket, so it works offline
-hdiutil detach /Volumes/Typlus
+hdiutil attach dist/Yana-0.3.0.dmg
+codesign --verify --deep --strict --verbose=2 /Volumes/Yana/Yana.app
+spctl -a -vv /Volumes/Yana/Yana.app          # want: accepted, Notarized Developer ID
+xcrun stapler validate /Volumes/Yana/Yana.app # want: the ticket, so it works offline
+hdiutil detach /Volumes/Yana
 ```
 
 To reproduce what a downloader sees, stamp the quarantine attribute a browser
 would add and ask again:
 
 ```sh
-cp dist/Typlus-0.2.0.dmg /tmp/sim.dmg
+cp dist/Yana-0.3.0.dmg /tmp/sim.dmg
 xattr -w com.apple.quarantine "0083;00000000;Safari;|com.apple.Safari" /tmp/sim.dmg
 spctl -a -vv -t open --context context:primary-signature /tmp/sim.dmg
 ```
 
-**"Typlus.app is damaged and can't be opened" right after dragging it to
+**"Yana.app is damaged and can't be opened" right after dragging it to
 Applications is usually an incomplete copy, not a signing problem.** The bundle
 is 1.3 GB; Finder shows the icon before the copy finishes. Verify with the
 commands above before assuming the build is bad.

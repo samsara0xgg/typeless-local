@@ -1,459 +1,656 @@
-"""macOS menu-bar status indicator for Typlus."""
+"""The menu-bar item: the 言 glyph and the app's menu.
+
+The glyph is drawn at runtime as a template image, so macOS tints it for light
+and dark menu bars like its own icons. It has four looks: idle, recording (a
+blinking dot under the mouth), working (the glyph breathes) and needs
+attention (an orange badge, for what only the user can fix). A failed
+dictation does not change the icon: the capsule already said so.
+
+The menu is rebuilt from ``build_menu`` every time it opens, so the devices,
+the last dictation and which models lack a key are always current. Building it
+is plain Python and tested; only ``_fill`` touches AppKit.
+"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
-import subprocess
+import math
 import threading
-from pathlib import Path
+import time
 from typing import Callable, Literal
+
+from typeless_local import brand
 
 LOGGER = logging.getLogger(__name__)
 
-State = Literal["idle", "starting", "recording", "processing", "error"]
+State = Literal["idle", "starting", "recording", "processing"]
 
-STATE_TO_SYMBOL: dict[str, str] = {
-    "idle": "mic",
-    "starting": "mic",
-    "recording": "record.circle.fill",
-    "processing": "ellipsis.circle",
-    "error": "exclamationmark.triangle.fill",
+# How the icon looks in each app state.
+LOOK: dict[str, str] = {"idle": "idle", "starting": "rec", "recording": "rec", "processing": "busy"}
+STATE_LABEL: dict[str, str] = {
+    "idle": "就绪",
+    "starting": "正在打开麦克风…",
+    "recording": "正在听写",
+    "processing": "正在转写和润色…",
 }
+HINT = "按 F5 或右 ⌘ 开始 · 连按两下锁定"
 
-STATE_TO_LABEL: dict[str, str] = {
-    "idle": "Ready",
-    "starting": "Starting…",
-    "recording": "Recording",
-    "processing": "Thinking…",
-    "error": "Error",
+# What needs the user, most blocking first: (what is wrong, the menu item that fixes it).
+ISSUES: dict[str, tuple[str, str]] = {
+    "perm": ("没有辅助功能权限，快捷键不起作用", "授予辅助功能权限…"),
+    "mic": ("不能使用麦克风", "允许使用麦克风…"),
+    "key": ("缺少 API Key，只能贴原文", "填写 API Key…"),
 }
+SYSTEM_DEFAULT = "系统默认"
+RECENT_CHARS = 40
 
-# Unicode glyph used as a fallback title when SF Symbols don't load. Shown
-# directly in the menu bar so the icon never disappears even if SF Symbol
-# resolution silently fails.
-STATE_TO_TITLE: dict[str, str] = {
-    "idle": "TL",
-    "starting": "TL•",
-    "recording": "●REC",
-    "processing": "TL…",
-    "error": "TL!",
-}
+# ---------------------------------------------------------------- the glyph
+# Drawn in a flipped 18 x 22 pt image: the 18 pt glyph box sits 2 pt down, so
+# it stays centred like any other menu-bar icon and the recording dot has room
+# under it. Shapes are (kind, x, y, w, h[, radius[, line width]]).
+GLYPH_SIZE = (18.0, 22.0)
+_TOP = 2.0
+_GLYPH = (
+    ("oval", 7.8, 1.2 + _TOP, 2.4, 2.4),  # the dot
+    ("fill", 2.6, 4.4 + _TOP, 12.8, 1.6, 0.8),  # three strokes of text
+    ("fill", 4.4, 7.2 + _TOP, 9.2, 1.5, 0.75),
+    ("fill", 4.4, 9.8 + _TOP, 9.2, 1.5, 0.75),
+    ("stroke", 4.9, 12.6 + _TOP, 8.2, 4.2, 1.5, 1.4),  # the mouth
+)
+_REC_DOT = ("oval", 8.0, 20.0, 2.0, 2.0)
+# The orange badge, in the same coordinates: above the top stroke, clear of the dot.
+BADGE_RECT = (13.7, 1.1, 5.0, 5.0)
 
-SYSTEM_DEFAULT_LABEL = "System Default"
 
-_DEFAULT_TRACE_FOLDER = Path.home() / ".typlus"
-_DEFAULT_LOG_PATH = _DEFAULT_TRACE_FOLDER / "app.log"
+def glyph_shapes(dot: bool = False) -> tuple:
+    return _GLYPH + ((_REC_DOT,) if dot else ())
+
+
+def frame(look: str, t: float, reduce_motion: bool = False) -> tuple[float, bool]:
+    """(icon opacity, recording dot shown) for ``look`` at ``t`` seconds."""
+
+    if look == "busy":
+        if reduce_motion:
+            return 0.6, False
+        return 0.4 + 0.6 * (0.5 + 0.5 * math.cos(2 * math.pi * t / 1.2)), False
+    if look == "rec":
+        return 1.0, reduce_motion or (t % 1.0) < 0.5
+    return 1.0, False
+
+
+# ----------------------------------------------------------------- the menu
+
+
+@dataclass(frozen=True)
+class Item:
+    title: str = ""
+    key: str = ""  # what choosing it does; "" is not clickable
+    kind: str = "item"  # item | header | hint | section | separator
+    shortcut: str = ""  # "F5", "⌘Y", "⌘,", "⌘Q"
+    badge: str = ""  # secondary text at the trailing edge
+    subtitle: str = ""
+    checked: bool = False
+    enabled: bool = True
+    children: tuple = ()
+    symbol: str = ""  # SF Symbol shown before the title
+
+
+SEPARATOR = Item(kind="separator")
+
+
+@dataclass(frozen=True)
+class Recent:
+    text: str
+    app: str = ""
+    at: float = 0.0
+
+
+@dataclass(frozen=True)
+class Preset:
+    name: str
+    needs_key: bool = False
+    median_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    state: str = "idle"
+    issues: tuple[str, ...] = ()
+    recent: Recent | None = None
+    presets: tuple[Preset, ...] = ()
+    active_preset: str = ""
+    inputs: tuple[str, ...] = ()
+    active_input: str = ""
+    refine: bool = True
+    usage: str = ""  # "今天 23 次 · 约 $0.04"; "" when history is off
+
+
+def ago(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return "刚刚"
+    if seconds < 3600:
+        return f"{int(seconds // 60)} 分钟前"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)} 小时前"
+    return f"{int(seconds // 86400)} 天前"
+
+
+def clip(text: str, limit: int = RECENT_CHARS) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def ordered_issues(issues) -> tuple[str, ...]:
+    return tuple(name for name in ISSUES if name in set(issues or ()))
+
+
+def build_menu(snap: Snapshot, now: float | None = None) -> list[Item]:
+    now = time.time() if now is None else now
+    issues = ordered_issues(snap.issues)
+    status = ISSUES[issues[0]][0] if issues and snap.state == "idle" else STATE_LABEL.get(snap.state, "")
+    items = [Item(brand.DISPLAY_NAME, kind="header", subtitle=status), Item(HINT, kind="hint"), SEPARATOR]
+    if issues:
+        items += [Item(ISSUES[name][1], key=f"fix:{name}", symbol="exclamationmark.triangle") for name in issues]
+        items.append(SEPARATOR)
+
+    idle = snap.state == "idle"
+    if snap.state in ("starting", "recording"):
+        items.append(Item("结束听写", key="toggle", shortcut="F5", symbol="stop.circle"))
+    else:
+        items.append(Item("开始听写", key="toggle", shortcut="F5", enabled=idle, symbol="mic"))
+    items += [Item("锁定听写", key="latch", badge="右⌘ Space", enabled=idle, symbol="lock"), SEPARATOR]
+
+    items.append(Item("最近一次", kind="section"))
+    if snap.recent and snap.recent.text.strip():
+        meta = [ago(now - snap.recent.at)] if snap.recent.at else []
+        if snap.recent.app:
+            meta.append(snap.recent.app)
+        meta.append("点按复制")
+        items.append(Item(clip(snap.recent.text), key="copy", subtitle=" · ".join(meta)))
+    else:
+        items.append(Item("还没有听写", enabled=False))
+    items.append(SEPARATOR)
+
+    if snap.presets:
+        models = tuple(
+            Item(
+                preset.name,
+                key=f"preset:{preset.name}",
+                checked=preset.name == snap.active_preset,
+                badge="需要 Key" if preset.needs_key else _seconds(preset.median_ms),
+            )
+            for preset in snap.presets
+        ) + (SEPARATOR, Item("管理模型与 Key…", key="settings:model"))
+        active = snap.active_preset if snap.refine else "关闭"
+        items.append(Item("润色模型", badge=active, children=models, symbol="sparkles"))
+    active_input = snap.active_input if snap.active_input in snap.inputs else ""
+    inputs = (Item(SYSTEM_DEFAULT, key="input:", checked=not active_input),) + tuple(
+        Item(name, key=f"input:{name}", checked=name == active_input) for name in snap.inputs
+    )
+    items += [
+        Item("输入设备", badge=active_input or SYSTEM_DEFAULT, children=inputs, symbol="waveform"),
+        Item("词库…", key="settings:vocab", symbol="book"),
+        Item("历史记录…", key="history", shortcut="⌘Y", symbol="clock"),
+    ]
+    if snap.usage:
+        items.append(Item(snap.usage, key="settings:usage", symbol="chart.bar"))
+    items += [
+        SEPARATOR,
+        Item("设置…", key="settings:", shortcut="⌘,", symbol="gearshape"),
+        Item(brand.quit_label(), key="quit", shortcut="⌘Q", symbol="power"),
+    ]
+    return items
+
+
+def _seconds(ms: int | None) -> str:
+    return f"{ms / 1000:.1f} 秒" if ms else ""
+
+
+# --------------------------------------------------------------- the item
 
 
 class MenuBarIcon:
-    """NSStatusItem wrapper; thread-safe ``set_state`` via callAfter."""
+    """The status item. ``set_state`` and ``set_issues`` are safe from any thread."""
 
     def __init__(
         self,
-        on_reload_vocab: Callable[[], None],
-        on_quit: Callable[[], None],
-        trace_folder: Path | None = None,
-        log_path: Path | None = None,
-        presets: list[str] | None = None,
-        active_preset: str = "",
-        on_select_model: Callable[[str], None] | None = None,
-        input_devices: list[str] | None = None,
-        output_devices: list[str] | None = None,
-        active_input: str = "",
-        active_output: str = "",
-        on_select_input: Callable[[str], None] | None = None,
-        on_select_output: Callable[[str], None] | None = None,
-        on_set_api_key: Callable[[], None] | None = None,
+        on_action: Callable[[str], None],
+        snapshot: Callable[[], Snapshot] | None = None,
     ) -> None:
-        self._on_reload_vocab = on_reload_vocab
-        self._on_quit = on_quit
-        self._presets = list(presets or [])
-        self.active_preset = active_preset
-        self._on_select_model = on_select_model
-        self._model_items: dict[str, object] = {}
-        self._input_devices = list(input_devices or [])
-        self._output_devices = list(output_devices or [])
-        self.active_input = active_input
-        self.active_output = active_output
-        self._on_select_input = on_select_input
-        self._on_select_output = on_select_output
-        self._on_set_api_key = on_set_api_key
-        self._input_items: dict[str, object] = {}
-        self._output_items: dict[str, object] = {}
-        self._trace_folder = trace_folder or _DEFAULT_TRACE_FOLDER
-        self._log_path = log_path or _DEFAULT_LOG_PATH
+        self._on_action = on_action
+        self._snapshot = snapshot or Snapshot
         self.current_state: State = "idle"
-        self._status_item = None
-        self._status_label_item = None
+        self.issues: tuple[str, ...] = ()
         self._lock = threading.Lock()
+        self._status_item = None
+        self._menu = None
+        self._target = None
+        self._badge = None
+        self._images: dict[bool, object] = {}
+        self._timer = None
+        self._look = ""
+        self._look_since = 0.0
+        self._dot_shown = None
+
+    # -------------------------------------------------------- public API
+
+    def set_state(self, state: str) -> None:
+        with self._lock:
+            self.current_state = state if state in LOOK else "idle"
+        self._call_after(self._apply)
+
+    def set_issues(self, issues) -> None:
+        with self._lock:
+            self.issues = ordered_issues(issues)
+        self._call_after(self._apply)
+
+    def perform(self, key: str) -> None:
+        """Run a menu item's action; exceptions are logged, never raised into AppKit."""
+
+        if not key:
+            return
+        try:
+            self._on_action(key)
+        except Exception:
+            LOGGER.warning("Menu action %s failed", key, exc_info=True)
+
+    def items(self) -> list[Item]:
+        try:
+            snap = self._snapshot()
+        except Exception:
+            LOGGER.warning("Could not read the menu's state", exc_info=True)
+            snap = Snapshot(state=self.current_state, issues=self.issues)
+        return build_menu(snap)
+
+    # ----------------------------------------------------------- AppKit
 
     def setup(self) -> None:
-        """Create the NSStatusItem. Must run on the main thread."""
+        """Create the status item. Main thread only."""
 
-        from AppKit import (
-            NSImage,
-            NSImageSymbolConfiguration,
-            NSMenu,
-            NSMenuItem,
-            NSStatusBar,
-            NSColor,
-        )
+        from AppKit import NSMenu, NSStatusBar  # noqa: PLC0415
 
-        bar = NSStatusBar.systemStatusBar()
-        item = bar.statusItemWithLength_(-1)  # NSVariableStatusItemLength
-        # Dragging the icon off the menu bar persists isVisible = false, and
-        # AppKit restores it on every later launch, so the icon never comes
-        # back on its own. This is the only way back short of editing defaults.
+        item = NSStatusBar.systemStatusBar().statusItemWithLength_(-2)  # NSSquareStatusItemLength
+        # Dragging the icon off the menu bar persists isVisible = false and
+        # AppKit restores that on every launch; this is the only way back.
         item.setVisible_(True)
-        button = item.button()
-        # Set a unicode-fallback title up front so the status item is visible
-        # even if SF Symbol image loading fails later (image-only buttons with
-        # a missing image collapse to zero width).
-        button.setTitle_("●")
-        button.setImagePosition_(0)  # NSNoImage — overridden when image loads
-
-        menu = NSMenu.alloc().init()
-
-        label = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            f"Typlus — {STATE_TO_LABEL['idle']}", None, ""
-        )
-        label.setEnabled_(False)
-        self._status_label_item = label
-        menu.addItem_(label)
-        menu.addItem_(NSMenuItem.separatorItem())
-
-        reload_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Reload Vocab", "reloadVocabAction:", "r"
-        )
-        reload_item.setTarget_(_make_action_target(self._on_reload_action))
-        menu.addItem_(reload_item)
-
-        if self._on_set_api_key is not None:
-            api_key_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                "Set API Key\u2026", "setAPIKeyAction:", ""
-            )
-            api_key_item.setTarget_(_make_action_target(self._on_set_api_key_action))
-            menu.addItem_(api_key_item)
-        menu.addItem_(NSMenuItem.separatorItem())
-
-        if self._presets:
-            model_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Model", None, "")
-            submenu = NSMenu.alloc().initWithTitle_("Model")
-            for name in self._presets:
-                entry = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-                    name, "selectModelAction:", ""
-                )
-                entry.setRepresentedObject_(name)
-                entry.setTarget_(_make_action_target(self._on_select_model_action))
-                submenu.addItem_(entry)
-                self._model_items[name] = entry
-            model_item.setSubmenu_(submenu)
-            menu.addItem_(model_item)
-            menu.addItem_(NSMenuItem.separatorItem())
-            self._apply_active_preset()
-
-        if self._input_devices:
-            # "" is the system default, so the menu always offers a way back to it.
-            self._add_device_submenu(
-                menu,
-                title="Input",
-                names=[SYSTEM_DEFAULT_LABEL, *self._input_devices],
-                selector="selectInputAction:",
-                handler=self._on_select_input_action,
-                items=self._input_items,
-            )
-            self._apply_active_input()
-        if self._output_devices:
-            self._add_device_submenu(
-                menu,
-                title="Output",
-                names=self._output_devices,
-                selector="selectOutputAction:",
-                handler=self._on_select_output_action,
-                items=self._output_items,
-            )
-            self._apply_active_output()
-        if self._input_devices or self._output_devices:
-            menu.addItem_(NSMenuItem.separatorItem())
-
-        open_trace = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Open Trace Folder", "openTraceAction:", ""
-        )
-        open_trace.setTarget_(_make_action_target(self._on_open_trace_action))
-        menu.addItem_(open_trace)
-
-        show_log = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Show Log", "showLogAction:", ""
-        )
-        show_log.setTarget_(_make_action_target(self._on_show_log_action))
-        menu.addItem_(show_log)
-        menu.addItem_(NSMenuItem.separatorItem())
-
-        quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Quit", "quitAction:", "q"
-        )
-        quit_item.setTarget_(_make_action_target(self._on_quit_action))
-        menu.addItem_(quit_item)
-
+        self._target = _target(self)
+        menu = NSMenu.alloc().initWithTitle_(brand.DISPLAY_NAME)
+        menu.setAutoenablesItems_(False)
+        menu.setDelegate_(self._target)
         item.setMenu_(menu)
         self._status_item = item
-        self._apply_state(self.current_state)
+        self._menu = menu
+        self._images = {dot: _glyph_image(dot) for dot in (False, True)}
+        self._badge = _badge_view(item.button())
+        self._apply()
 
-    def set_state(self, state: State) -> None:
-        """Thread-safe state update; clamps unknown states to 'idle'."""
+    def rebuild(self, menu=None) -> None:
+        """Refill the menu from the current state (menuNeedsUpdate:)."""
 
-        with self._lock:
-            if state not in STATE_TO_SYMBOL:
-                state = "idle"
-            self.current_state = state
-        try:
-            from PyObjCTools import AppHelper
+        menu = menu or self._menu
+        if menu is None:
+            return
+        menu.removeAllItems()
+        _fill(menu, self.items(), self._target)
 
-            AppHelper.callAfter(self._apply_state, self.current_state)
-        except Exception:
-            LOGGER.debug("set_state called without AppKit available", exc_info=True)
-
-    def set_active_preset(self, name: str) -> None:
-        """Thread-safe checkmark update for the Model submenu."""
-
-        self.active_preset = name
-        try:
-            from PyObjCTools import AppHelper
-
-            AppHelper.callAfter(self._apply_active_preset)
-        except Exception:
-            LOGGER.debug("set_active_preset called without AppKit available", exc_info=True)
-
-    def _add_device_submenu(self, menu, *, title, names, selector, handler, items) -> None:
-        """Attach one checkmarked submenu of device names to ``menu``."""
-
-        from AppKit import NSMenu, NSMenuItem
-
-        parent = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
-        submenu = NSMenu.alloc().initWithTitle_(title)
-        for name in names:
-            entry = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(name, selector, "")
-            entry.setRepresentedObject_(name)
-            entry.setTarget_(_make_action_target(handler))
-            submenu.addItem_(entry)
-            items[name] = entry
-        parent.setSubmenu_(submenu)
-        menu.addItem_(parent)
-
-    def set_active_input(self, name: str) -> None:
-        """Thread-safe checkmark update for the Input submenu."""
-
-        self.active_input = name
-        self._call_after(self._apply_active_input)
-
-    def set_active_output(self, name: str) -> None:
-        """Thread-safe checkmark update for the Output submenu."""
-
-        self.active_output = name
-        self._call_after(self._apply_active_output)
-
-    def _call_after(self, callback) -> None:
-        try:
-            from PyObjCTools import AppHelper
-
-            AppHelper.callAfter(callback)
-        except Exception:
-            LOGGER.debug("Menu update requested without AppKit available", exc_info=True)
-
-    def _apply_active_input(self) -> None:
-        active = self.active_input or SYSTEM_DEFAULT_LABEL
-        for name, item in self._input_items.items():
-            item.setState_(1 if name == active else 0)
-
-    def _apply_active_output(self) -> None:
-        for name, item in self._output_items.items():
-            item.setState_(1 if name == self.active_output else 0)
-
-    def _on_select_input_action(self, sender) -> None:
-        try:
-            name = str(sender.representedObject())
-            if self._on_select_input is not None:
-                self._on_select_input("" if name == SYSTEM_DEFAULT_LABEL else name)
-        except Exception:
-            LOGGER.warning("Select-input callback failed", exc_info=True)
-
-    def _on_select_output_action(self, sender) -> None:
-        try:
-            name = str(sender.representedObject())
-            if self._on_select_output is not None:
-                self._on_select_output(name)
-        except Exception:
-            LOGGER.warning("Select-output callback failed", exc_info=True)
-
-    def _apply_active_preset(self) -> None:
-        for name, item in self._model_items.items():
-            item.setState_(1 if name == self.active_preset else 0)  # NSControlStateValueOn
-
-    def _apply_state(self, state: State) -> None:
+    def _apply(self) -> None:
         if self._status_item is None:
             return
         button = self._status_item.button()
-        # Always set a colored unicode dot as the title so the icon is visible
-        # regardless of SF Symbol availability. Mapping per state below.
-        title_dot = STATE_TO_TITLE.get(state, "●")
+        look = LOOK.get(self.current_state, "idle")
+        label = STATE_LABEL.get(self.current_state, "")
+        issues = self.issues
+        if issues and self.current_state == "idle":
+            label = ISSUES[issues[0]][0]
+        if look != self._look:
+            self._look = look
+            self._look_since = time.monotonic()
+            self._dot_shown = None
+            self._restart_timer(look)
+        self._draw_frame()
         try:
-            button.setTitle_(title_dot)
-            button.setImagePosition_(0)  # NSNoImage (no image yet)
+            button.setToolTip_(f"{brand.DISPLAY_NAME} · {label}")
+            button.setAccessibilityLabel_(f"{brand.DISPLAY_NAME}，{label}")
         except Exception:
-            LOGGER.warning("menubar: failed to set fallback title", exc_info=True)
+            pass
+        if self._badge is not None:
+            _place_badge(self._badge, button)
+            self._badge.setHidden_(not issues)
 
-        try:
-            from AppKit import NSImage
-
-            symbol = STATE_TO_SYMBOL.get(state, "mic")
-            image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
-                symbol, f"Typlus {state}"
-            )
+    def _draw_frame(self) -> None:
+        if self._status_item is None:
+            return
+        button = self._status_item.button()
+        alpha, dot = frame(self._look, time.monotonic() - self._look_since, _reduce_motion())
+        if dot != self._dot_shown:
+            self._dot_shown = dot
+            image = self._images.get(dot)
             if image is not None:
-                try:
-                    from AppKit import NSImageSymbolConfiguration
-
-                    tint = _state_color(state)
-                    config = NSImageSymbolConfiguration.configurationWithHierarchicalColor_(tint)
-                    tinted = image.imageWithSymbolConfiguration_(config) or image
-                except Exception:
-                    LOGGER.info("menubar: hierarchical color unavailable; using template image")
-                    tinted = image
-                    tinted.setTemplate_(True)
-                button.setImage_(tinted)
-                # Once we have an image, hide the text and show image only.
+                button.setImage_(image)
                 button.setTitle_("")
-                button.setImagePosition_(2)  # NSImageOnly
-        except Exception:
-            LOGGER.warning("menubar: SF Symbol load failed; keeping text dot", exc_info=True)
+            else:
+                button.setTitle_("言")
+        button.setAlphaValue_(alpha)
 
-        if self._status_label_item is not None:
-            try:
-                self._status_label_item.setTitle_(
-                    f"Typlus — {STATE_TO_LABEL.get(state, state)}"
-                )
-            except Exception:
-                LOGGER.debug("menubar: failed to update label", exc_info=True)
-
-    def _on_reload_action(self, sender) -> None:
+    def _restart_timer(self, look: str) -> None:
+        if self._timer is not None:
+            self._timer.invalidate()
+            self._timer = None
+        if look == "idle" or _reduce_motion():
+            return
         try:
-            self._on_reload_vocab()
-        except Exception:
-            LOGGER.warning("Reload-vocab callback failed", exc_info=True)
+            from Foundation import NSRunLoop, NSRunLoopCommonModes, NSTimer  # noqa: PLC0415
 
-    def _on_set_api_key_action(self, sender) -> None:
+            interval = 1 / 15 if look == "busy" else 0.5
+            timer = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(
+                interval, self._target, "tick:", None, True
+            )
+            # Common modes: the icon keeps moving while its menu is open.
+            NSRunLoop.currentRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
+            self._timer = timer
+        except Exception:
+            LOGGER.debug("Menu-bar animation unavailable", exc_info=True)
+
+    @staticmethod
+    def _call_after(callback) -> None:
         try:
-            if self._on_set_api_key is not None:
-                self._on_set_api_key()
-        except Exception:
-            LOGGER.warning("Set-API-key callback failed", exc_info=True)
+            from PyObjCTools import AppHelper  # noqa: PLC0415
 
-    def _on_select_model_action(self, sender) -> None:
+            AppHelper.callAfter(callback)
+        except Exception:
+            LOGGER.debug("Menu-bar update without AppKit", exc_info=True)
+
+
+# ------------------------------------------------------------ AppKit helpers
+
+
+def _reduce_motion() -> bool:
+    try:
+        from AppKit import NSWorkspace  # noqa: PLC0415
+
+        return bool(NSWorkspace.sharedWorkspace().accessibilityDisplayShouldReduceMotion())
+    except Exception:
+        return False
+
+
+def _draw_shapes(shapes) -> None:
+    from AppKit import NSBezierPath, NSColor  # noqa: PLC0415
+    from Foundation import NSMakeRect  # noqa: PLC0415
+
+    NSColor.blackColor().set()
+    for shape in shapes:
+        kind, x, y, w, h = shape[:5]
+        rect = NSMakeRect(x, y, w, h)
+        if kind == "oval":
+            NSBezierPath.bezierPathWithOvalInRect_(rect).fill()
+            continue
+        radius = shape[5]
+        path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(rect, radius, radius)
+        if kind == "stroke":
+            path.setLineWidth_(shape[6])
+            path.stroke()
+        else:
+            path.fill()
+
+
+def _glyph_image(dot: bool):
+    """The 言 glyph as a template image, drawn at whatever scale the screen needs."""
+
+    try:
+        from AppKit import NSImage  # noqa: PLC0415
+        from Foundation import NSMakeSize  # noqa: PLC0415
+
+        shapes = glyph_shapes(dot)
+        size = NSMakeSize(*GLYPH_SIZE)
+
+        def draw(_rect) -> bool:
+            _draw_shapes(shapes)
+            return True
+
         try:
-            name = str(sender.representedObject())
-            if self._on_select_model is not None:
-                self._on_select_model(name)
+            image = NSImage.imageWithSize_flipped_drawingHandler_(size, True, draw)
         except Exception:
-            LOGGER.warning("Select-model callback failed", exc_info=True)
-
-    def _on_quit_action(self, sender) -> None:
-        try:
-            self._on_quit()
-        except Exception:
-            LOGGER.warning("Quit callback failed", exc_info=True)
-
-    def _on_open_trace_action(self, sender) -> None:
-        try:
-            self._trace_folder.mkdir(parents=True, exist_ok=True)
-            subprocess.Popen(["open", str(self._trace_folder)])
-        except Exception:
-            LOGGER.warning("Open trace folder failed", exc_info=True)
-
-    def _on_show_log_action(self, sender) -> None:
-        try:
-            self._log_path.parent.mkdir(parents=True, exist_ok=True)
-            if not self._log_path.exists():
-                self._log_path.touch()
-            subprocess.Popen(["open", str(self._log_path)])
-        except Exception:
-            LOGGER.warning("Show log failed", exc_info=True)
+            image = NSImage.alloc().initWithSize_(size)
+            image.lockFocusFlipped_(True)
+            _draw_shapes(shapes)
+            image.unlockFocus()
+        image.setTemplate_(True)
+        image.setAccessibilityDescription_(brand.DISPLAY_NAME)
+        return image
+    except Exception:
+        LOGGER.warning("Could not draw the menu-bar glyph; showing 言 as text", exc_info=True)
+        return None
 
 
-def _state_color(state: str):
-    from AppKit import NSColor
+def _badge_view(button):
+    try:
+        from AppKit import NSColor, NSView  # noqa: PLC0415
+        from Foundation import NSMakeRect  # noqa: PLC0415
 
-    if state == "recording" or state == "error":
-        return NSColor.systemRedColor()
-    if state == "starting" or state == "processing":
-        return NSColor.systemYellowColor()
-    return NSColor.systemGrayColor()
-
-
-_ACTION_TARGETS: list = []
-_ActionTarget = None  # lazy-defined NSObject subclass (one global ObjC class)
-
-
-def _ensure_action_target_class():
-    """Define the NSObject subclass once (PyObjC classes are global)."""
-
-    global _ActionTarget
-    if _ActionTarget is not None:
-        return _ActionTarget
-
-    import objc
-    from Foundation import NSObject
-
-    class ActionTarget(NSObject):
-        def init(self):
-            # PyObjC requires `objc.super(...).init()`; calling
-            # `NSObject.init(self)` directly raises "Need 0 arguments, got 1".
-            self = objc.super(ActionTarget, self).init()
-            if self is None:
-                return None
-            self._handler = None
-            return self
-
-        def setHandler_(self, h):
-            self._handler = h
-
-        def reloadVocabAction_(self, sender):
-            if self._handler is not None:
-                self._handler(sender)
-
-        def quitAction_(self, sender):
-            if self._handler is not None:
-                self._handler(sender)
-
-        def selectModelAction_(self, sender):
-            if self._handler is not None:
-                self._handler(sender)
-
-        def selectInputAction_(self, sender):
-            if self._handler is not None:
-                self._handler(sender)
-
-        def selectOutputAction_(self, sender):
-            if self._handler is not None:
-                self._handler(sender)
-
-        def openTraceAction_(self, sender):
-            if self._handler is not None:
-                self._handler(sender)
-
-        def showLogAction_(self, sender):
-            if self._handler is not None:
-                self._handler(sender)
-
-    _ActionTarget = ActionTarget
-    return _ActionTarget
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, BADGE_RECT[2], BADGE_RECT[3]))
+        view.setWantsLayer_(True)
+        layer = view.layer()
+        layer.setBackgroundColor_(NSColor.systemOrangeColor().CGColor())
+        layer.setCornerRadius_(BADGE_RECT[2] / 2)
+        view.setHidden_(True)
+        button.addSubview_(view)
+        return view
+    except Exception:
+        LOGGER.debug("No badge view", exc_info=True)
+        return None
 
 
-def _make_action_target(handler: Callable):
-    """Wrap a Python callable as an NSObject responding to the menu selectors."""
+def badge_frame(width: float, height: float, flipped: bool) -> tuple[float, float, float, float]:
+    """Where the badge goes in a button of this size, with the glyph centred in it."""
 
-    cls = _ensure_action_target_class()
-    target = cls.alloc().init()
-    target.setHandler_(handler)
-    # Keep a strong reference; ObjC retains weakly here.
-    _ACTION_TARGETS.append(target)
+    x0 = (width - GLYPH_SIZE[0]) / 2
+    y0 = (height - GLYPH_SIZE[1]) / 2
+    x, y, w, h = BADGE_RECT
+    top = y0 + y
+    return (x0 + x, top if flipped else height - top - h, w, h)
+
+
+def _place_badge(view, button) -> None:
+    try:
+        from Foundation import NSMakeRect  # noqa: PLC0415
+
+        bounds = button.bounds()
+        view.setFrame_(NSMakeRect(*badge_frame(bounds.size.width, bounds.size.height, bool(button.isFlipped()))))
+    except Exception:
+        LOGGER.debug("Could not place the badge", exc_info=True)
+
+
+_SHORTCUTS = {"F5": ("", 0), "⌘Y": ("y", 1 << 20), "⌘,": (",", 1 << 20), "⌘Q": ("q", 1 << 20)}
+
+
+def _fill(menu, items: list[Item], target) -> None:
+    """Add ``items`` to an NSMenu, using the newer menu features where macOS has them."""
+
+    from AppKit import NSMenu, NSMenuItem  # noqa: PLC0415
+
+    for spec in items:
+        if spec.kind == "separator":
+            menu.addItem_(NSMenuItem.separatorItem())
+            continue
+        if spec.kind == "section":
+            menu.addItem_(_section(spec.title))
+            continue
+        key_equivalent, modifiers = _SHORTCUTS.get(spec.shortcut, ("", None))
+        title = spec.title
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            title, "menuAction:" if spec.key else None, key_equivalent
+        )
+        if modifiers is not None:
+            item.setKeyEquivalentModifierMask_(modifiers)
+        if spec.key:
+            item.setTarget_(target)
+            item.setRepresentedObject_(spec.key)
+        item.setEnabled_(bool(spec.enabled and (spec.key or spec.children or spec.kind == "header")))
+        if spec.checked:
+            item.setState_(1)
+        if spec.symbol:
+            _set_symbol(item, spec.symbol)
+        if spec.badge:
+            _set_badge(item, title, spec.badge)
+        if spec.kind == "header":
+            _style_header(item, spec)
+        elif spec.kind == "hint":
+            _style_hint(item, spec.title)
+        elif spec.subtitle:
+            _set_subtitle(item, title, spec.subtitle)
+        if spec.children:
+            submenu = NSMenu.alloc().initWithTitle_(title)
+            submenu.setAutoenablesItems_(False)
+            _fill(submenu, list(spec.children), target)
+            item.setSubmenu_(submenu)
+        menu.addItem_(item)
+
+
+def _set_symbol(item, name: str) -> None:
+    try:
+        from AppKit import NSImage  # noqa: PLC0415
+
+        image = NSImage.imageWithSystemSymbolName_accessibilityDescription_(name, None)
+        if image is not None:
+            item.setImage_(image)
+    except Exception:
+        pass
+
+
+def _section(title: str):
+    from AppKit import NSMenuItem  # noqa: PLC0415
+
+    try:
+        return NSMenuItem.sectionHeaderWithTitle_(title)  # macOS 14
+    except Exception:
+        item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
+        item.setEnabled_(False)
+        _style_small(item, title)
+        return item
+
+
+def _set_badge(item, title: str, badge: str) -> None:
+    try:
+        from AppKit import NSMenuItemBadge  # noqa: PLC0415 - macOS 14
+
+        item.setBadge_(NSMenuItemBadge.alloc().initWithString_(badge))
+    except Exception:
+        item.setTitle_(f"{title}　{badge}")
+
+
+def _set_subtitle(item, title: str, subtitle: str) -> None:
+    try:
+        item.setSubtitle_(subtitle)  # macOS 14.4
+    except Exception:
+        _two_lines(item, title, subtitle)
+
+
+def _two_lines(item, title: str, second: str, bold: bool = False) -> None:
+    try:
+        from AppKit import (  # noqa: PLC0415
+            NSColor,
+            NSFont,
+            NSFontAttributeName,
+            NSForegroundColorAttributeName,
+        )
+        from Foundation import NSAttributedString, NSMutableAttributedString  # noqa: PLC0415
+
+        size = NSFont.systemFontSize()
+        head_font = NSFont.boldSystemFontOfSize_(size) if bold else NSFont.menuFontOfSize_(size)
+        text = NSMutableAttributedString.alloc().initWithString_attributes_(title, {NSFontAttributeName: head_font})
+        text.appendAttributedString_(
+            NSAttributedString.alloc().initWithString_attributes_(
+                "\n" + second,
+                {
+                    NSFontAttributeName: NSFont.menuFontOfSize_(NSFont.smallSystemFontSize()),
+                    NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
+                },
+            )
+        )
+        item.setAttributedTitle_(text)
+    except Exception:
+        item.setTitle_(f"{title} · {second}")
+
+
+def _style_header(item, spec: Item) -> None:
+    try:
+        from AppKit import NSApplication  # noqa: PLC0415
+        from Foundation import NSMakeSize  # noqa: PLC0415
+
+        icon = NSApplication.sharedApplication().applicationIconImage()
+        if icon is not None:
+            icon = icon.copy()
+            icon.setSize_(NSMakeSize(28, 28))
+            item.setImage_(icon)
+    except Exception:
+        pass
+    _two_lines(item, spec.title, spec.subtitle, bold=True)
+
+
+def _style_hint(item, title: str) -> None:
+    item.setEnabled_(False)
+    _style_small(item, title)
+
+
+def _style_small(item, title: str) -> None:
+    try:
+        from AppKit import (  # noqa: PLC0415
+            NSColor,
+            NSFont,
+            NSFontAttributeName,
+            NSForegroundColorAttributeName,
+        )
+        from Foundation import NSAttributedString  # noqa: PLC0415
+
+        item.setAttributedTitle_(
+            NSAttributedString.alloc().initWithString_attributes_(
+                title,
+                {
+                    NSFontAttributeName: NSFont.menuFontOfSize_(NSFont.smallSystemFontSize()),
+                    NSForegroundColorAttributeName: NSColor.secondaryLabelColor(),
+                },
+            )
+        )
+    except Exception:
+        pass
+
+
+_TARGETS: list = []
+_TargetClass = None
+
+
+def _target(owner: MenuBarIcon):
+    """One NSObject that receives every menu action, the menu delegate call and the animation tick."""
+
+    global _TargetClass
+    if _TargetClass is None:
+        import objc  # noqa: PLC0415
+        from Foundation import NSObject  # noqa: PLC0415
+
+        class MenuTarget(NSObject):
+            def initWithOwner_(self, owner_):  # noqa: N802 - Cocoa selector
+                self = objc.super(MenuTarget, self).init()
+                if self is None:
+                    return None
+                self.owner = owner_
+                return self
+
+            def menuAction_(self, sender) -> None:  # noqa: N802
+                self.owner.perform(str(sender.representedObject() or ""))
+
+            def menuNeedsUpdate_(self, menu) -> None:  # noqa: N802
+                try:
+                    self.owner.rebuild()
+                except Exception:
+                    LOGGER.warning("Could not rebuild the menu", exc_info=True)
+
+            def tick_(self, timer) -> None:  # noqa: N802
+                self.owner._draw_frame()
+
+        _TargetClass = MenuTarget
+    target = _TargetClass.alloc().initWithOwner_(owner)
+    # Menus hold their targets and delegate weakly.
+    _TARGETS.append(target)
     return target

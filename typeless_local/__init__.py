@@ -1,9 +1,12 @@
-"""Typlus — standalone macOS dictation app."""
+"""言字 (Yana): a standalone macOS dictation app."""
 
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+
+# The version a build is stamped with; builds add the commit after a "+".
+RELEASE = "0.3.0"
 
 
 def app_version() -> str:
@@ -28,7 +31,7 @@ def app_version() -> str:
             ["git", "rev-parse", "--short", "HEAD"], cwd=repo, text=True, timeout=2
         ).strip()
         if out:
-            return f"0.2.0+{out}"
+            return f"{RELEASE}+{out}"
     except Exception:
         pass
     return "unknown"

@@ -5,9 +5,17 @@ import stat
 
 import pytest
 
-from typeless_local import first_run
+from typeless_local import first_run, keychain
 from typeless_local.config import load_env_file
 from typeless_local.refine import MissingAPIKey, RefineConfig, TextRefiner
+
+
+@pytest.fixture(autouse=True)
+def _no_real_keychain(monkeypatch):
+    """Never touch the login keychain of the Mac running the tests."""
+
+    monkeypatch.setattr(keychain, "available", lambda: False)
+    monkeypatch.setattr(keychain, "store_key", lambda *a, **k: pytest.fail("real keychain write"))
 
 
 def test_write_env_value_creates_the_file_and_is_readable_back(tmp_path) -> None:
@@ -89,3 +97,20 @@ def test_refiner_raises_a_typed_error_when_the_key_is_missing(monkeypatch) -> No
 
     with pytest.raises(MissingAPIKey):
         refiner.refine("hello")
+
+
+def test_a_saved_key_goes_to_the_keychain_and_leaves_the_env_file(tmp_path, monkeypatch) -> None:
+    stored = {}
+    monkeypatch.setattr(keychain, "available", lambda: True)
+    monkeypatch.setattr(keychain, "store_key", lambda name, value: stored.update({name: value}) or True)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(first_run, "prompt_for_api_key", lambda *a, **k: "sk-typed-new")
+    env = tmp_path / "env"
+    env.write_text("OPENAI_API_KEY=sk-old\nDEEPSEEK_API_KEY=ds-keep\n", encoding="utf-8")
+
+    assert first_run.set_api_key("OPENAI_API_KEY", "gpt-5.4-mini", env) is True
+
+    assert stored == {"OPENAI_API_KEY": "sk-typed-new"}
+    assert os.environ["OPENAI_API_KEY"] == "sk-typed-new"
+    # The env file is read first at launch; the old key must not come back from it.
+    assert env.read_text(encoding="utf-8") == "DEEPSEEK_API_KEY=ds-keep\n"

@@ -1,26 +1,34 @@
-# Typlus
+# 言字 (Yana)
 
 A standalone macOS dictation app: hold a key, talk, and the cleaned-up text is
 pasted into whatever app you were in. Speech recognition runs locally through
 Whisper; only the final tidy-up pass goes to a language model.
 
+The app is called 言字 on a Chinese system and Yana everywhere else (the
+English name is a placeholder; `typeless_local/brand.py` holds both). It used
+to be called Typlus: the bundle ID and the `~/.typlus` folder keep that name,
+so the permissions macOS granted and your key, words and history carry over.
+
 ## Install
 
-Download the latest `Typlus-<version>.dmg` from
+Download the latest `Yana-<version>.dmg` from
 [Releases](https://github.com/samsara0xgg/typeless-local/releases), open it, and
-drag Typlus to Applications. The build is signed and notarized by Apple, so it
-opens by double-clicking with no security warnings.
+drag the app to Applications. The build is signed and notarized by Apple, so it
+opens by double-clicking with no security warnings. If an older `Typlus.app` is
+still in Applications, delete it.
 
-On first launch Typlus asks for the API key used by the refinement model and
-writes it to `~/.typlus/env`. It then downloads the Whisper weights (~1.5 GB)
-with a progress bar, so the first dictation is not a silent multi-minute wait.
-
-macOS will ask for two permissions, both required:
+On first launch a short guide walks through what the app needs, one step at a
+time, and continues by itself as each permission comes through:
 
 - **Microphone**, to record what you say.
 - **Accessibility**, to see the global hotkey and paste into other apps.
+- **An API key** for the refinement model, kept in the login keychain. It can
+  be skipped: dictation then pastes the raw transcript.
+- **The Whisper weights** (~1.5 GB), downloaded with a progress bar.
+- **One practice dictation** into the guide's own text box.
 
-To change the key later, use **Set API Key…** in the menu-bar menu.
+Anyone already set up (an existing Typlus user) never sees the guide. Keys can
+be changed later in **Settings › 润色模型**.
 
 ## Use
 
@@ -29,9 +37,24 @@ To change the key later, use **Set API Key…** in the menu-bar menu.
 - A single right `Cmd` tap does the same as `F5`; right `Cmd+Space` starts
   hands-free. Right `Cmd` used as a modifier (`Cmd+C`, `Cmd+Tab`) is ignored.
 - `Esc` cancels the active or pending dictation.
-- The menu-bar **Model** submenu lists every `llm.presets` entry from the
+- The menu-bar **润色模型** submenu lists every `llm.presets` entry from the
   config; picking one switches the refinement model immediately.
 - During recording, macOS system output is muted and restored afterwards.
+- **Settings** (`⌘,` from the menu) has seven panes: general, dictation,
+  shortcuts, refinement models and keys, vocabulary, audio, history and privacy.
+- **History** (`⌘Y`) lists every dictation by day, shows what the model changed
+  and where the time went, and adds a misheard word to the vocabulary in one
+  click. Nothing is ever deleted unless you pick a retention limit.
+- **What you actually sent**: after a paste, the field it landed in is read
+  until it empties (a chat box on Enter) or you switch apps, and the final
+  text is stored next to the refined one, so History shows what you fixed by
+  hand. Only small fields, never documents; off in Settings › 历史与隐私.
+- **Usage** (Settings › 用量, and a line in the menu) counts dictations per day
+  and estimates what refinement cost, from the token counts the API returned
+  for this app's own requests. Prices for gpt-5.4-mini / gpt-5.6-terra /
+  gpt-5.6-luna are built in; add others under `llm.prices` in
+  `~/.typlus/config.yaml` as `model: [input, cached input, output]` dollars per
+  million tokens.
 
 ## Build from source
 
@@ -53,7 +76,7 @@ $PYBUILD -m venv /tmp/build-venv
   pyobjc-framework-ApplicationServices pyobjc-framework-WebKit \
   numpy sounddevice openai pyyaml mlx-whisper py2app
 /tmp/build-venv/bin/python scripts/build_app.py
-# Result at dist/Typlus.app — move to /Applications/.
+# Result at dist/Yana.app — move to /Applications/.
 ```
 
 For a build other people can run, `--release` signs with a Developer ID,
@@ -67,6 +90,13 @@ notarizes through Apple, staples the ticket, and produces a `.dmg`:
 setup, what each build step is working around, the traps that each cost a
 notarization round trip, and how to verify a build the way a downloader's Mac
 will.
+
+Every rebuild has to be signed with the same Developer ID: an ad-hoc signed
+build looks like a different app to macOS, which then drops the Accessibility
+permission.
+
+The app icon is drawn by `scripts/make_icon.mjs` (`node scripts/make_icon.mjs
+--icns` rewrites `assets/AppIcon.icns`; it needs Playwright).
 
 The bundle is fully self-contained: it includes its own Python interpreter,
 all wheels, and the vendored Jarvis core subset (`speech_recognizer` +
@@ -131,8 +161,8 @@ auto: []   # auto-filled by scripts/extract_hotwords.py
 ```
 
 `user:` entries are kept verbatim; `auto:` is rewritten by the extraction
-script. The menu-bar **Reload Vocab** action re-reads the file without
-restarting.
+script. **Settings › 词库** edits `user:`, offers `auto:` terms to add or
+reject, and lists words from your recent hand corrections.
 
 ## Trace database
 
@@ -146,7 +176,16 @@ sqlite3 ~/.typlus/trace.db \
 ```
 
 Fields cover audio quality (rms, duration), per-stage latency, the vocab
-list sent to ASR, focus context, paste outcome, and any pipeline error.
+list sent to ASR, focus context, paste outcome, and any pipeline error. The
+History window reads the same table.
+
+## Interface
+
+The capsule, Settings, History and the guide are web pages
+(`typeless_local/web/`) drawn in transparent WKWebViews over native Liquid
+Glass (`NSGlassEffectView` on macOS 26, a vibrancy view before that). The
+pages only draw and report what the user did; `overlay.py`, `capsule.py` and
+`windows.py` decide what they show and do what they ask.
 
 ## Auto-discover hotwords
 
@@ -161,10 +200,13 @@ and existing `user:` terms, and writes the top survivors to `auto:`.
 
 ## Menu bar
 
-When running, Typlus appears as a menu-bar icon (no Dock icon).
-Color reflects state: gray (idle), yellow (starting/thinking), red
-(recording or error). Click the icon for **Reload Vocab**, **Open Trace
-Folder**, **Show Log**, and **Quit**.
+When running, the app is a 言 glyph in the menu bar (a Dock icon appears only
+while one of its windows is open). A dot blinks while recording and the glyph
+breathes while it transcribes and refines. An orange badge means something
+needs fixing (no Accessibility, microphone denied, missing API key), and the
+menu's first items say what and fix it. The menu also has the last dictation
+to copy, the model and input-device pickers, vocabulary, history and
+settings.
 
 ## Pixel Audit
 

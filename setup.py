@@ -1,4 +1,4 @@
-"""py2app build config for Typlus."""
+"""py2app build config for 言字 (Yana)."""
 
 import sys
 from pathlib import Path
@@ -10,7 +10,11 @@ sys.setrecursionlimit(10000)
 from setuptools import setup
 
 ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+from typeless_local import RELEASE, brand  # noqa: E402
+
 APP = [str(ROOT / "typeless_local" / "__main__.py")]
+WEB = ROOT / "typeless_local" / "web"
 DATA_FILES = [
     (
         "Resources",
@@ -21,6 +25,12 @@ DATA_FILES = [
             str(ROOT / "assets" / "stopwords-zh.txt"),
         ],
     ),
+    # The capsule and the windows' pages; webview.web_root() finds them here
+    # when the package directory does not carry them.
+    ("web", sorted(str(path) for path in WEB.iterdir() if path.suffix in {".html", ".js", ".css", ".svg"})),
+    # 言字 on a Chinese system, Yana everywhere else.
+    ("zh-Hans.lproj", [str(ROOT / "assets" / "zh-Hans.lproj" / "InfoPlist.strings")]),
+    ("en.lproj", [str(ROOT / "assets" / "en.lproj" / "InfoPlist.strings")]),
 ]
 
 OPTIONS = {
@@ -50,6 +60,7 @@ OPTIONS = {
         "PyObjCTools",
         "PyObjCTools.AppHelper",
         "Foundation",
+        "WebKit",
         # mlx loads these via its internal __load mechanism; modulegraph misses
         # them by static analysis. Listing them explicitly so they end up in
         # the bundle zip alongside the wrapper-only mlx/__init__.pyc.
@@ -72,25 +83,29 @@ OPTIONS = {
         "wheel",
     ],
     "plist": {
-        "CFBundleName": "Typlus",
-        "CFBundleDisplayName": "Typlus",
-        "CFBundleIdentifier": "com.alllllenshi.typlus",
-        "CFBundleShortVersionString": "0.2.0",
-        "CFBundleVersion": "0.2.0",
+        "CFBundleName": brand.ENGLISH_NAME,
+        "CFBundleDisplayName": brand.ENGLISH_NAME,
+        # Kept from the Typlus days: macOS ties the granted permissions to it.
+        "CFBundleIdentifier": brand.BUNDLE_ID,
+        "CFBundleShortVersionString": RELEASE,
+        "CFBundleVersion": RELEASE,
+        "CFBundleDevelopmentRegion": "en",
+        "CFBundleLocalizations": ["en", "zh-Hans"],
+        "LSHasLocalizedDisplayName": True,
         "LSUIElement": True,
         "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
         "NSMicrophoneUsageDescription":
-            "Typlus records audio when you press F5 to dictate.",
+            f"{brand.ENGLISH_NAME} records audio while you dictate with F5.",
         "NSAppleEventsUsageDescription":
-            "Typlus pastes refined dictation into the focused app.",
+            f"{brand.ENGLISH_NAME} puts the finished text into the app you are typing in.",
     },
     "iconfile": str(ROOT / "assets" / "AppIcon.icns"),
 }
 
 setup(
     app=APP,
-    name="Typlus",
+    name=brand.ENGLISH_NAME,
     data_files=DATA_FILES,
     options={"py2app": OPTIONS},
     setup_requires=["py2app"],

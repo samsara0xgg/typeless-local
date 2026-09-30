@@ -1,27 +1,32 @@
-"""Standalone Typeless-style macOS app coordinator."""
+"""The app's coordinator: hotkey, microphone, recognizer, refinement, the
+capsule, and the text going into the focused app."""
 
 from __future__ import annotations
 
 import atexit
 import dataclasses
 from concurrent.futures import Future, ThreadPoolExecutor
+from functools import partial
 import logging
-import math
 import os
 from pathlib import Path
+import re
+import subprocess
 import threading
 import time
 from types import SimpleNamespace
+import unicodedata
 from typing import Literal
 
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 import numpy as np
 from PyObjCTools import AppHelper
 
-from typeless_local import app_version
+from typeless_local import app_version, brand, keychain, permissions, usage
 from typeless_local.asr import JarvisASR, Transcript, mlx_whisper_repo
 from typeless_local.audio import MicrophoneRecorder, keep_recording, peak_level
 from typeless_local import devices
+from typeless_local.capsule import INSERTED_STATES, Capsule
 from typeless_local.config import (
     AppConfig,
     load_config,
@@ -30,32 +35,42 @@ from typeless_local.config import (
     refine_config_for,
     save_input_device,
     save_default_preset,
+    save_user_setting,
 )
 from typeless_local.mac_integration import (
     FocusContext,
     GlobalHotkeyMonitor,
     capture_focus_context,
+    caret_rect,
+    focused_text_value,
+    frontmost_pid,
     has_accessibility_trust,
     paste_text,
     request_accessibility_trust,
     set_clipboard_text,
+    undo_last_edit,
 )
 from typeless_local.first_run import (
+    _store_api_key,
     download_model,
     ensure_api_key,
     model_is_cached,
     set_api_key,
 )
+from typeless_local.history import median_refine_ms, purge_older_than, set_sent_text
+from typeless_local.sent_text import SentTextWatcher
+from typeless_local.menubar import MenuBarIcon, Preset, Recent, Snapshot
 from typeless_local.overlay import FloatingOverlay
+from typeless_local.preferences import Preferences, load_preferences, save_preference
 from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
 from typeless_local.vocab import as_initial_prompt, load_user_terms, load_vocab, write_starter_file
+from typeless_local.windows import Windows, install_main_menu, prices
 
 LOGGER = logging.getLogger(__name__)
 Mode = Literal["tap", "hands_free"]
 DOUBLE_CLICK_SECONDS = 0.4
 LONG_PRESS_SECONDS = 0.6
-COUNTDOWN_BUFFER_SECONDS = 60.0
 MIN_MIC_STARTUP_SECONDS = 0.75
 # A non-Chinese transcript this short is usually Whisper inventing a word over
 # noise ("you", "Bye."), but it is also how "OK" and "Yes" come out. Whisper's
@@ -64,15 +79,32 @@ SHORT_FRAGMENT_CHARS = 5
 WHISPER_WINDOW_S = 30
 PREWARM_INTERVAL_S = 3.0
 MIN_SHORT_ENGLISH_CONFIDENCE = 0.4
-PROCESSING_PROGRESS_POINTS = (
-    (0.0, 0.0),
-    (1.0, 0.80),
-    (2.0, 0.90),
-    (3.0, 0.95),
-    (4.0, 0.97),
-    (5.0, 0.98),
-    (10.0, 0.99),
-)
+# After a card gives the keyboard back, before Cmd+Z is sent: the undo has to
+# reach the app the text went to, not the card.
+KEY_HANDBACK_S = 0.25
+# How often to look again for the Accessibility permission while it is missing.
+HOTKEY_RETRY_S = 2.0
+# What the capsule's 延长 button adds to a recording nearing its limit.
+EXTEND_RECORDING_S = 15 * 60.0
+# Between taking the old text back and pasting the new one.
+UNDO_SETTLE_S = 0.15
+_DEFAULT_PREFERENCES = Preferences()
+# What the capsule says went wrong, by the step that failed.
+_FAILED_STEP = {"asr": "转写失败", "refine": "润色失败", "paste": "粘贴失败"}
+
+
+@dataclasses.dataclass(frozen=True)
+class Insertion:
+    """A paste the capsule can still undo or replace.
+
+    Only until the user types: after that, Cmd+Z would take back their own
+    typing instead, so any key press forgets it.
+    """
+
+    text: str
+    raw: str
+    pid: int
+    context: FocusContext
 
 
 class TypelessLocalApp:
@@ -94,6 +126,9 @@ class TypelessLocalApp:
             self.vocab = []
             self.whisper_prompt = ""
             self.trace = None
+        self.prefs = load_preferences(user_paths)
+        if dataclasses.is_dataclass(config):
+            self.config = dataclasses.replace(config, max_recording_seconds=self.prefs.max_minutes * 60.0)
 
         components = self._build_components()
         self.asr = components.asr
@@ -103,6 +138,7 @@ class TypelessLocalApp:
         if not headless:
             self.overlay = FloatingOverlay.alloc().init()
             self.overlay.set_action_callback(self._on_overlay_action)
+            self.overlay.set_hover_callback(self._on_overlay_hover)
             try:
                 from typeless_local._vendor.jarvis_core.media_ducking import SystemAudioDucker
             except ImportError:
@@ -114,33 +150,21 @@ class TypelessLocalApp:
                 self._on_hotkey,
                 debug_hotkey=config.debug_hotkey,
                 is_active_fn=lambda: self.state != "idle",
-                wants_return_fn=self._overlay_awaits_return,
+                watch_keys_fn=lambda: self._keys_wanted,
             )
 
-            from typeless_local.menubar import MenuBarIcon
-            from AppKit import NSApp
-
-            self.menubar = MenuBarIcon(
-                on_reload_vocab=self.reload_vocab,
-                on_quit=lambda: NSApp().terminate_(None),
-                trace_folder=user_paths.config_dir if user_paths else None,
-                log_path=user_paths.log_path if user_paths else None,
-                presets=preset_names(config.jarvis_config),
-                active_preset=config.refine.preset,
-                on_select_model=self.select_model,
-                input_devices=devices.list_input_devices(),
-                output_devices=devices.list_output_devices(),
-                active_input=getattr(config, "input_device", "") or devices.current_input_device(),
-                active_output=devices.current_output_device(),
-                on_select_input=self.select_input_device,
-                on_select_output=self.select_output_device,
-                on_set_api_key=self.change_api_key,
-            )
+            self.menubar = MenuBarIcon(on_action=self._on_menu_action, snapshot=self._menu_snapshot)
+            self.windows = Windows(self)
+            self.sent_watcher = SentTextWatcher(focused_text_value, frontmost_pid, self._store_sent_text)
         else:
+            self.sent_watcher = None
             self.overlay = None
             self.audio_ducker = None
             self.hotkeys = None
             self.menubar = None
+            self.windows = None
+        self.capsule = Capsule(self.overlay, self._call_ui)
+        self.capsule.inserted_dismiss_s = self.prefs.dismiss_seconds
 
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="typeless-local")
         # Muting and unmuting shell out to osascript, which is too slow to run
@@ -154,17 +178,30 @@ class TypelessLocalApp:
         self._copy_fallback_text = ""
         self._lock = threading.RLock()
         self._processing_started_at = 0.0
-        self._processing_message = "Thinking"
-        self._processing_timer: threading.Timer | None = None
         self._recording_timer: threading.Timer | None = None
-        self._countdown_timer: threading.Timer | None = None
         self._finish_debounce_timer: threading.Timer | None = None
+        self._hold_timer: threading.Timer | None = None
+        self._holding = False
         self._recording_started_at = 0.0
-        self._countdown_text = ""
         self._primary_down_at = 0.0
         self._last_short_tap_at = 0.0
         self._active_session_id = 0
         self._stretches: list[Future[Transcript]] = []
+        self._capture_device = ""
+        self._ducked = False
+        self._insertion: Insertion | None = None
+        self._recent: Recent | None = None
+        # Read inside the keyboard event tap on every key press: a plain attribute.
+        self._keys_wanted = False
+        self._download: tuple[float, float] | None = None
+
+    @property
+    def prefs(self) -> Preferences:
+        return self.__dict__.get("_prefs") or _DEFAULT_PREFERENCES
+
+    @prefs.setter
+    def prefs(self, value: Preferences) -> None:
+        self.__dict__["_prefs"] = value
 
     def _build_components(self) -> SimpleNamespace:
         """Construct ASR / refiner / recorder. Patched by tests to inject fakes."""
@@ -243,18 +280,8 @@ class TypelessLocalApp:
         user_paths = getattr(self.config, "user_paths", None)
         if user_paths is not None:
             save_input_device(user_paths, name)
-        menubar = getattr(self, "menubar", None)
-        if menubar is not None:
-            menubar.set_active_input(name)
+        self._windows_changed()
         LOGGER.info("Capture device set to %s", name or "(system default)")
-
-    def select_output_device(self, name: str) -> None:
-        """Switch the system default output; the menu follows what actually took."""
-
-        devices.set_output_device(name)
-        menubar = getattr(self, "menubar", None)
-        if menubar is not None:
-            menubar.set_active_output(devices.current_output_device())
 
     def select_model(self, preset: str) -> None:
         """Switch the refinement preset live and persist it to the user config."""
@@ -265,10 +292,121 @@ class TypelessLocalApp:
         user_paths = getattr(self.config, "user_paths", None)
         if user_paths is not None:
             save_default_preset(user_paths, preset)
-        menubar = getattr(self, "menubar", None)
-        if menubar is not None:
-            menubar.set_active_preset(preset)
+        self._refresh_issues()
+        self._windows_changed()
         LOGGER.info("Refinement model switched to %s (%s)", preset, refine.model)
+
+    def set_language(self, language: str) -> None:
+        """Recognise ``language`` ("" detects it) from the next dictation on, and persist it."""
+
+        language = language if language in ("zh", "en") else ""
+        set_language = getattr(self.asr, "set_language", None)
+        if set_language is not None:
+            set_language(language)
+        self._engine_setting("asr", "language", language)
+        LOGGER.info("Recognition language set to %s", language or "auto")
+
+    def set_ducking(self, enabled: bool) -> None:
+        """Whether other apps' sound is lowered while recording."""
+
+        ducker = getattr(self, "audio_ducker", None)
+        if ducker is not None:
+            ducker.enabled = bool(enabled)
+        self._engine_setting("audio_ducking", "enabled", bool(enabled))
+
+    def _engine_setting(self, section: str, key: str, value) -> None:
+        """A setting the engine reads from its own config section: live and on disk."""
+
+        jarvis = getattr(self.config, "jarvis_config", None)
+        if isinstance(jarvis, dict):
+            if not isinstance(jarvis.get(section), dict):
+                jarvis[section] = {}
+            jarvis[section][key] = value
+        user_paths = getattr(self.config, "user_paths", None)
+        if user_paths is not None:
+            save_user_setting(user_paths, section, key, value)
+
+    def store_api_key(self, env_name: str, key: str) -> None:
+        """Keep ``key`` for ``env_name`` (keychain first) and use it from the next dictation."""
+
+        user_paths = getattr(self.config, "user_paths", None)
+        env_path = user_paths.env_path if user_paths is not None else Path(os.devnull)
+        _store_api_key(env_name, key, env_path)
+        if env_name == self.config.refine.api_key_env:
+            # The client holds the key it was made with.
+            self.refiner = TextRefiner(self.config.refine)
+        self._call_ui(self._refresh_issues)
+        LOGGER.info("%s saved", env_name)
+
+    def _windows_changed(self, history: bool = False) -> None:
+        windows = getattr(self, "windows", None)
+        if windows is not None:
+            self._call_ui(windows.refresh, history)
+
+    def set_preference(self, key: str, value) -> Preferences:
+        """Change one setting from the Settings window: validate, persist, apply."""
+
+        user_paths = getattr(self.config, "user_paths", None)
+        self.prefs = save_preference(user_paths, self.prefs, key, value)
+        self._apply_preferences(changed=key)
+        return self.prefs
+
+    def _apply_preferences(self, changed: str | None = None) -> None:
+        """Make the running app follow the preferences (all of them, or one that changed)."""
+
+        prefs = self.prefs
+        capsule = getattr(self, "capsule", None)
+        if capsule is not None:
+            capsule.inserted_dismiss_s = prefs.dismiss_seconds
+            if changed in (None, "show_handle"):
+                capsule.set_handle(prefs.show_handle)
+            if changed == "capsule_position" and prefs.capsule_position == "bottom":
+                capsule.set_anchor("bottom")
+        config = getattr(self, "config", None)
+        if changed in (None, "max_minutes") and dataclasses.is_dataclass(config):
+            self.config = dataclasses.replace(config, max_recording_seconds=prefs.max_minutes * 60.0)
+        if changed in (None, "history_days"):
+            self._purge_history()
+        if changed in (None, "refine"):
+            self._refresh_issues()
+        if changed == "save_history":
+            self._windows_changed(history=True)
+
+    def _purge_history(self) -> None:
+        """Drop dictations older than the limit the user picked; none by default."""
+
+        days = self.prefs.history_days
+        user_paths = getattr(getattr(self, "config", None), "user_paths", None)
+        if days <= 0 or user_paths is None:
+            return
+        threading.Thread(
+            target=purge_older_than, args=(user_paths.trace_db_path, days), daemon=True, name="history-purge"
+        ).start()
+
+    def _first_run(self) -> None:
+        """Open the guide on first launch, unless everything it sets up is already there."""
+
+        windows = getattr(self, "windows", None)
+        if windows is None:
+            self._prompt_for_missing_api_key()
+            return
+        if self.prefs.onboarding_done:
+            return
+        if self._set_up_already():
+            # Someone who used the app before the guide existed.
+            self.set_preference("onboarding_done", True)
+            return
+        windows.show_onboarding()
+
+    def _set_up_already(self) -> bool:
+        asr_config = self.config.jarvis_config.get("asr") or {}
+        provider = str(asr_config.get("provider") or "").strip().lower()
+        return (
+            bool(os.environ.get(self.config.refine.api_key_env or ""))
+            and has_accessibility_trust()
+            and permissions.microphone_status() == "authorized"
+            and (provider != "mlx_whisper" or model_is_cached(mlx_whisper_repo(asr_config)))
+        )
 
     def _prompt_for_missing_api_key(self) -> None:
         """Ask for the key on first launch, once the app can show a window."""
@@ -294,10 +432,135 @@ class TypelessLocalApp:
             user_paths.env_path,
         ):
             LOGGER.info("%s updated", self.config.refine.api_key_env)
+        self._refresh_issues()
+
+    def open_settings(self, pane: str | None = None) -> None:
+        """Bring up Settings at ``pane``."""
+
+        windows = getattr(self, "windows", None)
+        if windows is not None:
+            self._call_ui(windows.show_settings, pane)
+        elif pane == "model":
+            self._call_ui(self.change_api_key)
+
+    def open_history(self) -> None:
+        windows = getattr(self, "windows", None)
+        if windows is not None:
+            self._call_ui(windows.show_history)
+
+    # ------------------------------------------------------------ menu bar
+
+    def _on_menu_action(self, key: str) -> None:
+        """A menu-bar item was chosen (main thread)."""
+
+        kind, _, arg = key.partition(":")
+        if kind == "toggle":
+            with self._lock:
+                if self.state == "idle":
+                    self._start_recording("tap")
+                elif self.state == "recording":
+                    self._finish_recording()
+        elif kind == "latch":
+            with self._lock:
+                if self.state == "idle":
+                    self._start_recording("hands_free")
+        elif kind == "copy":
+            self._copy_last_transcript()
+        elif kind == "preset":
+            self.select_model(arg)
+        elif kind == "input":
+            self.select_input_device(arg)
+        elif kind == "settings":
+            self.open_settings(arg or None)
+        elif kind == "history":
+            self.open_history()
+        elif kind == "fix":
+            self._fix_issue(arg)
+        elif kind == "quit":
+            NSApplication.sharedApplication().terminate_(None)
+
+    def _fix_issue(self, issue: str) -> None:
+        if issue == "perm":
+            request_accessibility_trust()
+            permissions.open_url(permissions.ACCESSIBILITY_SETTINGS)
+        elif issue == "mic":
+            if permissions.microphone_status() == "not_determined":
+                permissions.request_microphone()
+            else:
+                permissions.open_url(permissions.MICROPHONE_SETTINGS)
+        elif issue == "key":
+            self.open_settings("model")
+
+    def _current_issues(self) -> tuple[str, ...]:
+        """What only the user can fix right now; the menu-bar icon wears a badge for it."""
+
+        issues = []
+        if not has_accessibility_trust():
+            issues.append("perm")
+        if permissions.microphone_status() in ("denied", "restricted"):
+            issues.append("mic")
+        refine = getattr(self.config, "refine", None)
+        if self.prefs.refine and refine is not None and not os.environ.get(refine.api_key_env or ""):
+            issues.append("key")
+        return tuple(issues)
+
+    def _refresh_issues(self) -> tuple[str, ...]:
+        menubar = getattr(self, "menubar", None)
+        if menubar is None:
+            return ()
+        issues = self._current_issues()
+        menubar.set_issues(issues)
+        return issues
+
+    def _menu_snapshot(self) -> Snapshot:
+        """Everything the menu shows, read as it opens."""
+
+        config = self.config
+        jarvis = getattr(config, "jarvis_config", {}) or {}
+        user_paths = getattr(config, "user_paths", None)
+        history = user_paths.trace_db_path if user_paths is not None and self.prefs.save_history else None
+        presets = []
+        for name in preset_names(jarvis):
+            try:
+                refine = refine_config_for(jarvis, name)
+            except Exception:
+                continue
+            median = median_refine_ms(history, refine.model) if history is not None else None
+            presets.append(Preset(name, needs_key=not os.environ.get(refine.api_key_env or ""), median_ms=median))
+        devices.refresh_if_changed()
+        recent = getattr(self, "_recent", None)
+        return Snapshot(
+            state=self.state,
+            issues=self._refresh_issues(),
+            recent=recent,
+            presets=tuple(presets),
+            active_preset=config.refine.preset,
+            inputs=tuple(devices.list_input_devices()),
+            active_input=getattr(config, "input_device", "") or "",
+            refine=self.prefs.refine,
+            usage=usage.today_line(history, prices(jarvis)) if history is not None else "",
+        )
+
+    def _remember(self, text: str, app: str = "") -> None:
+        """The menu's "最近一次" and the clipboard fallback."""
+
+        self._copy_fallback_text = text
+        self._recent = Recent(text=text, app=app, at=time.time())
+
+    def show_log(self) -> None:
+        user_paths = getattr(self.config, "user_paths", None)
+        if user_paths is None:
+            return
+        try:
+            user_paths.log_path.parent.mkdir(parents=True, exist_ok=True)
+            user_paths.log_path.touch(exist_ok=True)
+            subprocess.Popen(["/usr/bin/open", str(user_paths.log_path)])
+        except Exception:
+            LOGGER.warning("Could not open the log", exc_info=True)
 
     def _start_model_prefetch(self) -> None:
-        """Pull the ASR weights now, with a progress bar, instead of inside the
-        first F5 where a 1.5 GB download looks like the app has hung."""
+        """Pull the ASR weights now, with the capsule showing progress, instead of
+        inside the first F5 where a 1.5 GB download looks like the app has hung."""
 
         asr_config = self.config.jarvis_config.get("asr") or {}
         provider = str(asr_config.get("provider") or "").strip().lower()
@@ -306,27 +569,51 @@ class TypelessLocalApp:
             self._warm_up_asr()
             return
 
+        started = time.monotonic()
+        self._download = (0.0, started)
+
         def report(fraction: float) -> None:
-            self._call_ui(
-                self.overlay.show_thinking,
-                progress=fraction,
-                message="Downloading model",
-            )
+            self._download = (fraction, started)
+            self._download_progress(fraction, _eta_text(fraction, time.monotonic() - started))
+            with self._lock:
+                # Only while nothing else is on screen: the progress used to
+                # replace a dictation in the middle of it.
+                if self.state == "idle" and self.capsule.state in ("hidden", "download"):
+                    self._show_download()
 
         def run() -> None:
             try:
                 report(0.0)
                 download_model(repo_id, report)
                 LOGGER.info("ASR model %s is ready", repo_id)
+                self._download = None
+                self._download_progress(1.0, done=True)
                 self._warm_up_asr()
             except Exception:
                 # The first dictation will download it the slow way; that is a
                 # worse experience, not a broken one, so the app stays up.
                 LOGGER.exception("Model prefetch failed for %s", repo_id)
+                self._download = None
+                self._download_progress(0.0, error=True)
             finally:
-                self._call_ui(self.overlay.hide)
+                self._download = None
+                self.capsule.hide_if("download")
 
         threading.Thread(target=run, daemon=True, name="model-prefetch").start()
+
+    def _download_progress(self, fraction: float, eta: str = "", done: bool = False, error: bool = False) -> None:
+        """The guide's progress bar, when it is open."""
+
+        windows = getattr(self, "windows", None)
+        if windows is not None:
+            self._call_ui(windows.download, fraction, eta, done, error)
+
+    def _show_download(self) -> None:
+        download = getattr(self, "_download", None)
+        if download is None:
+            return
+        fraction, started = download
+        self.capsule.show("download", p=round(fraction, 3), eta=_eta_text(fraction, time.monotonic() - started))
 
     def _prime_microphone(self) -> None:
         """Do the first recording's device setup now, in the background.
@@ -334,6 +621,9 @@ class TypelessLocalApp:
         Holds the hotkey lock meanwhile, so an F5 in the first second or two
         after launch waits for it rather than racing a PortAudio re-init.
         """
+
+        if permissions.microphone_status() != "authorized":
+            return  # opening a stream would ask for the microphone before onboarding explains why
 
         def run() -> None:
             started = time.monotonic()
@@ -373,30 +663,61 @@ class TypelessLocalApp:
         """Start the app."""
 
         self.overlay.setup()
-        self._call_ui(self.overlay.hide)
+        install_main_menu()
+        self._apply_preferences()
+        # On first launch the guide asks for each permission after saying why.
+        guided = not self.prefs.onboarding_done and getattr(self, "windows", None) is not None
         if not has_accessibility_trust():
             LOGGER.warning("Accessibility permission is not granted; Fn capture/paste may fail.")
-            request_accessibility_trust()
+            if not guided:
+                request_accessibility_trust()
         menubar = getattr(self, "menubar", None)
         if menubar is not None:
             menubar.setup()
             menubar.set_state("idle")
-        try:
-            self.hotkeys.start()
-        except RuntimeError:
-            LOGGER.exception("Failed to install global hotkey monitor")
-            self._set_menubar("error")
-            self._call_ui(self.overlay.show_error, "Enable Access")
-            return
+        if not self._start_hotkeys():
+            # Picked up by itself once Accessibility is granted: no restart.
+            if not guided:
+                self.capsule.show("perm")
+            AppHelper.callLater(HOTKEY_RETRY_S, self._retry_hotkeys)
+        self._refresh_issues()
         self._prime_microphone()
         self._start_model_prefetch()
         # Deferred onto the run loop: this app is LSUIElement, and before
-        # -[NSApplication run] it is not active yet, so a modal alert can open
+        # -[NSApplication run] it is not active yet, so a window can open
         # behind whatever the user is looking at or not come up at all.
-        AppHelper.callLater(0.3, self._prompt_for_missing_api_key)
-        LOGGER.info("Typlus ready. Press F5 to start/stop dictation.")
+        AppHelper.callLater(0.3, self._first_run)
+        LOGGER.info("%s ready. Press F5 to start/stop dictation.", brand.ENGLISH_NAME)
+
+    def _start_hotkeys(self) -> bool:
+        try:
+            self.hotkeys.start()
+            return True
+        except RuntimeError:
+            if not getattr(self, "_hotkeys_failed", False):
+                LOGGER.warning("Global hotkey monitor unavailable until Accessibility is granted")
+            self._hotkeys_failed = True
+            return False
+
+    def _retry_hotkeys(self) -> None:
+        if self._start_hotkeys():
+            LOGGER.info("Accessibility granted; hotkeys are live")
+            self.capsule.hide_if("perm")
+            self._refresh_issues()
+            return
+        AppHelper.callLater(HOTKEY_RETRY_S, self._retry_hotkeys)
+
+    # ----------------------------------------------------------------- keys
 
     def _on_hotkey(self, action: str) -> None:
+        # Typing is reported from inside the keyboard event tap, so these two
+        # never wait on the app lock.
+        if action == "typed":
+            self._on_typed()
+            return
+        if action == "undo":
+            self._on_user_undo()
+            return
         with self._lock:
             if action == "cancel":
                 self._cancel()
@@ -406,6 +727,7 @@ class TypelessLocalApp:
                     self._start_recording("hands_free")
                 elif self.state == "recording" and self.mode == "tap":
                     self.mode = "hands_free"
+                    self._stop_holding()
                     self._show_recording_ui()
                 elif self.state == "recording" and self.mode == "hands_free":
                     self._finish_recording()
@@ -441,11 +763,14 @@ class TypelessLocalApp:
                 self._start_recording("hands_free")
             elif self.state == "recording":
                 self.mode = "hands_free"
+                self._stop_holding()
                 self._show_recording_ui()
             return
 
         if self.state == "idle":
             self._start_recording("tap")
+            if self.state == "recording":
+                self._arm_hold_timer(now)
         elif self.state == "recording" and self.mode == "tap":
             self._finish_recording()
         elif self.state == "recording" and self.mode == "hands_free":
@@ -460,132 +785,295 @@ class TypelessLocalApp:
         LOGGER.info("HOTKEY-DEBUG primary_up up_at=%.3f down_at=%.3f held_for=%.3f", up_at, getattr(self, "_primary_down_at", 0.0), held_for)
         if held_for < LONG_PRESS_SECONDS:
             self._last_short_tap_at = up_at
+            if getattr(self, "_holding", False):
+                # The hold view went up before this release was read (the run
+                # loop was busy opening the mic): it was a tap after all.
+                self._stop_holding()
+                self._show_recording_ui()
             return
 
         self._finish_recording()
 
-    def _on_overlay_action(self, action: str) -> None:
-        with self._lock:
-            if action == "primary" and self.state == "idle":
-                self._start_recording("tap")
-            elif action == "cancel":
-                self._cancel()
-            elif action == "finish" and self.state == "recording":
-                self._finish_recording()
-            elif action == "copy-fallback":
-                self._copy_last_transcript()
-            elif action == "return_pressed":
-                self._dismiss_overlay()
-            elif action == "edit-focused":
-                self._editing = True
-                self._cancel_overlay_dismiss()
-            elif action == "edit-blurred":
-                self._editing = False
-            elif action.startswith("edit-live:"):
-                # Clipboard only: _copy_fallback_text stays the original so the
-                # correction recorded on commit is measured against what the
-                # dictation actually produced, not against the last keystroke.
-                set_clipboard_text(action[len("edit-live:") :])
-            elif action.startswith("edit-commit:"):
-                self._commit_edit(action[len("edit-commit:") :])
-            elif action == "edit-cancel":
-                self._end_edit()
-            elif action == "dismiss":
-                self.state = "idle"
-                self._set_menubar("idle")
-                self._copy_fallback_text = ""
-                self._call_ui(self.overlay.hide)
+    def _arm_hold_timer(self, down_at: float) -> None:
+        """Switch the capsule to "release to finish" once the key has been held long enough."""
 
-    def _schedule_overlay_dismiss(self, delay: float = 8.0) -> None:
-        """Take the transcript down after a while if nothing is done with it."""
-
-        self._cancel_overlay_dismiss()
-        timer = threading.Timer(delay, self._dismiss_overlay)
+        self._cancel_hold_timer()
+        timer = threading.Timer(LONG_PRESS_SECONDS, partial(self._on_hold_timer, self._active_session_id, down_at))
         timer.daemon = True
-        self._dismiss_timer = timer
+        self._hold_timer = timer
         timer.start()
 
-    def _cancel_overlay_dismiss(self) -> None:
-        timer = getattr(self, "_dismiss_timer", None)
+    def _on_hold_timer(self, session_id: int, down_at: float) -> None:
+        with self._lock:
+            self._hold_timer = None
+            hotkeys = getattr(self, "hotkeys", None)
+            released = hotkeys is None or hotkeys.last_primary_up_at >= down_at
+            if released or self.state != "recording" or self.mode != "tap":
+                return
+            if session_id != getattr(self, "_active_session_id", 0):
+                return
+            self._holding = True
+            self._show_recording_ui()
+
+    def _cancel_hold_timer(self) -> None:
+        timer = getattr(self, "_hold_timer", None)
         if timer is not None:
             timer.cancel()
-        self._dismiss_timer = None
+        self._hold_timer = None
 
-    def _dismiss_overlay(self) -> None:
-        """Put the transcript away unless it is being edited right now."""
+    def _stop_holding(self) -> None:
+        self._cancel_hold_timer()
+        self._holding = False
 
-        if getattr(self, "_editing", False) or self.state != "idle":
+    def _on_typed(self) -> None:
+        """The user typed after a paste: undo or replace would now take back their typing."""
+
+        self._keys_wanted = False
+        self._insertion = None
+        self.capsule.hide_if(*INSERTED_STATES)
+
+    def _on_user_undo(self) -> None:
+        """The user pressed Cmd+Z themselves right after a paste; the capsule confirms it."""
+
+        self._keys_wanted = False
+        self._insertion = None
+        if self.capsule.state in INSERTED_STATES:
+            self.capsule.show("undone")
+
+    # -------------------------------------------------------------- capsule
+
+    def _on_overlay_action(self, action: str, data: dict | None = None) -> None:
+        data = data or {}
+        text = str(data.get("text") or "")
+        if action == "draft":
+            self._on_card_draft(text)
             return
-        self._cancel_overlay_dismiss()
-        self._copy_fallback_text = ""
-        self._call_ui(self.overlay.hide)
+        if action == "field":
+            # While the card's field has the keyboard, keys pressed are for the
+            # card, not typing after the paste.
+            self._keys_wanted = self._insertion is not None and not data.get("focus")
+            return
+        with self._lock:
+            if action == "primary":
+                if self.state == "idle":
+                    self._start_recording("tap")
+            elif action == "cancel":
+                self._cancel()
+            elif action == "finish":
+                if self.state == "recording":
+                    self._finish_recording()
+            elif action == "extend":
+                self._extend_recording()
+            elif action == "undo":
+                self._undo_insertion()
+            elif action == "edit":
+                self._edit_insertion()
+            elif action == "rerefine":
+                self._rerefine_insertion()
+            elif action == "replace":
+                self._replace_insertion(text)
+            elif action == "done":
+                self._commit_edit(text)
+            elif action == "close":
+                self._end_edit()
+            elif action in ("setkey", "input", "micperm", "perm", "log"):
+                self.capsule.hide()
+                if action == "setkey":
+                    self.open_settings("model")
+                elif action == "input":
+                    self.open_settings("audio")
+                elif action == "micperm":
+                    permissions.open_url(permissions.MICROPHONE_SETTINGS)
+                elif action == "perm":
+                    permissions.open_url(permissions.ACCESSIBILITY_SETTINGS)
+                else:
+                    self.show_log()
 
-    def _overlay_awaits_return(self) -> bool:
-        """Whether a Return in another app should take the transcript down.
+    def _on_overlay_hover(self, on: bool) -> None:
+        self.capsule.set_hover(on)
 
-        Read from inside the keyboard event tap on every Return press, so it
-        stays a couple of attribute reads and never takes a lock.
+    def _on_card_draft(self, text: str) -> None:
+        if self.capsule.state == "edit-notarget":
+            # Clipboard only: _copy_fallback_text stays the original so the
+            # correction recorded on commit is measured against what the
+            # dictation actually produced, not against the last keystroke.
+            set_clipboard_text(text)
+
+    def _undo_insertion(self) -> None:
+        """The capsule's Undo: send Cmd+Z to the app the text went to, if it is still in front."""
+
+        insertion, self._insertion = self._insertion, None
+        self._keys_wanted = False
+        if insertion is None:
+            self.capsule.hide()
+            return
+        if frontmost_pid() != insertion.pid:
+            self.capsule.show("notice", msg="目标 App 已切换，没法撤销")
+            return
+        undo_last_edit()
+        self.capsule.show("undone")
+
+    def _edit_insertion(self) -> None:
+        insertion = self._insertion
+        if insertion is None:
+            self.capsule.hide()
+            return
+        self._keys_wanted = False
+        self.capsule.show("edit-modify", text=insertion.text)
+
+    def _replace_insertion(self, text: str) -> None:
+        """The card's Replace: take the pasted text back and paste the edited text."""
+
+        corrected = text.strip()
+        insertion = self._insertion
+        self.capsule.end_edit()
+        if not corrected or (insertion is not None and corrected == insertion.text):
+            self.capsule.hide()
+            return
+        if insertion is None:
+            # Something was typed after the paste; undoing now would take that back.
+            set_clipboard_text(corrected)
+            self.capsule.show("notice", msg="原文已经改动过，修改后的文字已复制")
+            return
+        self._keys_wanted = False
+        threading.Thread(
+            target=self._swap_text, args=(insertion, corrected, True), daemon=True, name="replace"
+        ).start()
+
+    def _rerefine_insertion(self) -> None:
+        """The capsule's Re-refine: try refinement again on what was pasted raw."""
+
+        insertion = self._insertion
+        if insertion is None or self.state != "idle":
+            self.capsule.hide()
+            return
+        self.capsule.show("refining", raw=insertion.raw)
+        future = self.executor.submit(self._rerefine, insertion, getattr(self, "_active_session_id", 0))
+        future.add_done_callback(self._log_processing_done)
+
+    def _rerefine(self, insertion: Insertion, session_id: int) -> None:
+        fallback = ""
+        try:
+            result = self.refiner.refine(
+                insertion.raw, self._refine_context(insertion.context), vocab=getattr(self, "vocab", []) or []
+            )
+            fallback = getattr(result, "fallback", "") or ""
+        except Exception as exc:
+            LOGGER.warning("Refinement failed again", exc_info=True)
+            result = None
+            fallback = "key" if isinstance(exc, MissingAPIKey) else _failure_kind(exc)
+        with self._lock:
+            if session_id != getattr(self, "_active_session_id", 0) or self.state != "idle":
+                return  # a new dictation has the capsule now
+            current = self._insertion is insertion
+        if result is None or fallback:
+            if not current:
+                self.capsule.hide()
+            elif fallback == "key":
+                self.capsule.show("inserted-raw-key")
+            else:
+                self.capsule.show("inserted-raw-net", why=fallback)
+            return
+        self._swap_text(insertion, result.text, False)
+
+    def _swap_text(self, insertion: Insertion, new_text: str, from_card: bool) -> None:
+        """Take ``insertion`` back in its app and paste ``new_text`` in its place.
+
+        Runs off the main thread, and never holds the app lock while it waits:
+        the keyboard event tap takes that lock.
         """
 
-        return bool(self._copy_fallback_text) and not getattr(self, "_editing", False)
-
-    def _end_edit(self) -> None:
-        """Dismiss the field, leaving the clipboard as the transcript left it."""
-
-        self._editing = False
-        self._cancel_overlay_dismiss()
-        self._call_ui(self.overlay.end_edit)
-        self.state = "idle"
-        self._set_menubar("idle")
-        self._copy_fallback_text = ""
-        self._call_ui(self.overlay.hide)
+        if from_card:
+            time.sleep(KEY_HANDBACK_S)
+        with self._lock:
+            current = self._insertion is insertion and self.state == "idle"
+        if not current or frontmost_pid() != insertion.pid:
+            set_clipboard_text(new_text)
+            message = "目标 App 已切换，新文字已复制" if current else "原文已经改动过，新文字已复制"
+            self.capsule.show("notice", msg=message)
+            return
+        undo_last_edit()
+        time.sleep(UNDO_SETTLE_S)
+        paste_text(new_text)
+        set_clipboard_text(new_text)
+        with self._lock:
+            self._insertion = dataclasses.replace(insertion, text=new_text)
+            self._keys_wanted = True
+            self._remember(new_text, insertion.context.app_name)
+        self.capsule.show("replaced", n=count_units(new_text))
+        if from_card:
+            self._record_correction(insertion.text, new_text)
 
     def _commit_edit(self, text: str) -> None:
-        """Take the edited text to the clipboard and record what was changed.
-
-        The field only appears where there was nowhere to paste, so the
-        clipboard is the destination and nothing has to be undone first.
-        """
+        """The card's Done, where there was nowhere to paste: the clipboard gets the edit."""
 
         before = getattr(self, "_copy_fallback_text", "")
         corrected = text.strip()
-        self._editing = False
-        self._cancel_overlay_dismiss()
-        self._call_ui(self.overlay.end_edit)
-        if corrected:
-            set_clipboard_text(corrected)
-            if corrected != before:
-                user_paths = getattr(self.config, "user_paths", None)
-                if user_paths is not None:
-                    append_correction(
-                        user_paths.corrections_path,
-                        getattr(self, "_last_trace_id", None),
-                        before,
-                        corrected,
-                    )
-                LOGGER.info(
-                    "Correction recorded: %d chars -> %d chars",
-                    len(before),
-                    len(corrected),
-                )
-        self.state = "idle"
-        self._set_menubar("idle")
-        self._copy_fallback_text = ""
-        self._call_ui(self.overlay.hide)
+        self.capsule.end_edit()
+        if not corrected:
+            self.capsule.hide()
+            return
+        set_clipboard_text(corrected)
+        if corrected != before:
+            self._record_correction(before, corrected)
+        recent = getattr(self, "_recent", None)
+        self._remember(corrected, recent.app if recent else "")
+        self.capsule.show("copied")
+
+    def _end_edit(self) -> None:
+        """Close the card, leaving the clipboard as the card left it."""
+
+        self.capsule.end_edit()
+        self.capsule.hide()
+
+    def _record_correction(self, before: str, after: str) -> None:
+        user_paths = getattr(self.config, "user_paths", None)
+        if user_paths is not None and self.prefs.save_history:
+            append_correction(user_paths.corrections_path, getattr(self, "_last_trace_id", None), before, after)
+        LOGGER.info("Correction recorded: %d chars -> %d chars", len(before), len(after))
+
+    # ------------------------------------------------------------ recording
+
+    def _store_sent_text(self, session_id: int, text: str) -> None:
+        """A pasted dictation went out as ``text`` (from the sent-text watcher's thread)."""
+
+        user_paths = getattr(self.config, "user_paths", None)
+        if user_paths is not None and self.prefs.save_history and self.prefs.save_sent_text:
+            if set_sent_text(user_paths.trace_db_path, session_id, text):
+                self._windows_changed(history=True)
 
     def _start_recording(self, mode: Mode) -> None:
+        if getattr(self, "_download", None) is not None:
+            # Nothing to transcribe with until the model is here; say so
+            # instead of recording into a wait of several minutes.
+            self._show_download()
+            return
+        if permissions.microphone_status() in ("denied", "restricted"):
+            self._refresh_issues()
+            self.capsule.show("mic", why="denied")
+            return
         self._active_session_id = getattr(self, "_active_session_id", 0) + 1
+        self._insertion = None
+        self._keys_wanted = False
+        watcher = getattr(self, "sent_watcher", None)
+        if watcher is not None:
+            watcher.cancel()
         self.mode = mode
+        self._holding = False
         self.state = "starting"
         self._set_menubar("starting")
         self._recording_started_at = time.monotonic()
-        self._countdown_text = ""
+        self._recording_limit_s = float(getattr(self.config, "max_recording_seconds", 0.0) or 0.0)
+        caret = self.prefs.capsule_position == "caret"
         # The microphone opens first: everything that used to come before it
         # (focus probing, re-enumerating devices, two osascript runs to mute)
         # delayed it by enough to lose the first words, and ran inside the
         # keyboard event tap, stalling typing system-wide meanwhile.
         capture = self._select_capture_device()
-        self._call_ui(self.overlay.show_starting)
+        if not caret:
+            # At the caret the capsule waits for the caret's position, which
+            # is only read once the microphone is open.
+            self.capsule.show("starting")
         self._stretches = []
         try:
             capture = self._start_microphone(capture)
@@ -593,15 +1081,23 @@ class TypelessLocalApp:
             LOGGER.exception("Failed to start microphone")
             self._restore_audio_ducking()
             self.state = "idle"
-            self._set_menubar("error")
-            self._call_ui(self.overlay.show_error, "Mic error")
+            self._set_menubar("idle")
+            self._refresh_issues()
+            denied = permissions.microphone_status() in ("denied", "restricted")
+            self.capsule.show("mic", why="denied" if denied else "busy")
             return
-        self.focus_context = capture_focus_context()
-        if self._speakers_need_ducking(capture):
+        self._capture_device = capture
+        self.focus_context = capture_focus_context(read_before_text=self.prefs.send_before_text)
+        if caret:
+            self.capsule.set_anchor("caret", caret_rect())
+        duck = self._speakers_need_ducking(capture)
+        if duck:
             self._run_audio_io(self.audio_ducker.duck)
+        self._ducked = duck and bool(getattr(self.audio_ducker, "enabled", True))
         self.state = "recording"
         self._set_menubar("recording")
         self._show_recording_ui()
+        self._play_sound("Tink")
         self._start_recording_timeout()
         self._prewarm_refiner()
         # Whisper idle for 20 s or more takes about 1.1 s on its next pass
@@ -639,12 +1135,56 @@ class TypelessLocalApp:
             return
         executor.submit(job)
 
+    def _show_recording_ui(self) -> None:
+        if self.mode == "hands_free":
+            mode = "latch"
+        else:
+            mode = "hold" if getattr(self, "_holding", False) else "click"
+        focus = getattr(self, "focus_context", None)
+        started = getattr(self, "_recording_started_at", 0.0)
+        self.capsule.show(
+            "rec",
+            mode=mode,
+            sel=bool(focus and focus.selected_text) and self.prefs.rewrite_selection,
+            ducked=bool(getattr(self, "_ducked", False)) and self.prefs.show_ducked,
+            max=self._recording_limit(),
+            ext=int(EXTEND_RECORDING_S // 60),
+            elapsed=round(max(0.0, time.monotonic() - started), 2) if started else 0.0,
+        )
+
+    def _recording_limit(self) -> float:
+        """This recording's length limit: the setting, plus any 延长 presses."""
+
+        limit = getattr(self, "_recording_limit_s", None)
+        if limit is None:
+            limit = float(getattr(self.config, "max_recording_seconds", 0.0) or 0.0)
+        return float(limit)
+
+    def _play_sound(self, name: str) -> None:
+        """The optional start/stop sounds (off by default)."""
+
+        if self.prefs.sounds != "start_end" or getattr(self, "headless", False):
+            return
+
+        def play() -> None:
+            try:
+                from AppKit import NSSound
+
+                sound = NSSound.soundNamed_(name)
+                if sound is not None:
+                    sound.play()
+            except Exception:
+                LOGGER.debug("Could not play %s", name, exc_info=True)
+
+        self._call_ui(play)
+
     def _finish_recording(self) -> None:
         if self.state != "recording":
             return
         if self._defer_finish_until_microphone_ready():
             return
         self._cancel_recording_timeout()
+        self._stop_holding()
         session_id = getattr(self, "_active_session_id", 0)
         self.state = "processing"
         self._set_menubar("processing")
@@ -654,14 +1194,13 @@ class TypelessLocalApp:
             LOGGER.exception("Failed to stop microphone")
             self._restore_audio_ducking()
             self.state = "idle"
-            self._set_menubar("error")
-            self._call_ui(self.overlay.show_error, "Mic error")
+            self._set_menubar("idle")
+            self.capsule.show("error", msg="麦克风出错")
             return
         self._restore_audio_ducking()
+        self._play_sound("Pop")
         self._processing_started_at = time.monotonic()
-        self._processing_message = "Thinking"
-        self._call_ui(self.overlay.show_thinking, progress=0.0, message=self._processing_message)
-        self._start_processing_progress()
+        self.capsule.show("transcribing")
         stretches, self._stretches = getattr(self, "_stretches", []), []
         heard_until = int(getattr(self.recorder, "heard_until", 0))
         future = self.executor.submit(
@@ -670,10 +1209,11 @@ class TypelessLocalApp:
         future.add_done_callback(self._log_processing_done)
 
     def _cancel(self) -> None:
+        was = getattr(self, "state", "idle")
         self._active_session_id = getattr(self, "_active_session_id", 0) + 1
         self._cancel_recording_timeout()
-        self._stop_processing_progress()
-        if self.state == "recording":
+        self._stop_holding()
+        if was == "recording":
             try:
                 self.recorder.stop()
             except Exception:
@@ -684,36 +1224,53 @@ class TypelessLocalApp:
         self._restore_audio_ducking()
         self.state = "idle"
         self._set_menubar("idle")
-        self._call_ui(self.overlay.hide)
+        if was in ("starting", "recording", "processing"):
+            self.capsule.show("cancelled")
+        else:
+            self.capsule.hide()
 
     def _restore_audio_ducking(self) -> None:
         restore_all = getattr(self.audio_ducker, "restore_all", None)
         self._run_audio_io(restore_all if restore_all is not None else self.audio_ducker.restore)
 
     def _start_recording_timeout(self) -> None:
+        """Finish by itself at the length limit; the capsule counts down the last minute."""
+
         self._cancel_recording_timeout()
-        max_seconds = float(getattr(self.config, "max_recording_seconds", 0.0) or 0.0)
+        max_seconds = self._recording_limit()
         if max_seconds <= 0:
             return
-        self._recording_timer = threading.Timer(max_seconds, self._finish_recording_after_timeout)
+        self._arm_recording_timer(max_seconds)
+
+    def _arm_recording_timer(self, delay: float) -> None:
+        self._recording_timer = threading.Timer(delay, self._finish_recording_after_timeout)
         self._recording_timer.daemon = True
         self._recording_timer.start()
-        self._start_recording_countdown()
+
+    def _extend_recording(self) -> None:
+        """The countdown's 延长 button: fifteen more minutes on this recording."""
+
+        limit = self._recording_limit()
+        if self.state != "recording" or limit <= 0:
+            return
+        self._recording_limit_s = limit + EXTEND_RECORDING_S
+        timer = getattr(self, "_recording_timer", None)
+        if timer is not None:
+            timer.cancel()
+        elapsed = time.monotonic() - getattr(self, "_recording_started_at", time.monotonic())
+        self._arm_recording_timer(max(1.0, self._recording_limit_s - elapsed))
+        self._show_recording_ui()
+        LOGGER.info("Recording limit extended to %.0f minutes", self._recording_limit_s / 60)
 
     def _cancel_recording_timeout(self) -> None:
         recording_timer = getattr(self, "_recording_timer", None)
         if recording_timer is not None:
             recording_timer.cancel()
             self._recording_timer = None
-        countdown_timer = getattr(self, "_countdown_timer", None)
-        if countdown_timer is not None:
-            countdown_timer.cancel()
-            self._countdown_timer = None
         finish_timer = getattr(self, "_finish_debounce_timer", None)
         if finish_timer is not None:
             finish_timer.cancel()
             self._finish_debounce_timer = None
-        self._countdown_text = ""
 
     def _defer_finish_until_microphone_ready(self) -> bool:
         if getattr(self.recorder, "chunk_count", 1) > 0:
@@ -738,49 +1295,13 @@ class TypelessLocalApp:
             if self.state == "recording":
                 self._finish_recording()
 
-    def _show_recording_ui(self) -> None:
-        self._call_ui(
-            self.overlay.show_recording,
-            hands_free=self.mode == "hands_free",
-            countdown_text=getattr(self, "_countdown_text", ""),
-        )
-
-    def _start_recording_countdown(self) -> None:
-        self._schedule_countdown_tick(0.25)
-
-    def _schedule_countdown_tick(self, delay: float) -> None:
-        timer = threading.Timer(delay, self._update_recording_countdown)
-        timer.daemon = True
-        self._countdown_timer = timer
-        timer.start()
-
-    def _update_recording_countdown(self) -> None:
-        with self._lock:
-            if self.state != "recording":
-                return
-            max_seconds = float(getattr(self.config, "max_recording_seconds", 0.0) or 0.0)
-            if max_seconds <= 0:
-                return
-            elapsed = time.monotonic() - getattr(self, "_recording_started_at", time.monotonic())
-            remaining = max(0.0, max_seconds - elapsed)
-            next_text = self._format_countdown(remaining) if remaining <= COUNTDOWN_BUFFER_SECONDS else ""
-            if next_text != getattr(self, "_countdown_text", ""):
-                self._countdown_text = next_text
-                self._show_recording_ui()
-            if remaining > 0:
-                next_delay = 0.25 if remaining <= COUNTDOWN_BUFFER_SECONDS + 1 else min(5.0, remaining - COUNTDOWN_BUFFER_SECONDS)
-                self._schedule_countdown_tick(max(0.25, next_delay))
-
-    def _format_countdown(self, remaining: float) -> str:
-        total_seconds = max(0, int(math.ceil(remaining)))
-        minutes, seconds = divmod(total_seconds, 60)
-        return f"{minutes}:{seconds:02d}"
-
     def _finish_recording_after_timeout(self) -> None:
         with self._lock:
             if self.state == "recording":
                 LOGGER.info("Maximum recording duration reached; finishing dictation.")
                 self._finish_recording()
+
+    # ----------------------------------------------------------- processing
 
     def _on_stretch(self, stretch: np.ndarray) -> None:
         """Audio thread: a stretch cut at his pause is heard now, ahead of the stop."""
@@ -804,6 +1325,19 @@ class TypelessLocalApp:
         prompt = getattr(self, "whisper_prompt", "") if audio.size <= WHISPER_WINDOW_S * sample_rate else ""
         return self.asr.transcribe(audio, initial_prompt=prompt or None)
 
+    def _refine_context(self, context: FocusContext) -> FocusContext:
+        """What refinement may see of the focused app, as the privacy settings allow."""
+
+        prefs = self.prefs
+        changes: dict = {}
+        if not prefs.rewrite_selection and context.selected_text:
+            changes["selected_text"] = ""
+        if not prefs.send_window_title and (context.app_name or context.window_title):
+            changes.update(app_name="", window_title="")
+        if not prefs.send_before_text and context.before_text:
+            changes["before_text"] = ""
+        return dataclasses.replace(context, **changes) if changes else context
+
     def _process_audio(
         self,
         audio: np.ndarray,
@@ -814,8 +1348,9 @@ class TypelessLocalApp:
     ) -> None:
         session_id = getattr(self, "_active_session_id", 0) if session_id is None else session_id
         headless = bool(getattr(self, "headless", False))
+        prefs = self.prefs
         started = time.time()
-        missing_api_key = False
+        step = "asr"
 
         sample_rate = int(getattr(self.config, "sample_rate", 16000))
         try:
@@ -824,7 +1359,7 @@ class TypelessLocalApp:
             audio_rms = 0.0
         refine_model = ""
         refine_cfg = getattr(self.config, "refine", None)
-        if refine_cfg is not None:
+        if refine_cfg is not None and prefs.refine:
             refine_model = str(getattr(refine_cfg, "model", "") or "")
 
         record = SessionRecord(
@@ -839,6 +1374,8 @@ class TypelessLocalApp:
             asr_model=str(getattr(self.asr, "model_name", "") or ""),
             refine_model=refine_model,
             app_version=app_version(),
+            # Only what refinement was allowed to see, for comparing with and without it.
+            before_text=getattr(context, "before_text", "") if prefs.send_before_text else "",
         )
 
         try:
@@ -857,8 +1394,7 @@ class TypelessLocalApp:
 
             if not headless and not self._is_current_processing_session(session_id):
                 return
-            self._set_processing_message("Thinking")
-            if not headless:
+            if not headless and prefs.refine:
                 self._prewarm_refiner()
             LOGGER.info("Starting ASR")
 
@@ -889,26 +1425,35 @@ class TypelessLocalApp:
 
             if not headless and not self._is_current_processing_session(session_id):
                 return
-            self._set_processing_message("Thinking")
-            LOGGER.info("Starting refinement")
-            refine_start = time.monotonic()
-            try:
-                refined = self.refiner.refine(transcript.text, context, vocab=vocab_terms)
-            except Exception as exc:
-                # The transcript is already in hand; losing the whole dictation
-                # because the polish step failed is the worst outcome available.
-                LOGGER.exception("Refinement failed; pasting the raw transcript")
-                record.error = f"refine failed, pasted raw transcript: {exc!r}"
-                refined = RefineResult(
-                    text=transcript.text, raw_text=transcript.text, model=refine_model, fallback="error"
-                )
-                missing_api_key = isinstance(exc, MissingAPIKey)
+            fallback = ""
+            if prefs.refine:
+                step = "refine"
+                if not headless:
+                    self.capsule.show("refining", raw=transcript.text)
+                LOGGER.info("Starting refinement")
+                refine_start = time.monotonic()
+                try:
+                    refined = self.refiner.refine(transcript.text, self._refine_context(context), vocab=vocab_terms)
+                except Exception as exc:
+                    # The transcript is already in hand; losing the whole dictation
+                    # because the polish step failed is the worst outcome available.
+                    LOGGER.exception("Refinement failed; pasting the raw transcript")
+                    record.error = f"refine failed, pasted raw transcript: {exc!r}"
+                    fallback = "key" if isinstance(exc, MissingAPIKey) else _failure_kind(exc)
+                    refined = RefineResult(
+                        text=transcript.text, raw_text=transcript.text, model=refine_model, fallback=fallback
+                    )
+                else:
+                    fallback = getattr(refined, "fallback", "") or ""
+                    record.prompt_tokens = int(getattr(refined, "prompt_tokens", 0) or 0)
+                    record.cached_tokens = int(getattr(refined, "cached_tokens", 0) or 0)
+                    record.completion_tokens = int(getattr(refined, "completion_tokens", 0) or 0)
+                    if fallback:
+                        record.error = f"refine {fallback}, pasted raw transcript"
+                record.latency_refine_ms = int((time.monotonic() - refine_start) * 1000)
             else:
-                fallback = getattr(refined, "fallback", "")
-                if fallback:
-                    record.error = f"refine {fallback}, pasted raw transcript"
+                refined = RefineResult(text=transcript.text, raw_text=transcript.text, model="")
             record.refined_text = refined.text or transcript.text
-            record.latency_refine_ms = int((time.monotonic() - refine_start) * 1000)
             final_text = record.refined_text
 
             if headless:
@@ -916,63 +1461,68 @@ class TypelessLocalApp:
 
             if not self._is_current_processing_session(session_id):
                 return
-            self._stop_processing_progress()
-            self._call_ui(self.overlay.show_thinking, progress=1.0, message="Thinking")
-            if context.can_insert_text:
-                LOGGER.info("Pasting refined text into focused app: %s", context.app_name or "unknown")
-                paste_text(final_text)
-                record.was_pasted = True
-                # paste_text puts the old clipboard back when it is done, so
-                # without this a Cmd+V the target app swallowed would leave the
-                # text nowhere at all. Keeping it here means one manual paste
-                # always recovers it, and makes the panel's "Copied" true.
-                set_clipboard_text(final_text)
-                LOGGER.info("Dictation inserted %d characters", len(final_text))
-                self.state = "idle"
-                self._set_menubar("idle")
-                self._copy_fallback_text = final_text
-                # Shown but not focused: the text is already in the target app
-                # and the next key is usually Return there, which dismisses this.
-                self._call_ui(self.overlay.show_copy_fallback, final_text, True, False)
-                self._schedule_overlay_dismiss()
-                if missing_api_key:
-                    # Only after the paste: the prompt takes focus, and a Cmd+V
-                    # posted after it would land in the key field instead.
-                    self._call_ui(self._prompt_for_missing_api_key)
-                return
-
-            LOGGER.info(
-                "Focused target is not editable (app=%s role=%s); showing copy fallback",
-                context.app_name or "unknown",
-                context.focused_role or "unknown",
-            )
-            self._copy_fallback_text = final_text
-            set_clipboard_text(final_text)
-            self._editing = True
-            self.state = "idle"
-            self._set_menubar("idle")
-            self._call_ui(self.overlay.show_copy_fallback, final_text, True, True)
-            if missing_api_key:
-                self._call_ui(self._prompt_for_missing_api_key)
+            step = "paste"
+            self._deliver(final_text, transcript.text, context, fallback, record)
         except Exception as exc:
             record.error = repr(exc)
             LOGGER.exception("Dictation failed")
             if not headless:
-                self._stop_processing_progress()
-                self.state = "idle"
-                self._set_menubar("error")
-                self._call_ui(self.overlay.show_error, "Retry")
-                time.sleep(1.4)
-                self._call_ui(self.overlay.hide)
+                if self._is_current_processing_session(session_id):
+                    self.state = "idle"
+                    self._set_menubar("idle")
+                    self.capsule.show("error", msg=_FAILED_STEP.get(step, "处理失败"))
                 return
             raise
         finally:
             record.ended_at = time.time()
             record.latency_total_ms = int((record.ended_at - started) * 1000)
             trace = getattr(self, "trace", None)
-            if trace is not None:
+            if trace is not None and prefs.save_history:
                 self._last_trace_id = trace.log(record)
+                self._windows_changed(history=True)
+                watcher = getattr(self, "sent_watcher", None)
+                insertion = getattr(self, "_insertion", None)
+                if watcher is not None and record.was_pasted and prefs.save_sent_text and insertion is not None:
+                    watcher.watch(self._last_trace_id, record.refined_text, insertion.pid)
             self._keep_recording(audio, sample_rate, started)
+
+    def _deliver(self, text: str, raw: str, context: FocusContext, fallback: str, record: SessionRecord) -> None:
+        """Paste the text where the caret is, or hand it over in a card when there is nowhere to paste."""
+
+        if context.can_insert_text:
+            LOGGER.info("Pasting refined text into focused app: %s", context.app_name or "unknown")
+            paste_text(text)
+            record.was_pasted = True
+            # paste_text puts the old clipboard back when it is done, so
+            # without this a Cmd+V the target app swallowed would leave the
+            # text nowhere at all. Keeping it here means one manual paste
+            # always recovers it.
+            set_clipboard_text(text)
+            LOGGER.info("Dictation inserted %d characters", len(text))
+            self.state = "idle"
+            self._set_menubar("idle")
+            self._remember(text, context.app_name)
+            self._insertion = Insertion(text=text, raw=raw, pid=frontmost_pid(), context=context)
+            self._keys_wanted = True
+            if fallback == "key":
+                self._refresh_issues()
+                self.capsule.show("inserted-raw-key")
+            elif fallback:
+                self.capsule.show("inserted-raw-net", why=fallback)
+            else:
+                self.capsule.show("inserted", n=count_units(text), replaced=bool(context.selected_text))
+            return
+
+        LOGGER.info(
+            "Focused target is not editable (app=%s role=%s); showing the text to copy",
+            context.app_name or "unknown",
+            context.focused_role or "unknown",
+        )
+        self._remember(text, context.app_name)
+        set_clipboard_text(text)
+        self.state = "idle"
+        self._set_menubar("idle")
+        self.capsule.show("edit-notarget", text=text)
 
     def _keep_recording(self, audio: np.ndarray, sample_rate: int, started: float) -> None:
         """Save this dictation's audio, dropped ones included, when configured to."""
@@ -990,54 +1540,6 @@ class TypelessLocalApp:
             keep_recording(user_paths.config_dir / "recordings", name, audio, sample_rate, keep)
         except Exception:
             LOGGER.warning("Could not keep the recording", exc_info=True)
-
-    def _start_processing_progress(self) -> None:
-        self._stop_processing_progress()
-        self._schedule_processing_tick(0.1)
-
-    def _schedule_processing_tick(self, delay: float) -> None:
-        timer = threading.Timer(delay, self._update_processing_progress)
-        timer.daemon = True
-        self._processing_timer = timer
-        timer.start()
-
-    def _stop_processing_progress(self) -> None:
-        timer = getattr(self, "_processing_timer", None)
-        if timer is not None:
-            timer.cancel()
-            self._processing_timer = None
-
-    def _update_processing_progress(self) -> None:
-        with self._lock:
-            if self.state != "processing":
-                return
-            progress = self._processing_progress_at(
-                time.monotonic() - getattr(self, "_processing_started_at", time.monotonic())
-            )
-            self._call_ui(
-                self.overlay.show_thinking,
-                progress=progress,
-                message=getattr(self, "_processing_message", "Thinking"),
-            )
-            self._schedule_processing_tick(0.1)
-
-    def _processing_progress_at(self, elapsed: float) -> float:
-        points = PROCESSING_PROGRESS_POINTS
-        if elapsed <= points[0][0]:
-            return points[0][1]
-        for index in range(1, len(points)):
-            prev_time, prev_progress = points[index - 1]
-            next_time, next_progress = points[index]
-            if elapsed <= next_time:
-                span = next_time - prev_time
-                if span <= 0:
-                    return next_progress
-                fraction = (elapsed - prev_time) / span
-                return prev_progress + (next_progress - prev_progress) * fraction
-        return points[-1][1]
-
-    def _set_processing_message(self, message: str) -> None:
-        self._processing_message = message
 
     def _is_current_processing_session(self, session_id: int) -> bool:
         return self.state == "processing" and session_id == getattr(self, "_active_session_id", 0)
@@ -1078,27 +1580,25 @@ class TypelessLocalApp:
         return False
 
     def _show_empty_then_idle(self, session_id: int | None = None) -> None:
+        """Nothing worth pasting was heard; the capsule says so and goes away by itself."""
+
         session_id = getattr(self, "_active_session_id", 0) if session_id is None else session_id
         if not self._is_current_processing_session(session_id):
             return
-        self._stop_processing_progress()
         self.state = "idle"
         self._set_menubar("idle")
-        self._call_ui(self.overlay.show_empty)
-        time.sleep(1.0)
-        if self.state == "idle" and session_id == getattr(self, "_active_session_id", 0):
-            self._call_ui(self.overlay.hide)
+        self.capsule.show("empty", device=getattr(self, "_capture_device", "") or "")
 
     def _copy_last_transcript(self) -> None:
         text = getattr(self, "_copy_fallback_text", "")
         if not text:
             return
         set_clipboard_text(text)
-        self._call_ui(self.overlay.show_copy_fallback, text, True, True)
+        self.capsule.show("copied")
 
     def _on_audio_level(self, level: float) -> None:
         if self.state == "recording":
-            self._call_ui(self.overlay.update_level, level)
+            self.capsule.update_level(level)
 
     def _call_ui(self, callback, *args, **kwargs) -> None:
         if threading.current_thread() is threading.main_thread():
@@ -1128,6 +1628,49 @@ def _join(parts: list[Transcript]) -> Transcript:
 
 def _latin(char: str) -> bool:
     return char.isascii() and char.isalnum()
+
+
+_LATIN_WORD = re.compile(r"[A-Za-z0-9]+(?:['’.\-][A-Za-z0-9]+)*")
+
+
+def count_units(text: str) -> int:
+    """字数 the way Chinese editors count it: each Chinese character is one,
+    and so is each Latin word."""
+
+    cjk = sum(1 for char in text if brand._is_cjk(char) and unicodedata.category(char).startswith("L"))
+    return cjk + len(_LATIN_WORD.findall(text))
+
+
+def _failure_kind(exc: BaseException) -> str:
+    """How refinement failed, in the capsule's words: "timeout" or "error"."""
+
+    name = type(exc).__name__.lower()
+    if "timeout" in name or "timed out" in str(exc).lower():
+        return "timeout"
+    return "error"
+
+
+def _eta_text(fraction: float, elapsed: float) -> str:
+    """Rough time left for the model download, once there is enough to go on."""
+
+    if fraction < 0.03 or elapsed < 3.0 or fraction >= 1.0:
+        return ""
+    remaining = elapsed * (1.0 - fraction) / fraction
+    if remaining < 60:
+        return f"约 {max(5, int(round(remaining / 5.0)) * 5)} 秒"
+    return f"约 {int(round(remaining / 60.0))} 分钟"
+
+
+def api_key_names(config: AppConfig) -> list[str]:
+    """Every environment variable a refinement preset reads its key from."""
+
+    names = [config.refine.api_key_env]
+    for preset in preset_names(config.jarvis_config):
+        try:
+            names.append(refine_config_for(config.jarvis_config, preset).api_key_env)
+        except Exception:
+            continue
+    return list(dict.fromkeys(name for name in names if name))
 
 
 def configure_logging() -> None:
@@ -1163,6 +1706,10 @@ def main() -> None:
     configure_logging()
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
-    coordinator = TypelessLocalApp(load_config())
+    config = load_config()
+    # Keys saved from Settings live in the login keychain; one still in
+    # ~/.typlus/env (or the environment) is used as it is.
+    keychain.fill_environ(api_key_names(config))
+    coordinator = TypelessLocalApp(config)
     coordinator.start()
     app.run()
