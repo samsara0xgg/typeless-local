@@ -10,14 +10,14 @@ const stage = $('#stage'), capEl = $('#cap'), budsEl = $('#buds'), handleEl = $(
 const MARGIN = 14;          // gap between the capsule and the bottom of the visible frame
 const GAP = 8;
 const PILL_H = 40, BUD_H = 36;
-const QUIET_MS = 3000;      // "没有检测到声音" after this long without voice
+const QUIET_MS = 3000;      // "没有检测到声音" after this long with no voice yet
 const VOICE = 0.08;         // analyzer level that counts as voice
 const NB = 13;
 const PROF = [1, .92, .8, .66, .52, .4, .3, .22];
 
 const S = {
   st: 'hidden', d: {}, kind: 'pill', hidden: true, layer: null,
-  mode: 'click', recAt: 0, max: 900, cd: false, quiet: false, lastVoice: 0,
+  mode: 'click', recAt: 0, max: 900, cd: false, quiet: false, heard: false, lastVoice: 0,
   level: 0, levelAt: 0, tmrText: '', say: '',
   anchor: { mode: 'bottom', x: null, y: null }, last: null,
   handleOn: false, handleHover: false, hover: false, hovBtn: null, native: false, lastGeo: '',
@@ -295,7 +295,9 @@ function tickRec(now) {
   const rem = S.max - t;
   if (S.max > 0 && rem <= 60 && !S.cd) { S.cd = true; rerenderRec(); return; }
   if (S.mode !== 'hold' && !S.cd) {
-    const quiet = now - S.lastVoice > QUIET_MS;
+    // Only a microphone that has picked up nothing at all is worth a word:
+    // once the wave has moved, a pause is someone thinking, not a fault.
+    const quiet = !S.heard && now - S.lastVoice > QUIET_MS;
     if (quiet !== S.quiet) { S.quiet = quiet; rerenderRec(); return; }
   }
   const txt = S.cd ? fmt(rem, true) : fmt(t);
@@ -435,7 +437,7 @@ on('show', m => {
     const entering = S.st !== 'rec';
     if (d.elapsed != null) S.recAt = now - (+d.elapsed) * 1000;
     else if (entering) S.recAt = now;
-    if (entering) { S.lastVoice = now; S.quiet = false; S.cd = false; }
+    if (entering) { S.lastVoice = now; S.quiet = false; S.heard = false; S.cd = false; }
     S.mode = d.mode || 'click';
     if (d.max != null) S.max = +d.max;
     // Extended: back from the countdown to the running timer.
@@ -451,6 +453,7 @@ on('level', m => {
   S.levelAt = performance.now();
   if (S.level > VOICE) {
     S.lastVoice = S.levelAt;
+    S.heard = true;
     if (S.quiet && S.st === 'rec') { S.quiet = false; rerenderRec(); }
   }
 });
