@@ -44,6 +44,7 @@ class Preferences:
     send_window_title: bool = True
     # After a paste, keep what the text finally went out as (sent_text.py).
     save_sent_text: bool = True
+    send_before_text: bool = True
     onboarding_done: bool = False
 
     def to_dict(self) -> dict[str, Any]:

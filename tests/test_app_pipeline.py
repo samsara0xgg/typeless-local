@@ -692,10 +692,12 @@ def test_refinement_switched_off_pastes_the_transcript_as_heard(monkeypatch) -> 
 
 def test_privacy_settings_limit_what_refinement_sees() -> None:
     app = _make_app("改一下")
-    context = FocusContext("Mail", "Re: 报价", selected_text="原来的句子", can_insert_text=True)
+    context = FocusContext(
+        "Mail", "Re: 报价", selected_text="原来的句子", can_insert_text=True, before_text="王总您好，"
+    )
 
     assert app._refine_context(context) is context
-    app.prefs = Preferences(rewrite_selection=False, send_window_title=False)
+    app.prefs = Preferences(rewrite_selection=False, send_window_title=False, send_before_text=False)
     assert app._refine_context(context) == FocusContext("", "", selected_text="", can_insert_text=True)
 
 

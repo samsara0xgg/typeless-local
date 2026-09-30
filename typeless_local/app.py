@@ -1334,6 +1334,8 @@ class TypelessLocalApp:
             changes["selected_text"] = ""
         if not prefs.send_window_title and (context.app_name or context.window_title):
             changes.update(app_name="", window_title="")
+        if not prefs.send_before_text and context.before_text:
+            changes["before_text"] = ""
         return dataclasses.replace(context, **changes) if changes else context
 
     def _process_audio(
@@ -1372,6 +1374,8 @@ class TypelessLocalApp:
             asr_model=str(getattr(self.asr, "model_name", "") or ""),
             refine_model=refine_model,
             app_version=app_version(),
+            # Only what refinement was allowed to see, for comparing with and without it.
+            before_text=getattr(context, "before_text", "") if prefs.send_before_text else "",
         )
 
         try:

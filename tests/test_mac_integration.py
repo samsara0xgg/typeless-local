@@ -466,3 +466,77 @@ def test_caret_rect_ignores_an_empty_answer(monkeypatch) -> None:
     monkeypatch.setattr(AS, "AXValueGetValue", lambda value, kind, out: (True, empty))
 
     assert mac_integration.caret_rect() is None
+
+
+class _FakeAX:
+    """Just enough of ApplicationServices for reading the text before the caret."""
+
+    kAXErrorSuccess = 0
+    kAXSelectedTextRangeAttribute = "AXSelectedTextRange"
+    kAXValueAttribute = "AXValue"
+    kAXStringForRangeParameterizedAttribute = "AXStringForRange"
+
+    def __init__(self, value: str, caret: int, ranged: bool = True, subrole: str = "") -> None:
+        self.value, self.caret, self.ranged, self.subrole = value, caret, ranged, subrole
+        self.asked: list[tuple[int, int]] = []
+        self.read_whole = False
+
+    def AXUIElementCopyAttributeValue(self, element, attribute, _):  # noqa: N802
+        if attribute == "AXSubrole":
+            return (0, self.subrole or None)
+        if attribute == "AXSelectedTextRange":
+            return (0, ("range", self.caret, 0))
+        if attribute == "AXValue":
+            self.read_whole = True
+            return (0, self.value)
+        return (-25212, None)
+
+    def AXValueCreate(self, kind, value):  # noqa: N802
+        return ("range", *value)
+
+    def AXValueGetValue(self, value, kind, _):  # noqa: N802
+        return (True, (value[1], value[2]))
+
+    def AXUIElementCopyParameterizedAttributeValue(self, element, attribute, value, _):  # noqa: N802
+        if not self.ranged:
+            return (-25205, None)
+        start, length = value[1], value[2]
+        self.asked.append((start, length))
+        return (0, self.value[start : start + length])
+
+
+def test_text_before_caret_asks_only_for_the_last_stretch(monkeypatch) -> None:
+    text = "旧" * 1000 + "昨天 Sonnet 限流了。"
+    fake = _FakeAX(text, caret=len(text))
+    monkeypatch.setattr(mac_integration, "ApplicationServices", fake)
+
+    before = mac_integration._text_before_caret(object(), "AXTextArea")
+
+    assert before.endswith("昨天 Sonnet 限流了。")
+    assert len(before) == mac_integration.BEFORE_TEXT_CHARS
+    assert fake.asked == [(len(text) - mac_integration.BEFORE_TEXT_CHARS, mac_integration.BEFORE_TEXT_CHARS)]
+    assert not fake.read_whole
+
+
+def test_text_before_caret_stops_at_the_caret_when_apps_lack_ranged_queries(monkeypatch) -> None:
+    fake = _FakeAX("回复 Codex 的问题|后面的字", caret=len("回复 Codex 的问题"), ranged=False)
+    monkeypatch.setattr(mac_integration, "ApplicationServices", fake)
+
+    assert mac_integration._text_before_caret(object(), "AXTextArea") == "回复 Codex 的问题"
+
+
+def test_text_before_caret_never_reads_password_fields(monkeypatch) -> None:
+    fake = _FakeAX("hunter2", caret=7)
+    monkeypatch.setattr(mac_integration, "ApplicationServices", fake)
+
+    assert mac_integration._text_before_caret(object(), "AXSecureTextField") == ""
+    fake.subrole = "AXSecureTextField"
+    assert mac_integration._text_before_caret(object(), "AXTextField") == ""
+    assert fake.asked == [] and not fake.read_whole
+
+
+def test_text_before_caret_is_empty_at_the_start_of_a_field(monkeypatch) -> None:
+    fake = _FakeAX("", caret=0)
+    monkeypatch.setattr(mac_integration, "ApplicationServices", fake)
+
+    assert mac_integration._text_before_caret(object(), "AXTextArea") == ""

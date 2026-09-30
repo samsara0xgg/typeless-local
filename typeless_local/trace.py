@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   prompt_tokens INTEGER,
   cached_tokens INTEGER,
   completion_tokens INTEGER,
-  sent_text TEXT
+  sent_text TEXT,
+  before_text TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_started_at ON sessions(started_at);
 
@@ -80,6 +81,8 @@ ADDED_COLUMNS = (
     ("completion_tokens", "INTEGER"),
     # What the dictation finally went out as, after hand edits (sent_text.py).
     ("sent_text", "TEXT"),
+    # The text before the caret that refinement was given as context.
+    ("before_text", "TEXT"),
 )
 
 
@@ -109,6 +112,7 @@ class SessionRecord:
     prompt_tokens: int = 0
     cached_tokens: int = 0
     completion_tokens: int = 0
+    before_text: str = ""
 
 
 _INSERT_SQL = """
@@ -119,7 +123,7 @@ INSERT INTO sessions (
   vocab_terms_used, hotwords_count,
   latency_asr_ms, latency_refine_ms, latency_total_ms,
   asr_model, refine_model, app_version, error,
-  prompt_tokens, cached_tokens, completion_tokens
+  prompt_tokens, cached_tokens, completion_tokens, before_text
 ) VALUES (
   :started_at, :ended_at, :audio_duration_s, :audio_rms, :audio_sample_rate,
   :raw_asr_text, :raw_asr_language, :raw_asr_confidence,
@@ -127,7 +131,7 @@ INSERT INTO sessions (
   :vocab_terms_used, :hotwords_count,
   :latency_asr_ms, :latency_refine_ms, :latency_total_ms,
   :asr_model, :refine_model, :app_version, :error,
-  :prompt_tokens, :cached_tokens, :completion_tokens
+  :prompt_tokens, :cached_tokens, :completion_tokens, :before_text
 )
 """
 

@@ -262,3 +262,24 @@ def test_refiner_reports_the_tokens_it_was_billed_for() -> None:
     )
     result = _refiner(fake).refine("好的")
     assert (result.prompt_tokens, result.cached_tokens, result.completion_tokens) == (800, 0, 0)
+
+
+def test_text_before_the_cursor_goes_to_the_model_as_reference() -> None:
+    fake = _FakeClient()
+
+    _refiner(fake, model="gpt-5.6-terra").refine(
+        "那个 sonit 的额度用完了",
+        FocusContext(app_name="Slack", window_title="#dev", before_text="Sonnet 4.7 今天限流了"),
+    )
+
+    user_prompt = fake.completions.kwargs["messages"][1]["content"]
+    assert "<before_cursor>Sonnet 4.7 今天限流了</before_cursor>" in user_prompt
+    assert "Never repeat it" in fake.completions.kwargs["messages"][0]["content"]
+
+
+def test_no_before_cursor_block_without_text_before_the_cursor() -> None:
+    fake = _FakeClient()
+
+    _refiner(fake).refine("测试一下", FocusContext(app_name="Slack", window_title="#dev"))
+
+    assert "<before_cursor>" not in fake.completions.kwargs["messages"][1]["content"]

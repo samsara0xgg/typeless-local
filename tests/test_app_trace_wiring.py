@@ -77,11 +77,12 @@ def test_successful_pipeline_writes_trace_row(tmp_path: Path) -> None:
         app = TypelessLocalApp(cfg, headless=True)
 
     audio = np.zeros(8000, dtype=np.float32)
-    ctx = FocusContext(app_name="TextEdit", window_title="Untitled", can_insert_text=False)
+    ctx = FocusContext(app_name="TextEdit", window_title="Untitled", can_insert_text=False, before_text="上一句是")
     app._process_audio(audio, ctx, session_id=1)
 
     rows = _read_rows(cfg.user_paths.trace_db_path)
     assert len(rows) == 1
+    assert rows[0]["before_text"] == "上一句是"
     row = rows[0]
     assert row["raw_asr_text"] == "hi jarvas"
     assert row["refined_text"] == "Hi Jarvis."
