@@ -246,3 +246,13 @@ def test_a_new_install_can_start_on_another_preset_but_a_chosen_one_stays(monkey
     cfg_mod.save_default_preset(paths, "gpt-5.6-luna")
     assert cfg_mod.adopt_default_preset(cfg_mod.load_config(), "deepseek-flash").refine.preset == "gpt-5.6-luna"
     assert cfg_mod.adopt_default_preset(cfg_mod.load_config(), "no-such-preset").refine.preset == "gpt-5.6-luna"
+
+
+def test_resolve_jarvis_root_falls_back_without_a_checkout(monkeypatch, tmp_path) -> None:
+    # A friend's Mac has no ~/Projects/jarvis; launch must not fail on it.
+    monkeypatch.delenv("JARVIS_PROJECT_ROOT", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    app_root = tmp_path / "Yana.app" / "Contents" / "Resources" / "lib" / "python3.13"
+    app_root.mkdir(parents=True)
+
+    assert resolve_jarvis_root(app_root) == app_root
