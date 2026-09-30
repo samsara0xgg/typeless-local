@@ -86,3 +86,10 @@ def test_menu_line_with_spend(tmp_path) -> None:
 def test_no_history_is_an_empty_summary(tmp_path) -> None:
     s = usage.summary(tmp_path / "missing.db", now=NOW)
     assert s["month"]["n"] == 0 and len(s["daily"]) == 30
+
+
+def test_menu_line_in_english() -> None:
+    from typeless_local import i18n
+
+    i18n.use("en")
+    assert usage.today_line(None) == "No dictations today"

@@ -1,8 +1,8 @@
 """The app's names, in one place.
 
-言字 is the name people see on a Chinese system and throughout the UI copy,
-which is written in Chinese. The English name names the .app file and is what
-Finder, the Dock and the login-item list show everywhere else.
+言字 is the name the Chinese interface uses, Yana the English one. The English
+name also names the .app file and is what Finder, the Dock and the login-item
+list show on a non-Chinese system.
 
 The bundle ID and the ~/.typlus data folder keep the old name on purpose:
 macOS ties the microphone and Accessibility permissions it has granted to the
@@ -12,6 +12,8 @@ bundle ID, and the folder holds the user's API key, words and history.
 from __future__ import annotations
 
 import unicodedata
+
+from typeless_local.i18n import t
 
 DISPLAY_NAME = "言字"
 # Placeholder until the English name is chosen; everything else follows it.
@@ -49,5 +51,11 @@ def join(*parts: str) -> str:
     return out
 
 
-def quit_label(name: str = DISPLAY_NAME) -> str:
-    return join("退出", name)
+def display_name() -> str:
+    """The app's name in the language it is speaking."""
+
+    return t(DISPLAY_NAME, ENGLISH_NAME)
+
+
+def quit_label(name: str | None = None) -> str:
+    return join(t("退出", "Quit"), name or display_name())

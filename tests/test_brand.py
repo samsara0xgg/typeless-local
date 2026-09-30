@@ -17,3 +17,23 @@ def test_quit_label_uses_the_display_name() -> None:
 
 def test_bundle_id_is_unchanged_so_granted_permissions_survive_the_rename() -> None:
     assert brand.BUNDLE_ID == "com.alllllenshi.typlus"
+
+
+def test_the_english_interface_uses_the_english_name() -> None:
+    from typeless_local import i18n
+
+    i18n.use("en")
+    assert brand.display_name() == brand.ENGLISH_NAME
+    assert brand.quit_label() == f"Quit {brand.ENGLISH_NAME}"
+    i18n.use("zh")
+    assert brand.display_name() == brand.DISPLAY_NAME
+
+
+def test_auto_follows_the_macs_language(monkeypatch) -> None:
+    from typeless_local import i18n
+
+    monkeypatch.setattr(i18n, "system_language", lambda: "en")
+    assert i18n.use("auto") == "en"
+    monkeypatch.setattr(i18n, "system_language", lambda: "zh")
+    assert i18n.use("auto") == "zh"
+    assert i18n.use("klingon") == "zh"

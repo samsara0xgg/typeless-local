@@ -25,10 +25,11 @@ import time
 from typing import Callable
 from urllib.parse import urlparse
 
-from typeless_local import app_version, brand, history, keychain, login_item, permissions, preferences, usage, vocab
+from typeless_local import app_version, brand, history, i18n, keychain, login_item, permissions, preferences, usage, vocab
 from typeless_local.asr import mlx_whisper_repo
 from typeless_local.config import preset_names, refine_config_for
 from typeless_local.mac_integration import FocusContext, has_accessibility_trust, request_accessibility_trust, set_clipboard_text
+from typeless_local.i18n import t
 from typeless_local.trace import load_corrections
 
 LOGGER = logging.getLogger(__name__)
@@ -39,7 +40,15 @@ HISTORY_ROWS = 500
 FIXES = 6
 POLL_S = 1.0
 POLL_TIMEOUT_S = 300.0
-_SERVICES = {"openai": "OpenAI", "deepseek": "DeepSeek", "anthropic": "Anthropic", "googleapis": "Google", "moonshot": "Moonshot", "dashscope": "通义千问", "bigmodel": "智谱"}
+_SERVICES = {
+    "openai": "OpenAI",
+    "deepseek": "DeepSeek",
+    "anthropic": "Anthropic",
+    "googleapis": "Google",
+    "moonshot": "Moonshot",
+    "dashscope": ("通义千问", "Qwen"),
+    "bigmodel": ("智谱", "Zhipu"),
+}
 
 
 def service_name(base_url: str | None) -> str:
@@ -48,7 +57,7 @@ def service_name(base_url: str | None) -> str:
     host = urlparse(base_url or "https://api.openai.com").hostname or ""
     for key, name in _SERVICES.items():
         if key in host:
-            return name
+            return t(*name) if isinstance(name, tuple) else name
     return host or "OpenAI"
 
 
@@ -114,6 +123,14 @@ class Windows:
         self._f5_conflict: bool | None = None
         self._polls: set[str] = set()
 
+    @staticmethod
+    def _titles() -> dict[str, str]:
+        return {
+            "settings": t("设置", "Settings"),
+            "history": t("历史记录", "History"),
+            "onboarding": brand.join(t("欢迎使用", "Welcome to"), brand.display_name()),
+        }
+
     # ---------------------------------------------------------- opening
 
     def _window(self, name: str, **kwargs):
@@ -126,7 +143,7 @@ class Windows:
     def show_settings(self, pane: str | None = None) -> None:
         reopening = self._hidden("settings")
         window = self._window(
-            "settings", page="settings.html", title="设置", size=(780, 580), min_size=(600, 420),
+            "settings", page="settings.html", title=self._titles()["settings"], size=(780, 580), min_size=(600, 420),
             toolbar=True, on_message=self._settings_message,
         )
         window.show()
@@ -139,7 +156,7 @@ class Windows:
     def show_history(self) -> None:
         reopening = self._hidden("history")
         window = self._window(
-            "history", page="history.html", title="历史记录", size=(860, 580), min_size=(620, 400),
+            "history", page="history.html", title=self._titles()["history"], size=(860, 580), min_size=(620, 400),
             toolbar=True, on_message=self._history_message,
         )
         window.show()
@@ -149,7 +166,7 @@ class Windows:
     def show_onboarding(self) -> None:
         reopening = self._hidden("onboarding")
         window = self._window(
-            "onboarding", page="onboarding.html", title=brand.join("欢迎使用", brand.DISPLAY_NAME), size=(620, 560),
+            "onboarding", page="onboarding.html", title=self._titles()["onboarding"], size=(620, 560),
             resizable=False, on_message=self._onboarding_message,
         )
         window.show()
@@ -174,6 +191,25 @@ class Windows:
         if history and self._visible("history"):
             self.history.send({"t": "items", **self.history_payload()})
 
+    def relocalize(self) -> None:
+        """The interface language changed: every page built so far redraws in it.
+
+        Hidden pages too, since reopening one only resends its state, not its env.
+        """
+
+        for name, title in self._titles().items():
+            window = getattr(self, name)
+            if window is None:
+                continue
+            window.set_title(title)
+            self._env(window)
+        if self.settings is not None:
+            self.settings.send(self.settings_state())
+        if self.history is not None:
+            self.history.send({"t": "items", **self.history_payload()})
+        if self.onboarding is not None:
+            self.onboarding.send(self.onboarding_state())
+
     def download(self, fraction: float, eta: str = "", done: bool = False, error: bool = False) -> None:
         if self._visible("onboarding"):
             self.onboarding.send({"t": "download", "p": round(fraction, 3), "eta": eta, "done": done, "error": error})
@@ -195,6 +231,7 @@ class Windows:
         # Reduce Transparency: the page draws solid fills and the glass stays hidden.
         window.suppress_glass(bool(env.get("rt")))
         env["native"] = bool(getattr(window, "has_glass", False)) and not env.get("rt")
+        env["lang"] = i18n.current()
         window.send({"t": "env", **env})
 
     # ---------------------------------------------------------- settings
@@ -241,7 +278,7 @@ class Windows:
             self._f5_conflict = permissions.system_dictation_uses_f5()
         return {
             "t": "state",
-            "name": brand.DISPLAY_NAME,
+            "name": brand.display_name(),
             "version": app_version(),
             "prefs": prefs.to_dict(),
             "choices": {key: list(values) for key, values in preferences.CHOICES.items()},
@@ -347,19 +384,21 @@ class Windows:
     def _save_key(self, window, env: str, value: str, *, test: bool) -> None:
         value = value.strip()
         if not env or not keychain.is_valid_key(value):
-            window.send({"t": "keyResult", "env": env, "ok": False, "msg": "这不像一个 API Key：应该是一整串没有空格的字符。"})
+            msg = t("这不像一个 API Key：应该是一整串没有空格的字符。", "That doesn't look like an API key: it should be one string with no spaces.")
+            window.send({"t": "keyResult", "env": env, "ok": False, "msg": msg})
             return
 
         def job() -> None:
-            result = {"t": "keyResult", "env": env, "ok": True, "msg": "已保存到钥匙串"}
+            result = {"t": "keyResult", "env": env, "ok": True, "msg": t("已保存到钥匙串", "Saved to the keychain")}
             try:
                 self.app.store_api_key(env, value)
                 if test:
                     ok, ms, error = self.test_preset(self._preset_for(env))
-                    result.update(ok=ok, ms=ms, msg=f"已连接 · 往返 {ms / 1000:.1f} 秒" if ok else error)
+                    connected = t(f"已连接 · 往返 {ms / 1000:.1f} 秒", f"Connected · {ms / 1000:.1f} s round trip")
+                    result.update(ok=ok, ms=ms, msg=connected if ok else error)
             except Exception:
                 LOGGER.exception("Saving %s failed", env)
-                result.update(ok=False, msg="没能保存，详情见日志。")
+                result.update(ok=False, msg=t("没能保存，详情见日志。", "Couldn't save it; the log has details."))
             self._later(window, result)
             if window is self.settings:
                 self.app._call_ui(self.refresh)
@@ -407,17 +446,17 @@ class Windows:
             result = refiner.refine("嗯，测试一下连接", FocusContext(app_name="", window_title="", selected_text=""))
             ms = int((time.monotonic() - started) * 1000)
         except MissingAPIKey:
-            return False, 0, "还没有这个模型的 API Key。"
+            return False, 0, t("还没有这个模型的 API Key。", "There is no API key for this model yet.")
         except Exception as exc:
             LOGGER.warning("Connection test for %s failed", preset, exc_info=True)
             text = str(exc)
             if "401" in text or "auth" in text.lower() or "api key" in text.lower():
-                return False, 0, "API Key 不对，服务拒绝了请求。"
+                return False, 0, t("API Key 不对，服务拒绝了请求。", "The service rejected the API key.")
             if "timeout" in type(exc).__name__.lower() or "timed out" in text.lower():
-                return False, 0, "请求超时，检查一下网络。"
-            return False, 0, "连不上：" + (text[:80] or type(exc).__name__)
+                return False, 0, t("请求超时，检查一下网络。", "The request timed out. Check the network.")
+            return False, 0, t("连不上：", "Can't connect: ") + (text[:80] or type(exc).__name__)
         if getattr(result, "fallback", ""):
-            return False, ms, "连上了，但模型没有正常返回。"
+            return False, ms, t("连上了，但模型没有正常返回。", "Connected, but the model gave no proper answer.")
         return True, ms, ""
 
     def _test_connection(self, window) -> None:
@@ -440,7 +479,7 @@ class Windows:
         message = ""
         if op == "add":
             if term in mine:
-                message = f"“{term}”已经在词库里了。"
+                message = t(f"“{term}”已经在词库里了。", f"“{term}” is already in the vocabulary.")
             else:
                 vocab.save_user_terms(path, mine + [term])
         elif op == "remove":
@@ -492,7 +531,7 @@ class Windows:
             text = str(msg.get("text") or "")
             if text:
                 set_clipboard_text(text)
-                window.send({"t": "toast", "msg": "已复制"})
+                window.send({"t": "toast", "msg": t("已复制", "Copied")})
         elif kind == "delete":
             db = self._db()
             if db is not None and history.delete_session(db, int(msg.get("id") or 0)):
@@ -502,7 +541,7 @@ class Windows:
             if term:
                 self._edit_vocab(None, "add", term)
                 window.send({"t": "items", **self.history_payload()})
-                window.send({"t": "toast", "msg": f"已把“{term}”加入词库"})
+                window.send({"t": "toast", "msg": t(f"已把“{term}”加入词库", f"Added “{term}” to the vocabulary")})
         elif kind == "open":
             self._open(str(msg.get("what") or ""))
 
@@ -515,7 +554,7 @@ class Windows:
         model_ready = download is None and self._model_cached()
         return {
             "t": "state",
-            "name": brand.DISPLAY_NAME,
+            "name": brand.display_name(),
             "mic": permissions.microphone_status(),
             "ax": bool(has_accessibility_trust()),
             "key": {
@@ -527,6 +566,9 @@ class Windows:
             "model": {
                 "name": short_model(mlx_whisper_repo((app.config.jarvis_config or {}).get("asr") or {})),
                 "ready": model_ready,
+                # Not ready and not downloading: the download at launch failed
+                # (offline) before the guide was open to hear about it.
+                "downloading": download is not None,
                 "p": round(download[0], 3) if download else (1.0 if model_ready else 0.0),
             },
         }
@@ -711,6 +753,11 @@ class WebWindow:
         # A menu-bar app's window only gets the keyboard once the app is active.
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
 
+    def set_title(self, title: str) -> None:
+        self.title = title
+        if self.window is not None:
+            self.window.setTitle_(title)
+
     def visible(self) -> bool:
         """Shown and not closed since; safe to ask from any thread."""
 
@@ -848,17 +895,20 @@ def install_main_menu() -> None:
         main.addItem_(holder)
 
     command, shift = 1 << 20, 1 << 17
-    submenu(brand.DISPLAY_NAME, [("关闭窗口", "performClose:", "w", command), ("", "", "", 0), (brand.quit_label(), "terminate:", "q", command)])
     submenu(
-        "编辑",
+        brand.display_name(),
+        [(t("关闭窗口", "Close Window"), "performClose:", "w", command), ("", "", "", 0), (brand.quit_label(), "terminate:", "q", command)],
+    )
+    submenu(
+        t("编辑", "Edit"),
         [
-            ("撤销", "undo:", "z", command),
-            ("重做", "redo:", "z", command | shift),
+            (t("撤销", "Undo"), "undo:", "z", command),
+            (t("重做", "Redo"), "redo:", "z", command | shift),
             ("", "", "", 0),
-            ("剪切", "cut:", "x", command),
-            ("拷贝", "copy:", "c", command),
-            ("粘贴", "paste:", "v", command),
-            ("全选", "selectAll:", "a", command),
+            (t("剪切", "Cut"), "cut:", "x", command),
+            (t("拷贝", "Copy"), "copy:", "c", command),
+            (t("粘贴", "Paste"), "paste:", "v", command),
+            (t("全选", "Select All"), "selectAll:", "a", command),
         ],
     )
     app.setMainMenu_(main)

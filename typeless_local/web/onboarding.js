@@ -73,6 +73,7 @@ function download() {
   let act;
   if (ready) act = status('已下载', 'ok') + btn('继续', 'next');
   else if (dl.error) act = status('下载失败，检查一下网络再试。', 'err') + btn('重试', 'download') + link('跳过', 'next');
+  else if (!m.downloading && !UI.dl) act = status('还没有下载，可能是刚才没有网络。') + btn('开始下载', 'download') + link('跳过', 'next');
   else act = status(`已下载 ${pct}%${dl.eta ? ` · 还要${esc(dl.eta)}` : ''}`) + btn('继续', 'next', true, true) + link('在后台继续', 'next');
   return page(tile('down', '#34C759'), '下载语音识别模型', lede, bar, act);
 }

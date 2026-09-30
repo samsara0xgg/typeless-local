@@ -791,6 +791,32 @@ def test_the_users_own_cmd_z_is_confirmed() -> None:
     assert app._insertion is None
 
 
+def test_cmd_z_in_another_app_is_not_taken_for_undoing_the_paste(monkeypatch) -> None:
+    app = _inserted_app()
+    monkeypatch.setattr(app_module, "frontmost_pid", lambda: TARGET_PID + 1)
+
+    app._on_hotkey("undo")
+
+    assert app.overlay.calls[-1] == ("hide",)
+    assert app._insertion is None and app._keys_wanted is False
+
+
+def test_choosing_english_in_settings_relocalizes_the_app(monkeypatch) -> None:
+    from typeless_local import i18n
+
+    app = _inserted_app()
+    redrawn = []
+    app.menubar = SimpleNamespace(set_state=lambda state: redrawn.append(("menubar", state)))
+    app.windows = SimpleNamespace(relocalize=lambda: redrawn.append(("windows",)))
+    app.overlay.relocalize = lambda: redrawn.append(("overlay",))
+    monkeypatch.setattr(app_module, "install_main_menu", lambda: redrawn.append(("main menu",)))
+
+    app.set_preference("ui_language", "en")
+
+    assert i18n.current() == "en"
+    assert {entry[0] for entry in redrawn} == {"main menu", "menubar", "overlay", "windows"}
+
+
 def _run_threads_inline(monkeypatch) -> None:
     monkeypatch.setattr(
         "typeless_local.app.threading.Thread",

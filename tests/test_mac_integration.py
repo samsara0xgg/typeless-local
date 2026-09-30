@@ -158,9 +158,8 @@ def test_f5_autorepeat_keydown_is_ignored(monkeypatch) -> None:
     assert events == ["primary_down"]
 
 
-def test_paste_text_restores_clipboard_snapshot(monkeypatch) -> None:
+def test_paste_text_leaves_the_text_on_the_clipboard(monkeypatch) -> None:
     events = []
-    restored = []
 
     class FakePasteboard:
         def clearContents(self):
@@ -180,13 +179,6 @@ def test_paste_text_restores_clipboard_snapshot(monkeypatch) -> None:
             return pasteboard
 
     monkeypatch.setattr(mac_integration, "NSPasteboard", FakePasteboardFactory)
-    monkeypatch.setattr(mac_integration, "_snapshot_pasteboard", lambda pb: [["snapshot"]])
-    monkeypatch.setattr(
-        mac_integration,
-        "_restore_pasteboard",
-        lambda pb, snapshot: restored.append((pb, snapshot)),
-    )
-    monkeypatch.setattr(mac_integration.time, "sleep", lambda seconds: None)
     monkeypatch.setattr(mac_integration.Quartz, "CGEventSourceCreate", lambda state: object())
     monkeypatch.setattr(
         mac_integration.Quartz,
@@ -198,14 +190,11 @@ def test_paste_text_restores_clipboard_snapshot(monkeypatch) -> None:
 
     mac_integration.paste_text("Hello")
 
-    assert events[0] == "clear"
-    assert events[1] == ("set", "Hello", mac_integration.NSPasteboardTypeString)
-    # The dictation is a means to an end, not something the user copied. Without
-    # this marker every dictation left an entry in the clipboard history even
-    # though the real clipboard is restored a moment later.
-    assert ("set-data", mac_integration.TRANSIENT_TYPE) in events
-    assert mac_integration.TRANSIENT_TYPE == "org.nspasteboard.TransientType"
-    assert restored == [(pasteboard, [["snapshot"]])]
+    # Nothing is put back after the Cmd+V: an app slower than the restore
+    # used to paste the old clipboard instead of the dictation.
+    assert events[:2] == ["clear", ("set", "Hello", mac_integration.NSPasteboardTypeString)]
+    assert events[2][0] == "post" and events[2][1]["keycode"] == mac_integration.V_KEYCODE
+    assert "clear" not in events[2:]
 
 
 def test_set_clipboard_text_does_not_restore_previous_clipboard(monkeypatch) -> None:
@@ -234,9 +223,10 @@ def test_set_clipboard_text_does_not_restore_previous_clipboard(monkeypatch) -> 
 
 
 class _KeyEvent:
-    def __init__(self, keycode: int, flags: int = 0) -> None:
+    def __init__(self, keycode: int, flags: int = 0, at: float = 0.0) -> None:
         self.keycode = keycode
         self.flags = flags
+        self.at = at
 
 
 def _rcmd_monitor(monkeypatch, events):
@@ -245,12 +235,13 @@ def _rcmd_monitor(monkeypatch, events):
         mac_integration.Quartz, "CGEventGetIntegerValueField", lambda event, field: event.keycode
     )
     monkeypatch.setattr(mac_integration.Quartz, "CGEventGetFlags", lambda event: event.flags)
+    monkeypatch.setattr(monitor, "_event_time", lambda event: event.at)
     return monitor
 
 
-def _rcmd(monitor, down: bool):
+def _rcmd(monitor, down: bool, at: float = 0.0):
     event = _KeyEvent(
-        mac_integration.RIGHT_COMMAND_KEYCODE, mac_integration.COMMAND_FLAG_MASK if down else 0
+        mac_integration.RIGHT_COMMAND_KEYCODE, mac_integration.COMMAND_FLAG_MASK if down else 0, at
     )
     return monitor._handle_event(None, mac_integration.Quartz.kCGEventFlagsChanged, event, None), event
 
@@ -277,6 +268,31 @@ def test_right_cmd_used_as_modifier_does_not_fire(monkeypatch) -> None:
     _rcmd(monitor, False)
 
     assert result is c_key  # Cmd+C reaches the focused app untouched
+    assert events == []
+
+
+def test_right_cmd_held_longer_than_a_tap_does_not_fire(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events)
+
+    _rcmd(monitor, True, at=10.0)
+    _rcmd(monitor, False, at=10.0 + mac_integration.RIGHT_COMMAND_TAP_S + 0.3)
+
+    assert events == []
+
+
+def test_right_cmd_with_another_modifier_or_a_click_does_not_fire(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events)
+    shift = _KeyEvent(60, mac_integration.COMMAND_FLAG_MASK | mac_integration.SHIFT_FLAG_MASK)
+
+    _rcmd(monitor, True)
+    assert monitor._handle_event(None, mac_integration.Quartz.kCGEventFlagsChanged, shift, None) is shift
+    _rcmd(monitor, False)
+    _rcmd(monitor, True)
+    monitor._disarm_right_command()  # what the mouse monitor does on a Cmd-click
+    _rcmd(monitor, False)
+
     assert events == []
 
 
