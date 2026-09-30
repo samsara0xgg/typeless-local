@@ -215,6 +215,17 @@ def refresh_if_changed() -> bool:
     return True
 
 
+def prime_input(index: int | None, sample_rate: int) -> None:
+    """Open and close one input stream, so the first recording doesn't pay for it.
+
+    The first stream a launch opened took about 2 s (every first F5 after a
+    launch in the log, later ones about 0.05 s), and those words were lost.
+    """
+
+    stream = _sounddevice().InputStream(samplerate=sample_rate, channels=1, dtype="float32", device=index)
+    stream.close()
+
+
 def resolve_input_index(name: str) -> int | None:
     """sounddevice index for ``name``; None means "let the system decide"."""
 

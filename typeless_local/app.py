@@ -328,6 +328,26 @@ class TypelessLocalApp:
 
         threading.Thread(target=run, daemon=True, name="model-prefetch").start()
 
+    def _prime_microphone(self) -> None:
+        """Do the first recording's device setup now, in the background.
+
+        Holds the hotkey lock meanwhile, so an F5 in the first second or two
+        after launch waits for it rather than racing a PortAudio re-init.
+        """
+
+        def run() -> None:
+            started = time.monotonic()
+            with self._lock:
+                try:
+                    self._select_capture_device()
+                    devices.prime_input(self.recorder.device, int(self.config.sample_rate))
+                except Exception:
+                    LOGGER.warning("Priming the microphone failed; the first dictation opens it cold", exc_info=True)
+                    return
+            LOGGER.info("Microphone primed in %.2fs", time.monotonic() - started)
+
+        threading.Thread(target=run, daemon=True, name="mic-prime").start()
+
     def _warm_up_asr(self) -> None:
         """Load the recognizer in the background before the first dictation.
 
@@ -368,6 +388,7 @@ class TypelessLocalApp:
             self._set_menubar("error")
             self._call_ui(self.overlay.show_error, "Enable Access")
             return
+        self._prime_microphone()
         self._start_model_prefetch()
         # Deferred onto the run loop: this app is LSUIElement, and before
         # -[NSApplication run] it is not active yet, so a modal alert can open
@@ -583,6 +604,13 @@ class TypelessLocalApp:
         self._show_recording_ui()
         self._start_recording_timeout()
         self._prewarm_refiner()
+        # Whisper idle for 20 s or more takes about 1.1 s on its next pass
+        # instead of 0.4 s, which a short dictation paid in full after the
+        # stop. A silent pass queued now on the worker is done while he talks.
+        warmup = getattr(getattr(self, "asr", None), "warmup", None)
+        executor = getattr(self, "executor", None)
+        if warmup is not None and executor is not None:
+            executor.submit(warmup)
 
     def _start_microphone(self, capture: str) -> str:
         """Open the mic; if it fails, re-read the devices once and try again.
