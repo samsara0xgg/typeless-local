@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 import os
 from pathlib import Path
@@ -172,14 +172,69 @@ def refine_config_for(jarvis_config: dict[str, Any], preset_name: str) -> Refine
     return _resolve_refine_config(jarvis_config, preset_name)
 
 
-def _update_user_config(user_paths: UserPaths, section: str, key: str, value: Any) -> None:
-    """Set one key in the user config, seeding the file from the bundled one."""
+USER_CONFIG_HEADER = (
+    "# Only what you changed. Everything else comes from the config.yaml shipped\n"
+    "# with the app, so new defaults in an update reach you. Delete a line to go\n"
+    "# back to the default.\n"
+)
+
+
+def merge_config(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """``base`` with ``override`` laid on top, key by key inside nested sections.
+
+    A section the override leaves empty (``audio:`` with nothing under it)
+    keeps the defaults rather than wiping them; any other value replaces.
+    """
+
+    merged = dict(base)
+    for key, value in override.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = merge_config(current, value)
+        elif isinstance(current, dict) and value is None:
+            continue
+        else:
+            merged[key] = value
+    return merged
+
+
+def bundled_config_path(user_paths: UserPaths) -> Path:
+    """The config.yaml shipped with the app: every default lives there."""
+
+    return user_paths.stopwords_dir / "config.yaml"
+
+
+def read_user_config(user_paths: UserPaths) -> dict[str, Any]:
+    """The user's own overrides; a missing or unreadable file means none."""
 
     path = user_paths.user_config_path
-    source = path if path.exists() else user_paths.stopwords_dir / "config.yaml"
-    data = load_yaml(source)
-    data.setdefault(section, {})[key] = value
-    path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    if not path.exists():
+        return {}
+    try:
+        return load_yaml(path)
+    except Exception:
+        LOGGER.exception("Could not read %s; using the defaults", path)
+        return {}
+
+
+def _update_user_config(user_paths: UserPaths, section: str, key: str, value: Any) -> None:
+    """Set one key in the user config, which holds only what the user changed."""
+
+    path = user_paths.user_config_path
+    data: dict[str, Any] = {}
+    if path.exists():
+        try:
+            data = load_yaml(path)
+        except Exception:
+            # Keep what they wrote by hand rather than silently dropping it.
+            broken = path.with_name(path.name + ".unreadable")
+            path.replace(broken)
+            LOGGER.exception("Could not read %s; moved it to %s", path, broken)
+    if not isinstance(data.get(section), dict):
+        data[section] = {}
+    data[section][key] = value
+    body = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    path.write_text(USER_CONFIG_HEADER + body, encoding="utf-8")
 
 
 def save_user_setting(user_paths: UserPaths, section: str, key: str, value: Any) -> None:
@@ -198,6 +253,21 @@ def save_input_device(user_paths: UserPaths, device_name: str) -> None:
     """Persist the chosen capture device; "" means follow the system default."""
 
     _update_user_config(user_paths, "audio", "input_device", device_name)
+
+
+def adopt_default_preset(config: AppConfig, preset: str) -> AppConfig:
+    """Start on ``preset`` and remember it, unless the user already picked a model."""
+
+    user_paths = config.user_paths
+    if user_paths is None or preset not in preset_names(config.jarvis_config):
+        return config
+    chosen = read_user_config(user_paths).get("llm")
+    if isinstance(chosen, dict) and chosen.get("default_preset"):
+        return config
+    save_default_preset(user_paths, preset)
+    llm = {**(config.jarvis_config.get("llm") or {}), "default_preset": preset}
+    jarvis_config = {**config.jarvis_config, "llm": llm}
+    return replace(config, jarvis_config=jarvis_config, refine=_resolve_refine_config(jarvis_config))
 
 
 def _resolve_refine_config(jarvis_config: dict[str, Any], preset_name: str | None = None) -> RefineConfig:
@@ -270,16 +340,14 @@ def _read_aec_pairs(config: dict[str, Any]) -> tuple[dict[str, str], ...]:
 
 
 def load_config() -> AppConfig:
-    """Load ~/.typlus/config.yaml, else the config.yaml shipped in assets."""
+    """The bundled config.yaml with ~/.typlus/config.yaml laid on top."""
 
     app_root = resolve_app_root()
     jarvis_root = resolve_jarvis_root(app_root)
     user_paths = resolve_user_paths(app_root)
     load_env_file(user_paths.env_path)  # API keys for Finder launches, fill-only
-    config_path = user_paths.user_config_path
-    if not config_path.exists():
-        config_path = user_paths.stopwords_dir / "config.yaml"
-    jarvis_config = _absolutize_jarvis_paths(load_yaml(config_path), jarvis_root)
+    merged = merge_config(load_yaml(bundled_config_path(user_paths)), read_user_config(user_paths))
+    jarvis_config = _absolutize_jarvis_paths(merged, jarvis_root)
     audio_config = dict(jarvis_config.get("audio") or {})
     return AppConfig(
         root=app_root,

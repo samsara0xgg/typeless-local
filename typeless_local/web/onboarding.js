@@ -19,7 +19,7 @@ const status = (text, cls = '') => `<span class="status ${cls}" id="st">${text}<
 const spin = text => status(`<span class="spin"></span>${esc(text)}`);
 const btn = (label, act, pri = true, disabled = false) =>
   `<button class="gbtn${pri ? ' pri' : ''}" data-o="${act}"${disabled ? ' disabled' : ''}>${esc(label)}</button>`;
-const link = (label, act) => `<button class="linkbtn" data-o="${act}">${esc(label)}</button>`;
+const link = (label, act, v) => `<button class="linkbtn" data-o="${act}"${v ? ` data-v="${esc(v)}"` : ''}>${esc(label)}</button>`;
 const page = (top, title, lede, extra, act) =>
   `${top}<h1>${esc(title)}</h1><p class="lede">${lede}</p>${extra}<div class="act">${act}</div>`;
 
@@ -91,11 +91,15 @@ function download() {
   const bar = `<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>`;
   let act;
   if (ready) act = status(L('已下载', 'Downloaded'), 'ok') + next();
-  else if (dl.error) act = status(L('下载失败，检查一下网络再试。', 'The download failed. Check the network and try again.'), 'err') + btn(L('重试', 'Try Again'), 'download') + skip();
-  else if (!m.downloading && !UI.dl) act = status(L('还没有下载，可能是刚才没有网络。', 'Not downloaded yet; the network may have been down.')) + btn(L('开始下载', 'Download'), 'download') + skip();
+  else if (dl.error) act = status(L('下载失败，检查一下网络再试。', 'The download failed. Check the network and try again.'), 'err') + btn(L('重试', 'Try Again'), 'download') + switchSource(m) + skip();
+  else if (!m.downloading && !UI.dl) act = status(L('还没有下载，可能是刚才没有网络。', 'Not downloaded yet; the network may have been down.')) + btn(L('开始下载', 'Download'), 'download') + switchSource(m) + skip();
   else act = status(progressText(pct, dl.eta)) + btn(L('继续', 'Continue'), 'next', true, true) + link(L('在后台继续', 'Continue in Background'), 'next');
   return page(tile('down', '#34C759'), L('下载语音识别模型', 'Download the speech model'), lede, bar, act);
 }
+// Hugging Face does not answer from mainland China; offer the other source when a download failed.
+const switchSource = m => m.mirror
+  ? link(L('改从 Hugging Face 下载', 'Download from Hugging Face instead'), 'source', 'huggingface')
+  : link(L('改从国内镜像下载', 'Download from the China mirror instead'), 'source', 'mirror');
 const progressText = (pct, eta) => L(`已下载 ${pct}%${eta ? ` · 还要${eta}` : ''}`, `${pct}% downloaded${eta ? ` · ${eta} left` : ''}`);
 
 function practice() {
@@ -172,6 +176,7 @@ document.addEventListener('click', e => {
   else if (o === 'download') { UI.dl = { p: 0, eta: '', done: false, error: false }; post({ t: 'download' }); draw(); }
   else if (o === 'done') post({ t: 'done' });
   else if (o === 'lang') post({ t: 'lang', v: e.target.closest('[data-o]').dataset.v });
+  else if (o === 'source') { UI.dl = { p: 0, eta: '', done: false, error: false }; post({ t: 'source', v: e.target.closest('[data-o]').dataset.v }); draw(); }
 });
 
 document.addEventListener('keydown', e => {

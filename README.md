@@ -30,6 +30,16 @@ time, and continues by itself as each permission comes through:
 Anyone already set up (an existing Typlus user) never sees the guide. Keys can
 be changed later in **Settings › 润色模型**.
 
+It needs a Mac with Apple silicon (M1 or later): speech recognition runs on
+MLX, which has no Intel build. On an Intel Mac, or under Rosetta, it says so
+and quits.
+
+In mainland China (the Mac's region is China, or its clock is on China time),
+Hugging Face and OpenAI don't answer, so there the model downloads from
+hf-mirror.com and a new install starts on DeepSeek. **Settings › 听写 › 模型下载源**
+picks the download source by hand; an `HF_ENDPOINT` set in the environment
+always wins.
+
 ## Use
 
 - `F5` starts and stops dictation.
@@ -49,6 +59,9 @@ be changed later in **Settings › 润色模型**.
   until it empties (a chat box on Enter) or you switch apps, and the final
   text is stored next to the refined one, so History shows what you fixed by
   hand. Only small fields, never documents; off in Settings › 历史与隐私.
+- **Diagnostics** (Settings › 通用 › 诊断信息) zips the log, the changed
+  settings and a summary of the Mac for a bug report, with API keys cut out and
+  no dictation history, and shows the file in Finder.
 - **Usage** (Settings › 用量, and a line in the menu) counts dictations per day
   and estimates what refinement cost, from the token counts the API returned
   for this app's own requests. Prices for gpt-5.4-mini / gpt-5.6-terra /
@@ -115,6 +128,12 @@ Default behavior:
 - The menu-bar icon has a `Model` submenu listing every `llm.presets` entry from
   the config; picking one switches the refinement model immediately and writes
   `llm.default_preset` to `~/.typlus/config.yaml`.
+- `~/.typlus/config.yaml` holds only what you changed. It is laid over the
+  bundled `assets/config.yaml` key by key, so a default changed in an update
+  reaches everyone who hasn't changed that key; delete a line to go back to the
+  default. Older installs have a full copy there, which keeps working as is.
+- Cmd+V and Cmd+Z are sent on whichever key types V and Z on the current
+  keyboard layout (AZERTY, Dvorak and so on), re-read when the layout changes.
 - API keys for Finder/Spotlight launches go in `~/.typlus/env`
   (`KEY=value` lines, loaded at startup; variables already in the environment win).
 - During recording, macOS system output is muted through Jarvis' Inherent

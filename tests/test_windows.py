@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from typeless_local import devices, history, login_item, permissions, preferences, vocab, webview, windows
+from typeless_local import devices, history, login_item, permissions, preferences, reach, vocab, webview, windows
 from typeless_local.config import UserPaths, refine_config_for
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
 from typeless_local.webview import web_root
@@ -110,6 +110,9 @@ class FakeApp:
 
     def show_log(self) -> None:
         self.calls.append(("log",))
+
+    def export_diagnostics(self) -> None:
+        self.calls.append(("diagnostics",))
 
     def _start_model_prefetch(self) -> None:
         self.calls.append(("prefetch",))
@@ -427,7 +430,7 @@ def test_guide_state_reports_permissions_key_and_model(ui, monkeypatch) -> None:
     state = ui.windows.onboarding_state()
     assert state["mic"] == "authorized" and state["ax"] is True
     assert state["key"] == {"env": "TEST_KEY_A", "service": "OpenAI", "preset": "mini", "has": False}
-    assert state["model"] == {"name": "whisper-large-v3-turbo", "ready": False, "downloading": True, "p": 0.25}
+    assert state["model"] == {"name": "whisper-large-v3-turbo", "ready": False, "downloading": True, "p": 0.25, "mirror": False}
     ui.app._download = None  # the download at launch failed before the guide opened
     assert ui.windows.onboarding_state()["model"]["downloading"] is False
 
@@ -492,13 +495,31 @@ def test_the_guide_switches_the_interface_language(ui) -> None:
     assert ("pref", "ui_language", "en") in ui.app.calls
 
 
+def test_the_guide_retries_the_download_from_the_mirror(ui, monkeypatch) -> None:
+    monkeypatch.setattr(ui.windows, "_model_cached", lambda: False)
+    monkeypatch.setattr(reach, "in_mainland_china", lambda: False)
+    monkeypatch.setattr(reach, "_USER_ENDPOINT", "")
+    ui.windows.show_onboarding()
+    assert ui.windows.onboarding_state()["model"]["mirror"] is False
+
+    ui.windows._onboarding_message({"t": "source", "v": "mirror"})
+
+    assert ("pref", "model_source", "mirror") in ui.app.calls and ("prefetch",) in ui.app.calls
+    assert ui.windows.onboarding_state()["model"]["mirror"] is True
+
+
+def test_settings_exports_diagnostics(ui) -> None:
+    ui.windows._open("diagnostics")
+    assert ("diagnostics",) in ui.app.calls
+
+
 # ----------------------------------------------------------------- pages
 
 
 PAGES = {
     "settings": ({"ready", "set", "key", "migrate", "test", "vocab", "open", "count", "clear", "geo"}, "_settings_message"),
     "history": ({"ready", "geo", "copy", "delete", "vocab", "open"}, "_history_message"),
-    "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang"}, "_onboarding_message"),
+    "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang", "source"}, "_onboarding_message"),
 }
 
 

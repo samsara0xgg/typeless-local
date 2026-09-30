@@ -1,7 +1,8 @@
-# Minimal config shipped inside the .app bundle.
-# The first setting changed in the app copies this file to ~/.typlus/config.yaml,
-# which is read instead from then on. API keys live in the login keychain
-# (older installs: ~/.typlus/env, KEY=value lines).
+# The defaults, shipped inside the .app bundle. ~/.typlus/config.yaml holds only
+# what the user changed and is laid on top of this file key by key, so a new
+# default here reaches everyone who hasn't changed that key. Keep anything tied
+# to one person's hardware (input_channel, aec_pairs) out of this file.
+# API keys live in the login keychain (older installs: ~/.typlus/env, KEY=value lines).
 
 asr:
   provider: mlx_whisper

@@ -30,7 +30,7 @@ def test_saved_preference_lands_under_ui_next_to_engine_sections(monkeypatch, tm
 
     data = yaml.safe_load(paths.user_config_path.read_text(encoding="utf-8"))
     assert data["ui"] == {"dismiss_seconds": 6.0, "refine": False}
-    assert "llm" in data  # seeded from the bundled config, engine keys intact
+    assert list(data) == ["ui"]  # only what changed; the engine defaults stay in the bundled file
     assert load_preferences(paths).dismiss_seconds == 6.0
     assert load_preferences(paths).refine is False
 

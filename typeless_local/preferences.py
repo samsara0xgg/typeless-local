@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, fields, replace
 import logging
 from typing import Any
 
-from typeless_local import i18n
+from typeless_local import i18n, reach
 from typeless_local.config import UserPaths, load_yaml, save_user_setting
 
 LOGGER = logging.getLogger(__name__)
@@ -29,6 +29,8 @@ CHOICES: dict[str, tuple[Any, ...]] = {
     "history_days": (30, 90, 365, 0),
     # "auto" speaks the Mac's own language: Chinese on a Chinese system, English otherwise.
     "ui_language": i18n.CHOICES,
+    # Where the speech model downloads from; "auto" is the mirror in mainland China.
+    "model_source": reach.MODEL_SOURCES,
 }
 
 
@@ -52,6 +54,7 @@ class Preferences:
     send_before_text: bool = False
     onboarding_done: bool = False
     ui_language: str = "auto"
+    model_source: str = "auto"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
