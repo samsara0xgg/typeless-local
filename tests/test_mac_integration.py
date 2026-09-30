@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from typeless_local import mac_integration
 
 
@@ -540,3 +542,26 @@ def test_text_before_caret_is_empty_at_the_start_of_a_field(monkeypatch) -> None
     monkeypatch.setattr(mac_integration, "ApplicationServices", fake)
 
     assert mac_integration._text_before_caret(object(), "AXTextArea") == ""
+
+
+def test_capture_focus_context_leaves_the_field_unread_unless_asked(monkeypatch) -> None:
+    read = []
+    monkeypatch.setattr(mac_integration, "_text_before_caret", lambda element, role: read.append(role) or "上文")
+    monkeypatch.setattr(
+        mac_integration.NSWorkspace,
+        "sharedWorkspace",
+        lambda: SimpleNamespace(
+            frontmostApplication=lambda: SimpleNamespace(localizedName=lambda: "Notes", processIdentifier=lambda: 42)
+        ),
+    )
+    monkeypatch.setattr(mac_integration.ApplicationServices, "AXUIElementCreateApplication", lambda pid: object())
+    monkeypatch.setattr(
+        mac_integration,
+        "_copy_ax_attribute",
+        lambda element, attribute: "AXTextArea" if attribute == mac_integration.ApplicationServices.kAXRoleAttribute else object(),
+    )
+
+    assert mac_integration.capture_focus_context().before_text == ""
+    assert read == []
+    assert mac_integration.capture_focus_context(read_before_text=True).before_text == "上文"
+    assert read == ["AXTextArea"]

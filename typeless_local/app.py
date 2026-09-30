@@ -1087,7 +1087,7 @@ class TypelessLocalApp:
             self.capsule.show("mic", why="denied" if denied else "busy")
             return
         self._capture_device = capture
-        self.focus_context = capture_focus_context()
+        self.focus_context = capture_focus_context(read_before_text=self.prefs.send_before_text)
         if caret:
             self.capsule.set_anchor("caret", caret_rect())
         duck = self._speakers_need_ducking(capture)

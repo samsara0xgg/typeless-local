@@ -138,8 +138,8 @@ def _limit_ax_messaging_timeout() -> None:
         LOGGER.debug("Unable to limit the AX messaging timeout: %s", exc)
 
 
-def capture_focus_context() -> FocusContext:
-    """Capture focused app/window metadata and the few lines before the caret."""
+def capture_focus_context(read_before_text: bool = False) -> FocusContext:
+    """Capture focused app/window metadata, and the text before the caret if asked."""
 
     _limit_ax_messaging_timeout()
     app = NSWorkspace.sharedWorkspace().frontmostApplication()
@@ -184,7 +184,8 @@ def capture_focus_context() -> FocusContext:
                 )
                 if selection is not None:
                     selected_text = str(selection or "")
-                before_text = _text_before_caret(focused_element, focused_role)
+                if read_before_text:
+                    before_text = _text_before_caret(focused_element, focused_role)
             else:
                 # Some apps publish no focused element at all: ChatGPT's
                 # composer is one, and no amount of AXManualAccessibility or

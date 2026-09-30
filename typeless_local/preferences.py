@@ -44,7 +44,9 @@ class Preferences:
     send_window_title: bool = True
     # After a paste, keep what the text finally went out as (sent_text.py).
     save_sent_text: bool = True
-    send_before_text: bool = True
+    # Off by default: it costs tokens and a few AX reads, and has not yet been
+    # shown to help. When off, the text is not even read.
+    send_before_text: bool = False
     onboarding_done: bool = False
 
     def to_dict(self) -> dict[str, Any]:

@@ -201,7 +201,7 @@ function privacy() {
     + grp([
       row('原始转写文字', '<span class="st-ok">发送</span>'),
       row('当前 App 名称和窗口标题', sw('send_window_title', p.send_window_title, '发送窗口标题'), '用来判断语气。窗口标题可能包含文件名或邮件主题。'),
-      row('光标前的文字', sw('send_before_text', p.send_before_text, '发送光标前的文字'), '最多约 300 字，用来按上文写对人名、术语和同音字。密码框从不读取。'),
+      row('光标前的文字', sw('send_before_text', p.send_before_text, '发送光标前的文字'), '最多约 300 字，用来按上文写对人名、术语和同音字。会多花一点费用和时间，默认关闭；密码框从不读取。'),
       row('所选文字', sw('rewrite_selection', p.rewrite_selection, '发送所选文字'), '只在“改写所选文字”时发送。'),
       row('音频', '<span class="val">从不离开这台 Mac</span>'),
     ])

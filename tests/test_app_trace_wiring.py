@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import sqlite3
 import time
 from pathlib import Path
@@ -77,6 +78,7 @@ def test_successful_pipeline_writes_trace_row(tmp_path: Path) -> None:
         app = TypelessLocalApp(cfg, headless=True)
 
     audio = np.zeros(8000, dtype=np.float32)
+    app.prefs = dataclasses.replace(app.prefs, send_before_text=True)
     ctx = FocusContext(app_name="TextEdit", window_title="Untitled", can_insert_text=False, before_text="上一句是")
     app._process_audio(audio, ctx, session_id=1)
 

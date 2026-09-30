@@ -411,7 +411,7 @@ def test_recording_timeout_finishes_and_submits_processing() -> None:
 def test_recording_ducks_system_audio_until_finish(monkeypatch) -> None:
     monkeypatch.setattr(
         "typeless_local.app.capture_focus_context",
-        lambda: FocusContext(app_name="TextEdit", window_title="Untitled"),
+        lambda **_: FocusContext(app_name="TextEdit", window_title="Untitled"),
     )
     app = _recording_app()
 
@@ -427,7 +427,7 @@ def test_recording_ducks_system_audio_until_finish(monkeypatch) -> None:
 def test_recording_restores_audio_when_microphone_start_fails(monkeypatch) -> None:
     monkeypatch.setattr(
         "typeless_local.app.capture_focus_context",
-        lambda: FocusContext(app_name="TextEdit", window_title="Untitled"),
+        lambda **_: FocusContext(app_name="TextEdit", window_title="Untitled"),
     )
     app = _recording_app()
     app.recorder.fail_start = True
@@ -471,7 +471,7 @@ def test_recording_restores_audio_when_microphone_stop_fails() -> None:
 def _hotkey_app(monkeypatch):
     monkeypatch.setattr(
         "typeless_local.app.capture_focus_context",
-        lambda: FocusContext(app_name="TextEdit", window_title="Untitled"),
+        lambda **_: FocusContext(app_name="TextEdit", window_title="Untitled"),
     )
     app = _recording_app()
     app._countdown_timer = None
@@ -696,6 +696,7 @@ def test_privacy_settings_limit_what_refinement_sees() -> None:
         "Mail", "Re: 报价", selected_text="原来的句子", can_insert_text=True, before_text="王总您好，"
     )
 
+    app.prefs = Preferences(send_before_text=True)
     assert app._refine_context(context) is context
     app.prefs = Preferences(rewrite_selection=False, send_window_title=False, send_before_text=False)
     assert app._refine_context(context) == FocusContext("", "", selected_text="", can_insert_text=True)
@@ -936,7 +937,7 @@ def test_mic_opens_before_focus_probe_and_mute_runs_off_the_hotkey_path(monkeypa
     order = []
     monkeypatch.setattr(
         "typeless_local.app.capture_focus_context",
-        lambda: order.append("focus") or FocusContext(app_name="TextEdit", window_title="Untitled"),
+        lambda **_: order.append("focus") or FocusContext(app_name="TextEdit", window_title="Untitled"),
     )
     app = _recording_app()
     original_start = app.recorder.start
@@ -965,7 +966,7 @@ def test_mic_opens_before_focus_probe_and_mute_runs_off_the_hotkey_path(monkeypa
 def test_capsule_follows_the_caret_when_asked(monkeypatch) -> None:
     monkeypatch.setattr(
         "typeless_local.app.capture_focus_context",
-        lambda: FocusContext(app_name="TextEdit", window_title="Untitled"),
+        lambda **_: FocusContext(app_name="TextEdit", window_title="Untitled"),
     )
     monkeypatch.setattr(app_module, "caret_rect", lambda: (400.0, 600.0, 2.0, 18.0))
     app = _recording_app()
@@ -1162,7 +1163,7 @@ def test_a_failed_dictation_leaves_the_icon_idle(monkeypatch) -> None:
 def test_recording_start_queues_a_whisper_warm_up_ahead_of_the_audio(monkeypatch) -> None:
     monkeypatch.setattr(
         "typeless_local.app.capture_focus_context",
-        lambda: FocusContext(app_name="TextEdit", window_title="Untitled"),
+        lambda **_: FocusContext(app_name="TextEdit", window_title="Untitled"),
     )
     app = TypelessLocalApp.__new__(TypelessLocalApp)
     app._lock = threading.RLock()
@@ -1367,3 +1368,22 @@ def test_a_pasted_dictation_is_watched_until_it_is_sent(monkeypatch, tmp_path) -
     watched.clear()
     app._process_audio(np.ones(16000, dtype=np.float32), FocusContext(app_name="微信", window_title="", can_insert_text=True))
     assert watched == []
+
+
+def test_text_before_the_caret_is_only_read_when_the_setting_is_on(monkeypatch) -> None:
+    asked = []
+    monkeypatch.setattr(
+        "typeless_local.app.capture_focus_context",
+        lambda read_before_text=False: asked.append(read_before_text) or FocusContext("TextEdit", "Untitled"),
+    )
+    app = _recording_app()
+    assert app.prefs.send_before_text is False  # off unless the user turns it on
+
+    app._start_recording("tap")
+    app._finish_recording()
+    app.prefs = Preferences(send_before_text=True)
+    app.state = "idle"
+    app._start_recording("tap")
+    app._finish_recording()
+
+    assert asked == [False, True]
