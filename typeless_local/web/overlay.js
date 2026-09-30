@@ -78,6 +78,9 @@ const BUD = {
   log: `<button data-act="log">${I('doc')}<span>显示日志</span></button>`,
 };
 const WHY = { timeout: '润色超时', error: '润色失败', truncated: '润色被截断', empty: '润色没有返回' };
+const etaText = eta => eta ? ` · ${esc(eta)}` : '';
+// Announced in steps of ten, not on every progress report.
+const downloadSay = p => `语音模型下载中，${Math.floor(p * 10) * 10}%`;
 const btnCancel = `<button class="ib" data-act="cancel" aria-label="取消">${I('xmark')}</button>`;
 const btnFinish = `<button class="ib pri" data-act="finish" aria-label="完成">${I('check')}</button>`;
 
@@ -130,7 +133,7 @@ function view(st, o) {
       : [`<span class="lead err wiggle">${I('warn')}</span><span class="lbl">麦克风不可用 <span class="sub">· 可能被其他 App 占用</span></span>`, 'pill', [BUD.input], '麦克风不可用'];
     case 'download': {
       const p = Math.max(0, Math.min(1, +o.p || 0));
-      return [`<span class="pring" style="--p:${p.toFixed(3)}"></span><span class="lbl">语音模型下载中 · ${Math.round(p * 100)}%${o.eta ? ` <span class="sub">· ${esc(o.eta)}</span>` : ''}</span>`, 'pill', [], `语音模型下载中，${Math.round(p * 100)}%`];
+      return [`<span class="pring" style="--p:${p.toFixed(3)}"></span><span class="lbl">语音模型下载中 · <span class="pct">${Math.round(p * 100)}%</span><span class="sub eta">${etaText(o.eta)}</span></span>`, 'pill', [], downloadSay(p)];
     }
     case 'cancelled': return [`<span class="lead">${I('xmark')}</span><span class="lbl">已取消</span>`, 'pill', [], '已取消'];
     case 'undone': return [`<span class="lead">${I('undo')}</span><span class="lbl">已撤销</span>`, 'pill', [], '已撤销'];
@@ -234,6 +237,21 @@ function render(st, d) {
   if (say && say !== S.say) { S.say = say; post({ t: 'say', text: say }); }
   if (kind === 'card') setTimeout(focusField, 60);
   kick();
+}
+
+// Progress arrives every half second; redrawing the whole capsule each time
+// would cross-fade it constantly, so only the numbers change.
+function updateDownload(d) {
+  S.d = d;
+  const p = Math.max(0, Math.min(1, +d.p || 0));
+  const ring = S.layer.querySelector('.pring'), pct = S.layer.querySelector('.pct'), eta = S.layer.querySelector('.eta');
+  if (ring) ring.style.setProperty('--p', p.toFixed(3));
+  if (pct) pct.textContent = Math.round(p * 100) + '%';
+  if (eta) eta.textContent = d.eta ? ` · ${d.eta}` : '';
+  const w = Math.max(40, Math.ceil(S.layer.offsetWidth));
+  if (S.last && Math.abs(w - S.last.capW) > 1) { S.last.capW = w; relayout(); }
+  const say = downloadSay(p);
+  if (say !== S.say) { S.say = say; post({ t: 'say', text: say }); }
 }
 
 function relayout() {
@@ -419,6 +437,7 @@ on('show', m => {
     S.mode = d.mode || 'click';
     if (d.max != null) S.max = +d.max;
   }
+  if (m.st === 'download' && S.st === 'download' && !S.hidden && S.layer) { updateDownload(d); return; }
   S.d = d;
   render(m.st, d);
 });

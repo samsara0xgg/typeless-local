@@ -347,7 +347,8 @@ class FloatingOverlay(NSObject):
             data = {"text": str(message.get("text") or "")} if "text" in message else {}
             self._emit(str(message.get("a") or ""), data)
         elif kind == "edit":
-            self._emit("edit", {"text": str(message.get("text") or "")})
+            # The card's text as it is being typed ("edit" is the bud that opens the card).
+            self._emit("draft", {"text": str(message.get("text") or "")})
         elif kind == "field":
             self._emit("field", {"focus": bool(message.get("focus"))})
         elif kind == "hover":

@@ -66,14 +66,21 @@ PRIMARY_KEYCODES = frozenset({F5_KEYCODE, DICTATION_KEYCODE})
 RIGHT_OPTION_KEYCODE = 61
 SPACE_KEYCODE = 49
 ESCAPE_KEYCODE = 53
-# Return and the keypad's Enter, so sending a message is noticed either way.
-RETURN_KEYCODES = frozenset({36, 76})
 V_KEYCODE = 9
+Z_KEYCODE = 6
 OPTION_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskAlternate", 1 << 19)
+SHIFT_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskShift", 1 << 17)
 # Right Command arrives as a FlagsChanged event with keycode 54 (kVK_RightCommand).
 RIGHT_COMMAND_KEYCODE = 54
 COMMAND_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskCommand", 1 << 20)
 HOTKEY_EVENT_TAP_LOCATION = getattr(Quartz, "kCGHIDEventTap", Quartz.kCGSessionEventTap)
+# The Cmd+V and Cmd+Z this app posts itself carry this in the event's user-data
+# field, so the event tap can tell them from the user's own keys.
+SYNTHETIC_EVENT_TAG = 0x59414E43
+_USER_DATA_FIELD = getattr(Quartz, "kCGEventSourceUserData", 42)
+_AX_CGRECT_TYPE = getattr(ApplicationServices, "kAXValueCGRectType", None) or getattr(
+    ApplicationServices, "kAXValueTypeCGRect", 3
+)
 TEXT_INPUT_ROLES = {
     "AXTextArea",
     "AXTextField",
@@ -95,6 +102,8 @@ class FocusContext:
     selected_text: str = ""
     focused_role: str = ""
     can_insert_text: bool = False
+    # The frontmost app's process, to tell later whether it is still the one in front.
+    pid: int = 0
 
 
 # Seconds an AX query may wait on the target app. The default is about six,
@@ -182,13 +191,71 @@ def capture_focus_context() -> FocusContext:
         selected_text=selected_text,
         focused_role=focused_role,
         can_insert_text=can_insert_text,
+        pid=int(pid or 0),
     )
+
+
+def frontmost_pid() -> int:
+    """The process of the app in front, or 0."""
+
+    try:
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        return int(app.processIdentifier()) if app else 0
+    except Exception:
+        return 0
+
+
+def caret_rect() -> tuple[float, float, float, float] | None:
+    """Where the caret is, as (x, y, w, h) in screen coordinates (origin bottom left).
+
+    None when the focused app does not say, which many do not: the capsule then
+    stays above the Dock.
+    """
+
+    _limit_ax_messaging_timeout()
+    pid = frontmost_pid()
+    if not pid:
+        return None
+    try:
+        app_ref = ApplicationServices.AXUIElementCreateApplication(pid)
+        element = _copy_ax_attribute(app_ref, ApplicationServices.kAXFocusedUIElementAttribute)
+        if not element:
+            return None
+        selection = _copy_ax_attribute(element, ApplicationServices.kAXSelectedTextRangeAttribute)
+        if selection is None:
+            return None
+        result = ApplicationServices.AXUIElementCopyParameterizedAttributeValue(
+            element, ApplicationServices.kAXBoundsForRangeParameterizedAttribute, selection, None
+        )
+        value = _unpack_ax_result(result)
+        if value is None:
+            return None
+        unpacked = ApplicationServices.AXValueGetValue(value, _AX_CGRECT_TYPE, None)
+        rect = unpacked[1] if isinstance(unpacked, tuple) else unpacked
+        x, y = float(rect.origin.x), float(rect.origin.y)
+        width, height = float(rect.size.width), float(rect.size.height)
+        # Some apps answer with an empty rectangle or with the whole text area.
+        if (width <= 0 and height <= 0) or height > 200:
+            return None
+        from AppKit import NSScreen  # noqa: PLC0415
+
+        primary_height = float(NSScreen.screens()[0].frame().size.height)
+    except Exception as exc:
+        LOGGER.debug("Caret position unavailable: %s", exc)
+        return None
+    # AX measures from the top of the main display, AppKit from its bottom.
+    return (x, primary_height - (y + height), max(1.0, width), height)
 
 
 def _copy_ax_attribute(element, attribute: str):
     """Copy an AX attribute while handling PyObjC tuple ordering."""
 
-    result = ApplicationServices.AXUIElementCopyAttributeValue(element, attribute, None)
+    return _unpack_ax_result(ApplicationServices.AXUIElementCopyAttributeValue(element, attribute, None))
+
+
+def _unpack_ax_result(result):
+    """The value from an AX (error, value) pair, whichever order PyObjC returns it in."""
+
     if not isinstance(result, tuple) or len(result) != 2:
         return result
 
@@ -234,15 +301,29 @@ def paste_text(text: str) -> None:
     pasteboard.setString_forType_(text, NSPasteboardTypeString)
     pasteboard.setData_forType_(NSData.data(), TRANSIENT_TYPE)
 
-    source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
-    down = Quartz.CGEventCreateKeyboardEvent(source, V_KEYCODE, True)
-    up = Quartz.CGEventCreateKeyboardEvent(source, V_KEYCODE, False)
-    Quartz.CGEventSetFlags(down, Quartz.kCGEventFlagMaskCommand)
-    Quartz.CGEventSetFlags(up, Quartz.kCGEventFlagMaskCommand)
-    Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
-    Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+    _post_command_key(V_KEYCODE)
     time.sleep(0.12)
     _restore_pasteboard(pasteboard, snapshot)
+
+
+def undo_last_edit() -> None:
+    """Send Cmd+Z to the app in front, to take back the paste just made there."""
+
+    _post_command_key(Z_KEYCODE)
+
+
+def _post_command_key(keycode: int) -> None:
+    source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
+    down = Quartz.CGEventCreateKeyboardEvent(source, keycode, True)
+    up = Quartz.CGEventCreateKeyboardEvent(source, keycode, False)
+    for event in (down, up):
+        Quartz.CGEventSetFlags(event, Quartz.kCGEventFlagMaskCommand)
+        try:
+            Quartz.CGEventSetIntegerValueField(event, _USER_DATA_FIELD, SYNTHETIC_EVENT_TAG)
+        except Exception:
+            pass
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
+    Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
 
 
 def _snapshot_pasteboard(pasteboard) -> list[list[tuple[object, object]]]:
@@ -312,7 +393,7 @@ class GlobalHotkeyMonitor:
         callback: HotkeyCallback,
         debug_hotkey: bool = False,
         is_active_fn: Callable[[], bool] | None = None,
-        wants_return_fn: Callable[[], bool] | None = None,
+        watch_keys_fn: Callable[[], bool] | None = None,
     ) -> None:
         self.callback = callback
         self.debug_hotkey = debug_hotkey
@@ -320,8 +401,11 @@ class GlobalHotkeyMonitor:
         # it passes through to the focused app. Without this, the global tap
         # consumed every Esc system-wide, breaking Esc in any app.
         self.is_active_fn = is_active_fn
-        # Asked on every Return press, so it must stay a plain attribute read.
-        self.wants_return_fn = wants_return_fn
+        # Whether the app wants to hear about ordinary typing: after a paste it
+        # offers to undo or replace it, which is only right until the user types
+        # something else. Asked on every key press, so it must stay a plain
+        # attribute read.
+        self.watch_keys_fn = watch_keys_fn
         self._tap = None
         self._source = None
         self._primary_down: set[int] = set()
@@ -437,19 +521,17 @@ class GlobalHotkeyMonitor:
             if keycode == SPACE_KEYCODE and self._primary_down:
                 self.callback("hands_free")
                 return None
-            if keycode == ESCAPE_KEYCODE:
-                if self.is_active_fn is not None and not self.is_active_fn():
-                    return event
+            if keycode == ESCAPE_KEYCODE and (self.is_active_fn is None or self.is_active_fn()):
                 self.callback("cancel")
                 return None
-            if keycode in RETURN_KEYCODES:
-                # Sending the dictated message means the overlay has served its
-                # purpose. Never swallow the key, and never ask the app anything
-                # unless the overlay is actually up: this runs inside a
-                # synchronous event tap, where slow work stalls the keyboard.
-                if self.wants_return_fn is not None and self.wants_return_fn():
-                    self.callback("return_pressed")
-                return event
+            # Never swallowed, and nothing asked of the app unless it is
+            # watching: this runs inside a synchronous event tap, where slow
+            # work stalls the keyboard.
+            if self.watch_keys_fn is not None and self.watch_keys_fn() and not self._is_synthetic(event):
+                flags = Quartz.CGEventGetFlags(event)
+                undo = keycode == Z_KEYCODE and flags & COMMAND_FLAG_MASK and not flags & SHIFT_FLAG_MASK
+                self.callback("undo" if undo else "typed")
+            return event
         if event_type == Quartz.kCGEventKeyUp and keycode in PRIMARY_KEYCODES:
             if keycode in self._primary_down:
                 self._primary_down.discard(keycode)
@@ -458,6 +540,10 @@ class GlobalHotkeyMonitor:
                     self.callback("primary_up")
             return None
         return event
+
+    @staticmethod
+    def _is_synthetic(event) -> bool:
+        return Quartz.CGEventGetIntegerValueField(event, _USER_DATA_FIELD) == SYNTHETIC_EVENT_TAG
 
     def _event_time(self, event) -> float:
         return _mach_ticks_to_seconds(Quartz.CGEventGetTimestamp(event))

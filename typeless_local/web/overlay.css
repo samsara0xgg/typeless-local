@@ -79,6 +79,7 @@ html.rm .breathe, html.rm .dots i, html.rm .recdot{animation:none}
 .spark{display:grid; place-items:center; width:30px; height:30px; color:var(--accent)}
 .spark .i{width:17px; height:17px; animation:spk 1.6s ease-in-out infinite}
 @keyframes spk{50%{transform:rotate(12deg) scale(1.08)}}
+.pct{font-variant-numeric:tabular-nums}
 .pring{width:18px; height:18px; border-radius:9px; margin-left:8px; background:conic-gradient(var(--accent) calc(var(--p,0) * 1turn), var(--label-3) 0); -webkit-mask:radial-gradient(circle, transparent 5px, #000 5.5px); mask:radial-gradient(circle, transparent 5px, #000 5.5px); flex:none}
 
 .bud{display:inline-flex; align-items:center; gap:6px; height:36px; padding:0 14px 0 11px; border-radius:18px; border:0; color:var(--label); font-size:13px; font-weight:500; white-space:nowrap; transition:filter .15s}

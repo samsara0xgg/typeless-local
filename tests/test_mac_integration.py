@@ -331,3 +331,138 @@ def test_focus_context_pastes_when_the_app_exposes_no_focused_element(monkeypatc
     assert context.app_name == "ChatGPT"
     assert context.focused_role == ""
     assert context.can_insert_text is True
+
+
+class _TypedEvent:
+    def __init__(self, keycode: int, flags: int = 0, user_data: int = 0) -> None:
+        self.keycode = keycode
+        self.flags = flags
+        self.user_data = user_data
+
+
+def _watching_monitor(monkeypatch, events, *, watching=True, active=False):
+    monitor = mac_integration.GlobalHotkeyMonitor(
+        events.append, is_active_fn=lambda: active, watch_keys_fn=lambda: watching
+    )
+    monkeypatch.setattr(
+        mac_integration.Quartz,
+        "CGEventGetIntegerValueField",
+        lambda event, field: event.user_data if field == mac_integration._USER_DATA_FIELD else event.keycode,
+    )
+    monkeypatch.setattr(mac_integration.Quartz, "CGEventGetFlags", lambda event: event.flags)
+    return monitor
+
+
+def _key(monitor, event):
+    return monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, event, None)
+
+
+def test_typing_after_a_paste_is_reported_and_still_reaches_the_app(monkeypatch) -> None:
+    events = []
+    monitor = _watching_monitor(monkeypatch, events)
+    a_key = _TypedEvent(0)
+
+    assert _key(monitor, a_key) is a_key
+    assert events == ["typed"]
+
+
+def test_keys_are_not_reported_when_nothing_is_watching(monkeypatch) -> None:
+    events = []
+    monitor = _watching_monitor(monkeypatch, events, watching=False)
+    assert _key(monitor, _TypedEvent(0)) is not None
+    assert events == []
+
+
+def test_cmd_z_is_reported_as_undo_and_shift_cmd_z_as_typing(monkeypatch) -> None:
+    events = []
+    monitor = _watching_monitor(monkeypatch, events)
+    cmd = mac_integration.COMMAND_FLAG_MASK
+
+    _key(monitor, _TypedEvent(mac_integration.Z_KEYCODE, cmd))
+    _key(monitor, _TypedEvent(mac_integration.Z_KEYCODE, cmd | mac_integration.SHIFT_FLAG_MASK))
+
+    assert events == ["undo", "typed"]
+
+
+def test_the_apps_own_paste_and_undo_are_not_mistaken_for_typing(monkeypatch) -> None:
+    events = []
+    monitor = _watching_monitor(monkeypatch, events)
+    ours = _TypedEvent(
+        mac_integration.V_KEYCODE, mac_integration.COMMAND_FLAG_MASK, mac_integration.SYNTHETIC_EVENT_TAG
+    )
+
+    assert _key(monitor, ours) is ours
+    assert events == []
+
+
+def test_escape_passes_through_when_idle_and_counts_as_typing(monkeypatch) -> None:
+    events = []
+    monitor = _watching_monitor(monkeypatch, events)
+    esc = _TypedEvent(mac_integration.ESCAPE_KEYCODE)
+
+    assert _key(monitor, esc) is esc
+    assert events == ["typed"]
+
+
+def test_escape_cancels_and_is_swallowed_while_dictating(monkeypatch) -> None:
+    events = []
+    monitor = _watching_monitor(monkeypatch, events, watching=False, active=True)
+
+    assert _key(monitor, _TypedEvent(mac_integration.ESCAPE_KEYCODE)) is None
+    assert events == ["cancel"]
+
+
+def test_paste_and_undo_events_carry_the_apps_tag(monkeypatch) -> None:
+    tagged, posted = [], []
+    monkeypatch.setattr(mac_integration.Quartz, "CGEventSourceCreate", lambda state: object())
+    monkeypatch.setattr(
+        mac_integration.Quartz,
+        "CGEventCreateKeyboardEvent",
+        lambda source, keycode, down: {"keycode": keycode, "down": down},
+    )
+    monkeypatch.setattr(mac_integration.Quartz, "CGEventSetFlags", lambda event, flags: None)
+    monkeypatch.setattr(
+        mac_integration.Quartz,
+        "CGEventSetIntegerValueField",
+        lambda event, field, value: tagged.append((event["keycode"], field, value)),
+    )
+    monkeypatch.setattr(mac_integration.Quartz, "CGEventPost", lambda tap, event: posted.append(event))
+
+    mac_integration.undo_last_edit()
+
+    tag = (mac_integration.Z_KEYCODE, mac_integration._USER_DATA_FIELD, mac_integration.SYNTHETIC_EVENT_TAG)
+    assert tagged == [tag, tag]
+    assert [event["down"] for event in posted] == [True, False]
+
+
+def test_caret_rect_turns_ax_coordinates_into_screen_coordinates(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    AS = mac_integration.ApplicationServices
+    rect = SimpleNamespace(origin=SimpleNamespace(x=400.0, y=300.0), size=SimpleNamespace(width=2.0, height=18.0))
+    monkeypatch.setattr(mac_integration, "frontmost_pid", lambda: 4242)
+    monkeypatch.setattr(AS, "AXUIElementCreateApplication", lambda pid: "app")
+    monkeypatch.setattr(mac_integration, "_copy_ax_attribute", lambda element, attribute: "value")
+    monkeypatch.setattr(AS, "AXUIElementCopyParameterizedAttributeValue", lambda *args: (AS.kAXErrorSuccess, "bounds"))
+    monkeypatch.setattr(AS, "AXValueGetValue", lambda value, kind, out: (True, rect))
+    screen = SimpleNamespace(frame=lambda: SimpleNamespace(size=SimpleNamespace(width=1440.0, height=900.0)))
+    import AppKit
+
+    monkeypatch.setattr(AppKit, "NSScreen", SimpleNamespace(screens=lambda: [screen]), raising=False)
+
+    # 300 from the top of a 900-high display, 18 high: its bottom is 582 up from the bottom.
+    assert mac_integration.caret_rect() == (400.0, 582.0, 2.0, 18.0)
+
+
+def test_caret_rect_ignores_an_empty_answer(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    AS = mac_integration.ApplicationServices
+    empty = SimpleNamespace(origin=SimpleNamespace(x=0.0, y=0.0), size=SimpleNamespace(width=0.0, height=0.0))
+    monkeypatch.setattr(mac_integration, "frontmost_pid", lambda: 4242)
+    monkeypatch.setattr(AS, "AXUIElementCreateApplication", lambda pid: "app")
+    monkeypatch.setattr(mac_integration, "_copy_ax_attribute", lambda element, attribute: "value")
+    monkeypatch.setattr(AS, "AXUIElementCopyParameterizedAttributeValue", lambda *args: (AS.kAXErrorSuccess, "bounds"))
+    monkeypatch.setattr(AS, "AXValueGetValue", lambda value, kind, out: (True, empty))
+
+    assert mac_integration.caret_rect() is None

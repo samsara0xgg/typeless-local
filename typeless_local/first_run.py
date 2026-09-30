@@ -45,17 +45,16 @@ def prompt_for_api_key(env_name: str, model: str, *, existing: bool = False) -> 
         NSSecureTextField,
     )
 
+    from typeless_local.brand import DISPLAY_NAME, join
+
     alert = NSAlert.alloc().init()
-    alert.setMessageText_(
-        "Change the API key" if existing else "Typlus needs an API key"
-    )
+    alert.setMessageText_("更换 API Key" if existing else join(DISPLAY_NAME, "需要一个 API Key"))
     alert.setInformativeText_(
-        f"Refinement runs on {model}, which reads {env_name}.\n\n"
-        "The key is written to ~/.typlus/env on this Mac and is not "
-        "sent anywhere except the model provider."
+        f"润色用的是 {model}，它读取 {env_name}。\n\n"
+        "Key 存在这台 Mac 的钥匙串里，只会发给模型服务商。"
     )
-    alert.addButtonWithTitle_("Save")
-    alert.addButtonWithTitle_("Cancel")
+    alert.addButtonWithTitle_("保存")
+    alert.addButtonWithTitle_("取消")
     field = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
     field.setPlaceholderString_(env_name)
     alert.setAccessoryView_(field)
@@ -89,8 +88,32 @@ def set_api_key(env_name: str, model: str, env_path: Path) -> bool:
     return _store_api_key(env_name, key, env_path)
 
 
+def remove_env_value(path: Path, key: str) -> None:
+    """Drop ``KEY=`` lines from the env file, so an old key there can't come back."""
+
+    if not path.exists():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    kept = [line for line in lines if not line.strip().startswith(f"{key}=")]
+    if len(kept) != len(lines):
+        path.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+        path.chmod(0o600)
+
+
 def _store_api_key(env_name: str, key: str, env_path: Path) -> bool:
+    """Keep the key in the login keychain, or in the env file where there is no keychain."""
+
+    from typeless_local import keychain
+
     os.environ[env_name] = key
+    try:
+        if keychain.available() and keychain.is_valid_key(key) and keychain.store_key(env_name, key):
+            # The env file is read first at launch, so an older key left there
+            # would win over the one just saved.
+            remove_env_value(env_path, env_name)
+            return True
+    except Exception:
+        LOGGER.warning("Could not save %s to the keychain; using %s", env_name, env_path, exc_info=True)
     try:
         write_env_value(env_path, env_name, key)
     except OSError:

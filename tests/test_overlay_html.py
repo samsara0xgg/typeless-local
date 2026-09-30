@@ -111,7 +111,7 @@ def test_bridge_messages_reach_the_app() -> None:
     ):
         dispatch(body, overlay._on_message)
 
-    assert actions == [("undo", {}), ("replace", {"text": "改好的"}), ("edit", {"text": "改"})]
+    assert actions == [("undo", {}), ("replace", {"text": "改好的"}), ("draft", {"text": "改"})]
     assert hovers == [True]
 
 
