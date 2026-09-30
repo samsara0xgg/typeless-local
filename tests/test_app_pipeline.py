@@ -372,6 +372,7 @@ def test_start_shows_permission_state_when_hotkey_install_fails(monkeypatch) -> 
     overlay = _attach(app)
     app.hotkeys = _FailingHotkeys()
     app._start_model_prefetch = lambda: None
+    app._prime_microphone = lambda: None
 
     app.start()
 
@@ -1153,3 +1154,46 @@ def test_a_failed_dictation_leaves_the_icon_idle(monkeypatch) -> None:
 
     assert app.menubar.states[-1] == "idle"
     assert app.overlay.calls[-1][:2] == ("show", "error")
+
+
+def test_recording_start_queues_a_whisper_warm_up_ahead_of_the_audio(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "typeless_local.app.capture_focus_context",
+        lambda: FocusContext(app_name="TextEdit", window_title="Untitled"),
+    )
+    app = TypelessLocalApp.__new__(TypelessLocalApp)
+    app._lock = threading.RLock()
+    app._recording_timer = None
+    app.config = SimpleNamespace(sample_rate=16000, min_recording_seconds=0.25, max_recording_seconds=0)
+    app.state = "idle"
+    app.mode = "tap"
+    _attach(app)
+    app.recorder = _FakeRecorder()
+    app.audio_ducker = _FakeDucker()
+    app.executor = _FakeExecutor()
+    app.asr = SimpleNamespace(warmup=lambda: None)
+
+    app._start_recording("tap")
+
+    assert [fn for fn, _args in app.executor.submissions] == [app.asr.warmup]
+
+
+def test_microphone_is_primed_at_launch_under_the_hotkey_lock(monkeypatch) -> None:
+    app = TypelessLocalApp.__new__(TypelessLocalApp)
+    app._lock = threading.RLock()
+    app.config = SimpleNamespace(sample_rate=16000)
+    app.recorder = SimpleNamespace(device=2)
+    primed = []
+    app._select_capture_device = lambda: "reSpeaker"
+    monkeypatch.setattr(
+        "typeless_local.app.devices.prime_input",
+        lambda index, rate: primed.append((index, rate, app._lock._is_owned())),
+    )
+    monkeypatch.setattr(
+        "typeless_local.app.threading.Thread",
+        lambda target, **kwargs: SimpleNamespace(start=target),
+    )
+
+    app._prime_microphone()
+
+    assert primed == [(2, 16000, True)]

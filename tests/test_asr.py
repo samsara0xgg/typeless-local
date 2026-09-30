@@ -80,6 +80,11 @@ def test_a_looping_prompted_chunk_is_heard_again_without_the_word_list(monkeypat
     assert calls[1]["initial_prompt"] is None
 
 
+def test_a_run_of_ellipses_counts_as_a_loop() -> None:
+    assert asr_module._looks_looped("交互太傻了,你得" + "…" * 200 + "点开来点")
+    assert not asr_module._looks_looped("就目前还是感觉这个印象部分……哎呀")
+
+
 def test_configured_model_is_the_one_loaded_and_reported(monkeypatch, tmp_path: Path) -> None:
     calls = _fake_mlx_whisper(monkeypatch)
     j = asr_module.JarvisASR(tmp_path, _mlx_config(mlx_whisper_model="mlx-community/whisper-large-v3"))
