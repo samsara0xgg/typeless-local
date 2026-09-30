@@ -42,6 +42,7 @@ from typeless_local.mac_integration import (
     GlobalHotkeyMonitor,
     capture_focus_context,
     caret_rect,
+    focused_text_value,
     frontmost_pid,
     has_accessibility_trust,
     paste_text,
@@ -56,7 +57,8 @@ from typeless_local.first_run import (
     model_is_cached,
     set_api_key,
 )
-from typeless_local.history import median_refine_ms, purge_older_than
+from typeless_local.history import median_refine_ms, purge_older_than, set_sent_text
+from typeless_local.sent_text import SentTextWatcher
 from typeless_local.menubar import MenuBarIcon, Preset, Recent, Snapshot
 from typeless_local.overlay import FloatingOverlay
 from typeless_local.preferences import Preferences, load_preferences, save_preference
@@ -153,7 +155,9 @@ class TypelessLocalApp:
 
             self.menubar = MenuBarIcon(on_action=self._on_menu_action, snapshot=self._menu_snapshot)
             self.windows = Windows(self)
+            self.sent_watcher = SentTextWatcher(focused_text_value, frontmost_pid, self._store_sent_text)
         else:
+            self.sent_watcher = None
             self.overlay = None
             self.audio_ducker = None
             self.hotkeys = None
@@ -1030,6 +1034,14 @@ class TypelessLocalApp:
 
     # ------------------------------------------------------------ recording
 
+    def _store_sent_text(self, session_id: int, text: str) -> None:
+        """A pasted dictation went out as ``text`` (from the sent-text watcher's thread)."""
+
+        user_paths = getattr(self.config, "user_paths", None)
+        if user_paths is not None and self.prefs.save_history and self.prefs.save_sent_text:
+            if set_sent_text(user_paths.trace_db_path, session_id, text):
+                self._windows_changed(history=True)
+
     def _start_recording(self, mode: Mode) -> None:
         if getattr(self, "_download", None) is not None:
             # Nothing to transcribe with until the model is here; say so
@@ -1043,6 +1055,9 @@ class TypelessLocalApp:
         self._active_session_id = getattr(self, "_active_session_id", 0) + 1
         self._insertion = None
         self._keys_wanted = False
+        watcher = getattr(self, "sent_watcher", None)
+        if watcher is not None:
+            watcher.cancel()
         self.mode = mode
         self._holding = False
         self.state = "starting"
@@ -1461,6 +1476,10 @@ class TypelessLocalApp:
             if trace is not None and prefs.save_history:
                 self._last_trace_id = trace.log(record)
                 self._windows_changed(history=True)
+                watcher = getattr(self, "sent_watcher", None)
+                insertion = getattr(self, "_insertion", None)
+                if watcher is not None and record.was_pasted and prefs.save_sent_text and insertion is not None:
+                    watcher.watch(self._last_trace_id, record.refined_text, insertion.pid)
             self._keep_recording(audio, sample_rate, started)
 
     def _deliver(self, text: str, raw: str, context: FocusContext, fallback: str, record: SessionRecord) -> None:

@@ -20,6 +20,8 @@ _COLUMNS = (
     "focus_app, focus_window, was_pasted, latency_asr_ms, latency_refine_ms, latency_total_ms, "
     "refine_model, error"
 )
+# Read only when the column exists: databases from before it keep working.
+_OPTIONAL = ("sent_text",)
 
 
 def _connect(db_path: Path) -> sqlite3.Connection | None:
@@ -62,8 +64,10 @@ def recent_sessions(db_path: Path, limit: int = 200) -> list[dict]:
         try:
             if not _has_table(conn):
                 return []
+            have = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+            columns = ", ".join([_COLUMNS, *(name for name in _OPTIONAL if name in have)])
             rows = conn.execute(
-                f"SELECT {_COLUMNS} FROM sessions "
+                f"SELECT {columns} FROM sessions "
                 "WHERE COALESCE(refined_text, '') != '' OR COALESCE(raw_asr_text, '') != '' "
                 "ORDER BY started_at DESC LIMIT ?",
                 (int(limit),),
@@ -96,9 +100,26 @@ def recent_sessions(db_path: Path, limit: int = 200) -> list[dict]:
                 "language": row["raw_asr_language"] or "",
                 "fallback": _fallback(error),
                 "dropped": dropped,
+                "sent": (row["sent_text"] or "") if "sent_text" in row.keys() else "",
             }
         )
     return out
+
+
+def set_sent_text(db_path: Path, session_id: int, text: str) -> bool:
+    """Record what dictation ``session_id`` was finally sent as."""
+
+    try:
+        conn = _connect(db_path)
+        if conn is None:
+            return False
+        try:
+            return conn.execute("UPDATE sessions SET sent_text = ? WHERE id = ?", (text, int(session_id))).rowcount > 0
+        finally:
+            conn.close()
+    except Exception:
+        LOGGER.warning("Could not store the sent text of session %s", session_id, exc_info=True)
+        return False
 
 
 def count_sessions(db_path: Path, older_than_days: int = 0) -> int:

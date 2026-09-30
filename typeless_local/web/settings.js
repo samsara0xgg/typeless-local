@@ -195,6 +195,7 @@ function privacy() {
     + grp([
       row('保存听写历史', sw('save_history', p.save_history, '保存听写历史'), `文字、耗时和 App 名称存在这台 Mac 上；${S.history.count ? `现在有 ${S.history.count} 条，` : ''}从不保存音频。`),
       row('保留', days),
+      row('记下发送前的修改', sw('save_sent_text', p.save_sent_text, '记下发送前的修改', !p.save_history), '插入后你手动改过再发送的，会把最后发出去的文字存在这条历史旁边，方便对照。只看刚插入的那个输入框，文档类的大段内容不记。'),
     ], c && c.kind === 'days' ? confirmBox : '')
     + '<div class="grp-l">发送给润色模型的内容</div>'
     + grp([

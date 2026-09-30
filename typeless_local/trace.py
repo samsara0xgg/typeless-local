@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   error TEXT,
   prompt_tokens INTEGER,
   cached_tokens INTEGER,
-  completion_tokens INTEGER
+  completion_tokens INTEGER,
+  sent_text TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_started_at ON sessions(started_at);
 
@@ -73,7 +74,13 @@ def changed_terms(before: str, after: str) -> list[tuple[str, str]]:
 SCHEMA_VERSION = 2
 # Columns added after the first release: (name, type). Older databases get them
 # with ALTER TABLE; their earlier rows keep NULL, meaning "not recorded".
-ADDED_COLUMNS = (("prompt_tokens", "INTEGER"), ("cached_tokens", "INTEGER"), ("completion_tokens", "INTEGER"))
+ADDED_COLUMNS = (
+    ("prompt_tokens", "INTEGER"),
+    ("cached_tokens", "INTEGER"),
+    ("completion_tokens", "INTEGER"),
+    # What the dictation finally went out as, after hand edits (sent_text.py).
+    ("sent_text", "TEXT"),
+)
 
 
 @dataclass

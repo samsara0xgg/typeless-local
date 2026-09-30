@@ -67,10 +67,23 @@ function diff(a, b) {
 }
 const diffHTML = (a, b) => diff(a, b).map(([o, t]) => o === '=' ? esc(t) : `<span class="${o === '-' ? 'del' : 'ins'}">${esc(t)}</span>`).join('');
 
-// A term the model put in that the recognizer did not hear: worth offering for the vocabulary.
+// Whether the text went out different from how it was pasted.
+const norm = t => (t || '').split(/\s+/).join(' ').trim();
+const edited = it => !!it.sent && !!it.text && norm(it.sent) !== norm(it.text);
+
+// A term worth offering for the vocabulary: one he typed in by hand before
+// sending, or one the model put in that the recognizer did not hear.
 function suggestion(it) {
-  if (!it.text || !it.raw || it.fallback) return '';
+  if (!it.text || it.fallback) return '';
   const known = new Set((D.vocab || []).map(t => t.toLowerCase()));
+  const word = w => /^[A-Za-z][A-Za-z0-9._\-+#]{2,}$/.test(w) && !known.has(w.toLowerCase());
+  if (edited(it)) {
+    const had = new Set(tok(it.text).map(t => t.toLowerCase()));
+    for (const [o, t] of diff(it.text, it.sent)) {
+      if (o === '+') for (const w of tok(t)) if (word(w) && !had.has(w.toLowerCase())) return w;
+    }
+  }
+  if (!it.raw) return '';
   const heard = new Set(tok(it.raw).map(t => t.toLowerCase()));
   for (const [o, t] of diff(it.raw, it.text)) {
     if (o !== '+') continue;
@@ -85,7 +98,7 @@ function suggestion(it) {
 function visible() {
   const q = query.trim().toLowerCase();
   if (!q) return D.items;
-  return D.items.filter(it => [it.text, it.raw, it.app, it.window].some(v => (v || '').toLowerCase().includes(q)));
+  return D.items.filter(it => [it.text, it.raw, it.sent, it.app, it.window].some(v => (v || '').toLowerCase().includes(q)));
 }
 
 function listHTML(items) {
@@ -99,6 +112,7 @@ function listHTML(items) {
     const meta = [hhmm(d), it.app || '未知 App', `${it.audio_s.toFixed(1)} 秒`];
     if (it.dropped) meta.push('没有插入');
     else if (it.fallback) meta.push('未润色');
+    if (edited(it)) meta.push('发送前改过');
     out += `<button class="hitem" role="option" id="h${it.id}" aria-selected="${it.id === sel}" data-h="${it.id}">${appTile(it.app)}<span class="ht">${esc(shown(it))}</span><span class="hm">${esc(meta.join(' · '))}</span></button>`;
   }
   return out;
@@ -113,6 +127,7 @@ function detailHTML(it) {
   else if (it.fallback) box = `<span class="l">${esc(FALLBACK[it.fallback] || FALLBACK.error)}</span>${esc(it.raw)}`;
   else if (it.raw && it.raw !== it.text) box = `<span class="l">原始转写 → 润色</span>${diffHTML(it.raw, it.text)}`;
   else box = '<span class="l">原始转写</span>和润色结果一样';
+  const sentBox = edited(it) ? `<div class="rawbox selectable"><span class="l">发送前你改成了</span>${diffHTML(it.text, it.sent)}</div>` : '';
 
   const metrics = [`录音 ${it.audio_s.toFixed(1)} 秒`];
   if (it.asr_ms) metrics.push(`转写 ${secs(it.asr_ms)} 秒`);
@@ -141,7 +156,7 @@ function detailHTML(it) {
   return `<div class="appcell">${appTile(it.app)}<span>${esc(where)}</span></div>
 <p class="big selectable">${esc(shown(it))}</p>
 <div class="rawbox selectable">${box}</div>
-<div class="metrics">${metrics.map(m => `<span>${esc(m)}</span>`).join('')}</div>
+${sentBox}<div class="metrics">${metrics.map(m => `<span>${esc(m)}</span>`).join('')}</div>
 ${lat}<div class="hact">${acts.join('')}</div>`;
 }
 

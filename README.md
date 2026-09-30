@@ -45,6 +45,10 @@ be changed later in **Settings › 润色模型**.
 - **History** (`⌘Y`) lists every dictation by day, shows what the model changed
   and where the time went, and adds a misheard word to the vocabulary in one
   click. Nothing is ever deleted unless you pick a retention limit.
+- **What you actually sent**: after a paste, the field it landed in is read
+  until it empties (a chat box on Enter) or you switch apps, and the final
+  text is stored next to the refined one, so History shows what you fixed by
+  hand. Only small fields, never documents; off in Settings › 历史与隐私.
 - **Usage** (Settings › 用量, and a line in the menu) counts dictations per day
   and estimates what refinement cost, from the token counts the API returned
   for this app's own requests. Prices for gpt-5.4-mini / gpt-5.6-terra /

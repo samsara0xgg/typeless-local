@@ -1332,3 +1332,36 @@ def test_extend_does_nothing_once_the_recording_is_over(monkeypatch) -> None:
     app._recording_limit_s = 900.0
     app._on_overlay_action("extend")
     assert _ManualTimer.made == [] and app.overlay.calls == []
+
+
+def test_a_pasted_dictation_is_watched_until_it_is_sent(monkeypatch, tmp_path) -> None:
+    from typeless_local.config import UserPaths
+    from typeless_local.trace import DictationTrace
+    import dataclasses
+
+    from typeless_local import history
+
+    monkeypatch.setattr("typeless_local.app.paste_text", lambda _text: None)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("raw dictation")
+    db = tmp_path / "trace.db"
+    app.config.user_paths = UserPaths(
+        config_dir=tmp_path, vocab_path=tmp_path / "v.yaml", corrections_path=tmp_path / "c.yaml", trace_db_path=db,
+        log_path=tmp_path / "a.log", stopwords_dir=tmp_path, user_config_path=tmp_path / "config.yaml", env_path=tmp_path / "env",
+    )
+    app.trace = DictationTrace(db)
+    watched = []
+    app.sent_watcher = SimpleNamespace(watch=lambda *args: watched.append(args), cancel=lambda: None)
+
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext(app_name="微信", window_title="", can_insert_text=True))
+
+    ((row, pasted, pid),) = watched
+    assert pasted == "Refined text." and pid == TARGET_PID
+    app._store_sent_text(row, "Refined text, edited.")
+    assert history.recent_sessions(db)[0]["sent"] == "Refined text, edited."
+
+    # Off in Settings: nothing is watched.
+    app.prefs = dataclasses.replace(app.prefs, save_sent_text=False)
+    watched.clear()
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext(app_name="微信", window_title="", can_insert_text=True))
+    assert watched == []

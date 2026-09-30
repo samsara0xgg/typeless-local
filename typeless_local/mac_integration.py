@@ -195,6 +195,31 @@ def capture_focus_context() -> FocusContext:
     )
 
 
+def focused_text_value(pid: int) -> str | None:
+    """The text in ``pid``'s focused text field, or None when it has none to read.
+
+    Used only to see what a pasted dictation was sent as; never called unless
+    a dictation was just pasted into that app.
+    """
+
+    if not pid:
+        return None
+    _limit_ax_messaging_timeout()
+    try:
+        app_ref = ApplicationServices.AXUIElementCreateApplication(pid)
+        element = _copy_ax_attribute(app_ref, ApplicationServices.kAXFocusedUIElementAttribute)
+        if not element:
+            return None
+        role = str(_copy_ax_attribute(element, ApplicationServices.kAXRoleAttribute) or "")
+        if not _focused_element_accepts_text(element, role):
+            return None
+        value = _copy_ax_attribute(element, ApplicationServices.kAXValueAttribute)
+    except Exception as exc:
+        LOGGER.debug("Focused text unavailable: %s", exc)
+        return None
+    return value if isinstance(value, str) else (str(value) if value is not None else None)
+
+
 def frontmost_pid() -> int:
     """The process of the app in front, or 0."""
 

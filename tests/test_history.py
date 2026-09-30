@@ -84,3 +84,13 @@ def test_term_counts_are_case_insensitive(tmp_path) -> None:
     _log(trace, raw_asr_text="x", refined_text="pyobjc again")
 
     assert history.term_counts(db, ["PyObjC", "Whisper"]) == {"PyObjC": 2, "Whisper": 0}
+
+
+def test_the_sent_text_is_stored_and_read_back(tmp_path) -> None:
+    db = tmp_path / "trace.db"
+    trace = DictationTrace(db)
+    row = _log(trace, raw_asr_text="明天四点", refined_text="明天四点开会。", was_pasted=True)
+    assert history.recent_sessions(db)[0]["sent"] == ""
+    assert history.set_sent_text(db, row, "明天三点开会。") is True
+    assert history.recent_sessions(db)[0]["sent"] == "明天三点开会。"
+    assert history.set_sent_text(tmp_path / "missing.db", row, "x") is False
