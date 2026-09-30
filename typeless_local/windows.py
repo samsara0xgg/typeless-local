@@ -25,7 +25,7 @@ import time
 from typing import Callable
 from urllib.parse import urlparse
 
-from typeless_local import app_version, brand, history, i18n, keychain, login_item, permissions, preferences, reach, usage, vocab
+from typeless_local import app_version, brand, history, i18n, keychain, login_item, permissions, preferences, reach, trial, usage, vocab
 from typeless_local.asr import mlx_whisper_repo
 from typeless_local.config import preset_names, refine_config_for
 from typeless_local.mac_integration import FocusContext, has_accessibility_trust, request_accessibility_trust, set_clipboard_text
@@ -251,7 +251,8 @@ class Windows:
                 refine = refine_config_for(jarvis, name)
             except Exception:
                 continue
-            service = service_name(refine.base_url)
+            is_trial = name == trial.PRESET
+            service = t("免费试用", "Free trial") if is_trial else service_name(refine.base_url)
             median = history.median_refine_ms(db, refine.model) if db is not None and prefs.save_history else None
             presets.append(
                 {
@@ -264,7 +265,7 @@ class Windows:
                 }
             )
             env = refine.api_key_env
-            if env and env not in seen:
+            if env and env not in seen and not is_trial:
                 seen.add(env)
                 value = os.environ.get(env, "")
                 where = "env" if env in in_file else ("keychain" if value else "")
@@ -289,6 +290,7 @@ class Windows:
             "presets": presets,
             "active": getattr(config.refine, "preset", ""),
             "keys": keys,
+            "trial": {"on": getattr(config.refine, "preset", "") == trial.PRESET, "over": bool(getattr(app, "_trial_over", False))},
             "inputs": devices.list_input_devices(),
             "input": getattr(config, "input_device", "") or "",
             "vocab": self._vocab_state(),
@@ -511,6 +513,8 @@ class Windows:
             permissions.open_url(permissions.ACCESSIBILITY_SETTINGS)
         elif what == "settings":
             self.show_settings("privacy")
+        elif what == "openai-keys":
+            permissions.open_url(trial.KEYS_URL)
 
     # ----------------------------------------------------------- history
 
@@ -559,12 +563,18 @@ class Windows:
             "name": brand.display_name(),
             "mic": permissions.microphone_status(),
             "ax": bool(has_accessibility_trust()),
-            "key": {
-                "env": refine.api_key_env,
-                "service": service_name(refine.base_url),
-                "preset": refine.preset,
-                "has": bool(os.environ.get(refine.api_key_env or "")),
-            },
+            "key": (
+                # On the free trial the guide offers the user's own OpenAI key, not the trial token.
+                {"env": trial.OWN_KEY_ENV, "service": "OpenAI", "preset": refine.preset, "has": False, "trial": True}
+                if refine.preset == trial.PRESET
+                else {
+                    "env": refine.api_key_env,
+                    "service": service_name(refine.base_url),
+                    "preset": refine.preset,
+                    "has": bool(os.environ.get(refine.api_key_env or "")),
+                    "trial": False,
+                }
+            ),
             "model": {
                 "name": short_model(mlx_whisper_repo((app.config.jarvis_config or {}).get("asr") or {})),
                 "ready": model_ready,

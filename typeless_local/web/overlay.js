@@ -136,6 +136,10 @@ function view(st, o) {
       return [`${CHECK}<span class="lbl">${done} · ${units(o.n)}</span>`, 'pill', [BUD.undo(), BUD.edit()], `${done} ${units(o.n)}`];
     }
     case 'inserted-raw-net': return [`<span class="lead warn wiggle">${I('warn')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${why(o.why)}</span></span>`, 'pill', [BUD.rerefine(), BUD.undo()], `${L('已插入原始转写，', 'Inserted the raw transcript: ')}${why(o.why)}`];
+    case 'inserted-raw-trial': {
+      const r = { trial_region: L('免费试用仅限美国和加拿大', 'free trial is US and Canada only'), trial_paused: L('免费试用本月已暂停', 'free trial paused this month') }[o.why] || L('免费试用已用完', 'free trial used up');
+      return [`<span class="lead warn">${I('key')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${r}</span></span>`, 'pill', [BUD.setkey()], L(`已插入原始转写，${r}，可以填自己的 API Key`, `Inserted the raw transcript: ${r}; add your own API key`)];
+    }
     case 'inserted-raw-key': return [`<span class="lead warn">${I('key')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${L('缺少 API Key', 'no API key')}</span></span>`, 'pill', [BUD.setkey()], L('已插入原始转写，还没有设置 API Key', 'Inserted the raw transcript: no API key is set')];
     case 'edit-notarget': return [cardHTML(L('没有可插入的位置', 'Nowhere to insert'), L('已复制到剪贴板。改完按 ⏎ 再复制一次。', 'Copied to the clipboard. Press ⏎ after editing to copy again.'), o.text, [['done', L('完成', 'Done'), true]]), 'card', [], L('没有可插入的位置，结果已复制到剪贴板，可以直接修改', 'Nowhere to insert. The text is copied to the clipboard and can be edited here')];
     case 'edit-modify': return [cardHTML(L('修改刚插入的文字', 'Edit the inserted text'), L('替换 = 在原 App 里撤销那次粘贴，再粘贴新文字', 'Replace undoes the paste in its app, then pastes the new text'), o.text, [['close', L('取消', 'Cancel')], ['replace', L('替换', 'Replace'), true]]), 'card', [], L('修改刚插入的文字，回车替换，esc 取消', 'Edit the inserted text. Return replaces it, Escape cancels')];

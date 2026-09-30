@@ -692,6 +692,22 @@ def test_missing_key_pastes_raw_and_offers_to_set_one(monkeypatch) -> None:
     assert _ManualTimer.made[-1].delay == 8.0
 
 
+def test_used_up_trial_pastes_raw_and_asks_for_their_own_key(monkeypatch) -> None:
+    from typeless_local.refine import TrialUnavailable
+
+    pasted = []
+    monkeypatch.setattr("typeless_local.app.paste_text", pasted.append)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("hello there")
+    app.refiner = _FailingRefiner(TrialUnavailable("trial_used_up"))
+
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("Notes", "", can_insert_text=True))
+
+    assert pasted == ["hello there"]
+    assert app.overlay.calls[-1] == ("show", "inserted-raw-trial", {"why": "trial_used_up"})
+    assert app._trial_over is True
+
+
 def test_refinement_switched_off_pastes_the_transcript_as_heard(monkeypatch) -> None:
     pasted = []
     monkeypatch.setattr("typeless_local.app.paste_text", pasted.append)
@@ -1457,7 +1473,7 @@ def test_music_playing_elsewhere_is_paused_for_the_recording_and_resumed(monkeyp
     assert _media_keys == ["play_pause", "play_pause"]
 
 
-def _main_env(monkeypatch, tmp_path, *, chip: str, china: bool, onboarding_done: bool = False):
+def _main_env(monkeypatch, tmp_path, *, chip: str, china: bool, onboarding_done: bool = False, own_key: bool = False):
     """Run main() up to the point it builds the app, with nothing real underneath."""
 
     from typeless_local import config as cfg_mod
@@ -1467,7 +1483,17 @@ def _main_env(monkeypatch, tmp_path, *, chip: str, china: bool, onboarding_done:
     monkeypatch.setenv("JARVIS_PROJECT_ROOT", str(tmp_path / "jarvis"))
     if onboarding_done:
         cfg_mod.save_user_setting(cfg_mod.resolve_user_paths(), "ui", "onboarding_done", True)
+    # The alerts are checked in Chinese whatever language this Mac runs in.
+    cfg_mod.save_user_setting(cfg_mod.resolve_user_paths(), "ui", "ui_language", "zh")
     seen = SimpleNamespace(alerts=[], built=[])
+    # The real NSApplication.run() never returns.
+    fake_app = SimpleNamespace(setActivationPolicy_=lambda policy: None, run=lambda: None)
+    monkeypatch.setattr(app_module, "NSApplication", SimpleNamespace(sharedApplication=lambda: fake_app))
+    monkeypatch.setattr(app_module.trial, "ensure_token", lambda: None)
+    if own_key:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-aaaaaaaaaaaa")
+    else:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(app_module, "configure_logging", lambda: None)
     monkeypatch.setattr(app_module, "claim_single_instance", lambda config_dir: object())
     monkeypatch.setattr(app_module.reach, "machine", lambda: chip)
@@ -1501,6 +1527,16 @@ def test_a_new_install_in_mainland_china_starts_on_deepseek(monkeypatch, tmp_pat
 
 def test_an_install_that_finished_the_guide_keeps_its_model(monkeypatch, tmp_path) -> None:
     (config,) = _main_env(monkeypatch, tmp_path, chip="apple", china=True, onboarding_done=True).built
+    assert config.refine.preset == "gpt-5.6-terra"
+
+
+def test_a_new_install_elsewhere_with_no_key_starts_on_the_free_trial(monkeypatch, tmp_path) -> None:
+    (config,) = _main_env(monkeypatch, tmp_path, chip="apple", china=False).built
+    assert config.refine.preset == app_module.trial.PRESET
+
+
+def test_a_new_install_with_its_own_key_skips_the_trial(monkeypatch, tmp_path) -> None:
+    (config,) = _main_env(monkeypatch, tmp_path, chip="apple", china=False, own_key=True).built
     assert config.refine.preset == "gpt-5.6-terra"
 
 
@@ -1540,3 +1576,25 @@ def test_diagnostics_are_zipped_into_the_data_folder_without_keys(monkeypatch, t
         everything = b"".join(archive.read(name) for name in archive.namelist()).decode()
     assert "sk-test-0123456789abcdefghij" not in everything
     assert '"OPENAI_API_KEY": true' in everything and "USB Mic" in everything
+
+
+def test_saving_an_openai_key_on_the_trial_switches_off_the_trial(monkeypatch, tmp_path) -> None:
+    from typeless_local import config as cfg_mod, trial
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_PROJECT_ROOT", str(tmp_path))
+    config = cfg_mod.adopt_default_preset(cfg_mod.load_config(), trial.PRESET)
+    assert config.refine.preset == trial.PRESET
+    monkeypatch.setattr(app_module, "_store_api_key", lambda *args: None)
+    app = TypelessLocalApp.__new__(TypelessLocalApp)
+    app.config = config
+    app._call_ui = lambda fn, *args: None
+    app._windows_changed = lambda *args, **kwargs: None
+    app._trial_over = True
+
+    app.store_api_key("OPENAI_API_KEY", "sk-test-aaaaaaaaaaaa")
+
+    assert app.config.refine.preset == trial.OWN_KEY_PRESET
+    assert app.refiner.config.api_key_env == "OPENAI_API_KEY"
+    assert app._trial_over is False
+    assert "default_preset: gpt-5.6-terra" in (tmp_path / ".typlus" / "config.yaml").read_text()

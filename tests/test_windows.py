@@ -429,7 +429,7 @@ def test_guide_state_reports_permissions_key_and_model(ui, monkeypatch) -> None:
     ui.app._download = (0.25, 0.0)
     state = ui.windows.onboarding_state()
     assert state["mic"] == "authorized" and state["ax"] is True
-    assert state["key"] == {"env": "TEST_KEY_A", "service": "OpenAI", "preset": "mini", "has": False}
+    assert state["key"] == {"env": "TEST_KEY_A", "service": "OpenAI", "preset": "mini", "has": False, "trial": False}
     assert state["model"] == {"name": "whisper-large-v3-turbo", "ready": False, "downloading": True, "p": 0.25, "mirror": False}
     ui.app._download = None  # the download at launch failed before the guide opened
     assert ui.windows.onboarding_state()["model"]["downloading"] is False
@@ -519,7 +519,7 @@ def test_settings_exports_diagnostics(ui) -> None:
 PAGES = {
     "settings": ({"ready", "set", "key", "migrate", "test", "vocab", "open", "count", "clear", "geo"}, "_settings_message"),
     "history": ({"ready", "geo", "copy", "delete", "vocab", "open"}, "_history_message"),
-    "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang", "source"}, "_onboarding_message"),
+    "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang", "source", "open"}, "_onboarding_message"),
 }
 
 

@@ -24,6 +24,7 @@ LOGGER = logging.getLogger(__name__)
 DISMISS_AFTER: dict[str, float] = {
     "inserted-raw-net": 8.0,
     "inserted-raw-key": 8.0,
+    "inserted-raw-trial": 8.0,
     "empty": 2.4,
     "cancelled": 0.8,
     "undone": 1.2,
@@ -34,7 +35,7 @@ DISMISS_AFTER: dict[str, float] = {
     "notice": 2.6,
     "perm": 12.0,
 }
-INSERTED_STATES = frozenset({"inserted", "inserted-raw-net", "inserted-raw-key"})
+INSERTED_STATES = frozenset({"inserted", "inserted-raw-net", "inserted-raw-key", "inserted-raw-trial"})
 # Once the pointer leaves, a state it was holding gets at least this long.
 RESUME_MIN_S = 1.2
 _DEFAULT = object()

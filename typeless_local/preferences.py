@@ -52,6 +52,8 @@ class Preferences:
     # Off by default: it costs tokens and a few AX reads, and has not yet been
     # shown to help. When off, the text is not even read.
     send_before_text: bool = False
+    # Once a day: dictation and character counts and trial spend, never text (stats.py).
+    send_usage_stats: bool = True
     onboarding_done: bool = False
     ui_language: str = "auto"
     model_source: str = "auto"

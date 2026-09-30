@@ -1,0 +1,26 @@
+-- Free-trial spend and anonymous daily usage for 言字 (Yana).
+-- Apply with: npx wrangler d1 execute yana --remote --file=schema.sql
+
+CREATE TABLE IF NOT EXISTS trial_devices (
+  id TEXT PRIMARY KEY,          -- SHA-256 of the per-Mac trial token, never the token
+  spend REAL NOT NULL DEFAULT 0,
+  requests INTEGER NOT NULL DEFAULT 0,
+  first_seen TEXT NOT NULL,
+  last_seen TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS trial_months (
+  month TEXT PRIMARY KEY,       -- YYYY-MM, UTC
+  spend REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS daily_stats (
+  id TEXT NOT NULL,             -- random per-Mac stats id, unrelated to the trial token
+  day TEXT NOT NULL,            -- YYYY-MM-DD, the Mac's local date
+  version TEXT NOT NULL,
+  dictations INTEGER NOT NULL,
+  chars INTEGER NOT NULL,
+  trial_spend REAL NOT NULL,
+  country TEXT,
+  PRIMARY KEY (id, day)
+);

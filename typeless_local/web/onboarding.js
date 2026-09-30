@@ -64,6 +64,7 @@ function accessibility() {
 
 function apiKey() {
   const k = S.key;
+  if (k.trial) return trialKey();
   const lede = L(`润色需要一个 ${esc(k.service)} 的 API Key，保存在这台 Mac 的钥匙串里。没有也能用：会先插入原始转写。`,
     `Refinement needs a ${esc(k.service)} API key, kept in this Mac's keychain. It works without one too: you get the raw transcript.`);
   const field = `<div class="fieldline"><span class="svc">${esc(k.service)}</span>`
@@ -77,6 +78,21 @@ function apiKey() {
   else act = btn(verify, 'verify');
   return page(tile('key', '#AF52DE'), L('连接润色模型', 'Connect the refinement model'), lede, field,
     act + (k.has || (UI.key && UI.key.ok) ? '' : link(L('暂不设置，先插入原始转写', 'Skip for now and insert raw transcripts'), 'next')));
+}
+
+// On the free trial refinement already works; their own key is optional and for later.
+function trialKey() {
+  const lede = L('已经可以直接用：前几次润色由言字免费提供，不用填任何东西。想长期用，再填你自己的 OpenAI API Key。',
+    'It already works: the first refinements are on us, nothing to fill in. For the long run, add your own OpenAI API key.');
+  const field = `<div class="fieldline"><span class="svc">OpenAI</span>`
+    + `<input class="secure" id="key" type="password" autocomplete="off" spellcheck="false" placeholder="${L('可选：sk-…', 'Optional: sk-…')}" aria-label="OpenAI API Key"${UI.keyBusy ? ' disabled' : ''}></div>`;
+  let act;
+  if (UI.keyBusy) act = spin(L('正在保存并发送一次测试请求…', 'Saving and sending a test request…'));
+  else if (UI.key && UI.key.ok) act = status(esc(UI.key.msg), 'ok') + next();
+  else if (UI.key) act = status(esc(UI.key.msg), 'err') + btn(L('继续用免费试用', 'Continue on the Free Trial'), 'next') + link(L('再试一次', 'Try Again'), 'verify');
+  else act = btn(L('继续用免费试用', 'Continue on the Free Trial'), 'next') + link(L('保存我的 Key', 'Save My Key'), 'verify')
+    + link(L('去 OpenAI 申请 Key', 'Get a Key from OpenAI'), 'open-keys');
+  return page(tile('key', '#AF52DE'), L('润色已经可以用了', 'Refinement is ready'), lede, field, act);
 }
 
 function download() {
@@ -116,7 +132,9 @@ function done() {
   return page(icon(), L('一切就绪', 'All set'),
     L(`${esc(S.name)}会待在菜单栏里。随时按 F5 开始；忘了快捷键，点菜单栏图标就能看到。`,
       `${esc(S.name)} lives in the menu bar. Press F5 any time; if you forget the shortcut, click the menu bar icon.`),
-    '', btn(L('完成', 'Done'), 'done'));
+    `<p class="note">${L('言字每天会发送一次匿名使用统计：听写了几次、共多少字，只用来了解产品怎么被使用。从不发送听写内容或任何个人信息；可以在 设置 › 历史与隐私 里关掉。',
+      'Once a day the app sends anonymous usage stats (how many dictations and characters) only to learn how it is used. Never your dictated text or anything personal; turn it off in Settings › History & Privacy.')}</p>`,
+    btn(L('完成', 'Done'), 'done'));
 }
 
 const STEPS = [welcome, microphone, accessibility, apiKey, download, practice, done];
@@ -173,6 +191,7 @@ document.addEventListener('click', e => {
   else if (o === 'mic') { UI.asked = 'mic'; post({ t: 'mic' }); draw(); }
   else if (o === 'a11y') { UI.asked = 'a11y'; post({ t: 'a11y' }); draw(); }
   else if (o === 'verify') verify();
+  else if (o === 'open-keys') post({ t: 'open', what: 'openai-keys' });
   else if (o === 'download') { UI.dl = { p: 0, eta: '', done: false, error: false }; post({ t: 'download' }); draw(); }
   else if (o === 'done') post({ t: 'done' });
   else if (o === 'lang') post({ t: 'lang', v: e.target.closest('[data-o]').dataset.v });

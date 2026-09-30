@@ -21,3 +21,8 @@ dist2/
 /scripts/video_pixel_audit.py
 /scripts/final_pixel_gate.sh
 /tests/test_video_pixel_audit.py
+
+# Cloudflare Worker local state and dev secrets
+worker/.wrangler/
+worker/.dev.vars
+worker/node_modules/

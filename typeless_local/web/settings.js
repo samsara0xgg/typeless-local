@@ -131,7 +131,11 @@ function model() {
   const envKeys = S.keys.filter(k => k.where === 'env');
   const migrate = envKeys.length
     ? `<p class="note">${envKeys.map(k => esc(k.env)).join(L('、', ', '))} ${L('还以明文存在 ~/.typlus/env 里。', 'is still in plain text in ~/.typlus/env.')}<button class="mbtn" data-act="migrate">${L('移到钥匙串', 'Move to Keychain')}</button></p>` : '';
-  return head(paneTitle('model'))
+  const trialNote = !S.trial.on ? '' : `<p class="note">${S.trial.over
+      ? L('免费试用已经用完，现在只插入原始转写。填上你自己的 OpenAI API Key 就能继续润色。', 'The free trial is used up, so dictation inserts the raw transcript. Add your own OpenAI API key to keep refining.')
+      : L('正在用免费试用：前几次润色由言字提供。想长期用，填上你自己的 OpenAI API Key，会自动切换过去。', 'You are on the free trial: the first refinements are on us. For the long run, add your own OpenAI API key and it switches over by itself.')}
+    <button class="mbtn" data-act="open" data-what="openai-keys">${L('去 OpenAI 申请 Key', 'Get a Key from OpenAI')}</button></p>`;
+  return head(paneTitle('model')) + trialNote
     + (S.prefs.refine ? '' : `<p class="note">${L('润色已关闭，听写会直接插入原始转写。可以在「听写」里打开。', 'Refinement is off, so dictation inserts the raw transcript. Turn it on under Dictation.')}</p>`)
     + `<div class="grp">${table}<div class="btnrow">${testLine}<button class="mbtn" data-act="test"${t && t.busy ? ' disabled' : ''}>${L('测试连接', 'Test Connection')}</button></div></div>`
     + `<div class="grp-l">${L('API Key · 保存在钥匙串', 'API keys · kept in the keychain')}</div>` + grp(keyRows) + migrate
@@ -256,6 +260,11 @@ function privacy() {
           'Up to about 300 characters, to get names, terms and homophones right from context. Costs a little more time and money, so it is off by default; password fields are never read.')),
       row(L('所选文字', 'The selected text'), sw('rewrite_selection', p.rewrite_selection, L('发送所选文字', 'Send the selected text')), L('只在“改写所选文字”时发送。', 'Only when rewriting the selection.')),
       row(L('音频', 'Audio'), `<span class="val">${L('从不离开这台 Mac', 'Never leaves this Mac')}</span>`),
+    ])
+    + grp([
+      row(L('发送匿名使用统计', 'Send anonymous usage stats'), sw('send_usage_stats', p.send_usage_stats, L('发送匿名使用统计', 'Send anonymous usage stats')),
+        L('每天一次：当天听写了几次、共多少字、免费试用花了多少，加一个随机编号和版本号。只用来了解产品怎么被使用，从不包含听写内容、App 名称或任何个人信息。',
+          'Once a day: how many dictations, how many characters, and what the free trial spent, with a random ID and the version. Only to learn how the app is used; never any dictated text, app names or anything personal.')),
     ])
     + `<div class="grp" style="background:transparent; box-shadow:none">${c && c.kind === 'clear' ? `<div class="grp">${confirmBox}</div>` : ''}<div class="btnrow left"><button class="mbtn" data-act="open" data-what="data">${I('folder')} ${L('在访达中显示数据', 'Show Data in Finder')}</button><button class="mbtn danger" data-act="clear">${I('trash')} ${L('清除历史…', 'Clear History…')}</button></div></div>`;
 }

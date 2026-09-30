@@ -283,3 +283,28 @@ def test_no_before_cursor_block_without_text_before_the_cursor() -> None:
     _refiner(fake).refine("测试一下", FocusContext(app_name="Slack", window_title="#dev"))
 
     assert "<before_cursor>" not in fake.completions.kwargs["messages"][1]["content"]
+
+
+def test_a_refused_trial_raises_trial_unavailable_with_the_reason() -> None:
+    from typeless_local.refine import MissingAPIKey, TrialUnavailable
+
+    class _Refused(Exception):
+        status_code = 402
+        body = {"error": {"code": "trial_used_up", "message": "The free trial on this Mac is used up."}}
+
+    class _Completions:
+        def create(self, **kwargs):
+            raise _Refused()
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    refiner = TextRefiner(
+        RefineConfig(model="gpt-5.6-terra", base_url="https://yana.example.workers.dev/v1", api_key_env="YANA_TRIAL_TOKEN", max_tokens=64),
+        client=client,
+    )
+    try:
+        refiner.refine("hello")
+    except TrialUnavailable as exc:
+        assert exc.code == "trial_used_up"
+        assert isinstance(exc, MissingAPIKey)
+    else:
+        raise AssertionError("a 402 from the trial server must raise TrialUnavailable")

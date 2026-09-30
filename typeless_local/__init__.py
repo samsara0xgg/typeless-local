@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 # The version a build is stamped with; builds add the commit after a "+".
-RELEASE = "0.3.1"
+RELEASE = "0.4.0"
 
 
 def app_version() -> str:

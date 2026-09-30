@@ -22,8 +22,10 @@ time, and continues by itself as each permission comes through:
 
 - **Microphone**, to record what you say.
 - **Accessibility**, to see the global hotkey and paste into other apps.
-- **An API key** for the refinement model, kept in the login keychain. It can
-  be skipped: dictation then pastes the raw transcript.
+- **An API key** for the refinement model, kept in the login keychain. In the
+  US and Canada it is optional at first: a new Mac without a key gets a free
+  trial of refinement (see below). Elsewhere it can be skipped, and dictation
+  then pastes the raw transcript.
 - **The Whisper weights** (~1.5 GB), downloaded with a progress bar.
 - **One practice dictation** into the guide's own text box.
 
@@ -72,6 +74,23 @@ always wins.
   gpt-5.6-luna are built in; add others under `llm.prices` in
   `~/.typlus/config.yaml` as `model: [input, cached input, output]` dollars per
   million tokens.
+
+## Free trial and usage stats
+
+A new Mac in the US or Canada with no OpenAI key starts on the `free-trial`
+preset: refinement goes through a small Cloudflare Worker (`worker/`) that holds
+the owner's key, with a budget of $0.50 per Mac and a monthly cap across
+everyone. The app sends a random per-Mac token in place of an API key. When the
+trial runs out, or outside those two countries, dictation pastes the raw
+transcript and asks for the user's own key; saving one switches to
+`gpt-5.6-terra` for good.
+
+Once a day the app also sends anonymous usage stats to the same Worker: a
+random ID for this Mac, the app version, and for each day the number of
+dictations, their total character count and what the trial spent. Never any
+dictated text, app names, window titles or anything personal. Turn it off in
+**Settings › 历史与隐私 › 发送匿名使用统计**; the counts not yet sent are
+deleted. `worker/README.md` covers deploying the Worker.
 
 ## Settings file
 

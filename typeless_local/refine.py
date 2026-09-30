@@ -35,6 +35,17 @@ class MissingAPIKey(RuntimeError):
     """
 
 
+class TrialUnavailable(MissingAPIKey):
+    """The free trial said no: used up on this Mac, paused, or not offered here.
+
+    ``code`` is the trial server's reason: trial_used_up, trial_paused or trial_region.
+    """
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(message or code)
+        self.code = code
+
+
 @dataclass(frozen=True)
 class RefineResult:
     """Final text produced by the refinement pass."""
@@ -257,6 +268,7 @@ class TextRefiner:
         try:
             response = client.chat.completions.create(**kwargs)
         except Exception as exc:
+            _raise_if_trial_refused(exc)
             if not _is_retryable_connection_error(exc):
                 raise
             # Typically a pooled connection the server had already closed; a
@@ -296,3 +308,15 @@ def _is_retryable_connection_error(exc: Exception) -> bool:
     except ImportError:
         return False
     return isinstance(exc, APIConnectionError) and not isinstance(exc, APITimeoutError)
+
+
+def _raise_if_trial_refused(exc: Exception) -> None:
+    """The trial server answers 402 with its reason in ``error.code``."""
+
+    if getattr(exc, "status_code", None) != 402:
+        return
+    body = getattr(exc, "body", None)
+    error = body.get("error", body) if isinstance(body, dict) else {}
+    code = str(error.get("code") or "") if isinstance(error, dict) else ""
+    if code.startswith("trial_"):
+        raise TrialUnavailable(code, str(error.get("message") or "")) from exc

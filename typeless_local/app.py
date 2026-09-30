@@ -22,7 +22,7 @@ from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 import numpy as np
 from PyObjCTools import AppHelper
 
-from typeless_local import app_version, brand, diagnostics, i18n, keyboard_layout, keychain, permissions, reach, usage
+from typeless_local import app_version, brand, diagnostics, i18n, keyboard_layout, keychain, permissions, reach, trial, usage
 from typeless_local.i18n import t
 from typeless_local.asr import JarvisASR, Transcript, mlx_whisper_repo
 from typeless_local.audio import MicrophoneRecorder, keep_recording, peak_level
@@ -65,7 +65,8 @@ from typeless_local.sent_text import SentTextWatcher
 from typeless_local.menubar import MenuBarIcon, Preset, Recent, Snapshot
 from typeless_local.overlay import FloatingOverlay
 from typeless_local.preferences import Preferences, load_preferences, save_preference
-from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner
+from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner, TrialUnavailable
+from typeless_local.stats import DailyStats
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
 from typeless_local.vocab import as_initial_prompt, load_user_terms, load_vocab, write_starter_file
 from typeless_local.windows import Windows, install_main_menu, prices
@@ -87,6 +88,8 @@ MIN_SHORT_ENGLISH_CONFIDENCE = 0.4
 KEY_HANDBACK_S = 0.25
 # How often to look again for the Accessibility permission while it is missing.
 HOTKEY_RETRY_S = 2.0
+STATS_FIRST_S = 60.0
+STATS_EVERY_S = 6 * 3600.0
 # What the capsule's 延长 button adds to a recording nearing its limit.
 EXTEND_RECORDING_S = 15 * 60.0
 # Between taking the old text back and pasting the new one.
@@ -129,7 +132,9 @@ class TypelessLocalApp:
             self.vocab = load_vocab(user_paths.vocab_path)
             self.whisper_prompt = as_initial_prompt(load_user_terms(user_paths.vocab_path))
             self.trace = DictationTrace(user_paths.trace_db_path)
+            self.daily_stats = DailyStats(user_paths.config_dir / "stats.json", app_version())
         else:
+            self.daily_stats = None
             self.vocab = []
             self.whisper_prompt = ""
             self.trace = None
@@ -345,7 +350,17 @@ class TypelessLocalApp:
         user_paths = getattr(self.config, "user_paths", None)
         env_path = user_paths.env_path if user_paths is not None else Path(os.devnull)
         _store_api_key(env_name, key, env_path)
-        if env_name == self.config.refine.api_key_env:
+        if env_name == trial.OWN_KEY_ENV and self.config.refine.preset == trial.PRESET:
+            # Their own key replaces the free trial rather than sitting unused beside it.
+            self._trial_over = False
+            refine = refine_config_for(self.config.jarvis_config, trial.OWN_KEY_PRESET)
+            self.config = dataclasses.replace(self.config, refine=refine)
+            self.refiner = TextRefiner(refine)
+            if user_paths is not None:
+                save_default_preset(user_paths, trial.OWN_KEY_PRESET)
+            self._windows_changed()
+            LOGGER.info("Own OpenAI key saved; switched from the free trial to %s", trial.OWN_KEY_PRESET)
+        elif env_name == self.config.refine.api_key_env:
             # The client holds the key it was made with.
             self.refiner = TextRefiner(self.config.refine)
         self._call_ui(self._refresh_issues)
@@ -389,6 +404,8 @@ class TypelessLocalApp:
             self._relocalize()
         if changed in (None, "model_source"):
             reach.use_model_source(prefs.model_source)
+        if changed == "send_usage_stats" and not prefs.send_usage_stats and getattr(self, "daily_stats", None):
+            self.daily_stats.forget()
 
     def _relocalize(self) -> None:
         """Redraw everything that has words in it, in the language just chosen."""
@@ -520,7 +537,7 @@ class TypelessLocalApp:
                 permissions.request_microphone()
             else:
                 permissions.open_url(permissions.MICROPHONE_SETTINGS)
-        elif issue == "key":
+        elif issue in ("key", "trial"):
             self.open_settings("model")
 
     def _current_issues(self) -> tuple[str, ...]:
@@ -534,7 +551,69 @@ class TypelessLocalApp:
         refine = getattr(self.config, "refine", None)
         if self.prefs.refine and refine is not None and not os.environ.get(refine.api_key_env or ""):
             issues.append("key")
+        elif self.prefs.refine and getattr(self, "_trial_over", False) and getattr(refine, "preset", "") == trial.PRESET:
+            issues.append("trial")
         return tuple(issues)
+
+    def _count_dictation(self, record) -> None:
+        """Today's anonymous counts: one dictation, its length, and what the trial spent on it."""
+
+        stats = getattr(self, "daily_stats", None)
+        text = getattr(record, "refined_text", "") or ""
+        if stats is None or not text or not self.prefs.send_usage_stats:
+            return
+        spend = 0.0
+        refine = getattr(self.config, "refine", None)
+        if getattr(refine, "preset", "") == trial.PRESET:
+            spend = usage.cost(
+                refine.model, record.prompt_tokens or 0, record.cached_tokens or 0, record.completion_tokens or 0
+            ) or 0.0
+        stats.record(dictations=1, chars=len(text), trial_spend=spend)
+
+    def _stats_url(self) -> str:
+        try:
+            base = refine_config_for(self.config.jarvis_config, trial.PRESET).base_url
+        except Exception:
+            return ""
+        server = trial.server(base)
+        return f"{server}/stats" if server.startswith("https://") and "YOUR-SUBDOMAIN" not in server else ""
+
+    def _send_stats(self) -> None:
+        """Once a day: the finished days' counts, from a background thread. Reschedules itself."""
+
+        AppHelper.callLater(STATS_EVERY_S, self._send_stats)
+        stats, url = getattr(self, "daily_stats", None), self._stats_url()
+        if stats is None or not url or not self.prefs.send_usage_stats:
+            return
+
+        def run() -> None:
+            stats.record()  # the app ran today, even with no dictation
+            stats.send(url)
+
+        threading.Thread(target=run, daemon=True, name="usage-stats").start()
+
+    def _fallback_for(self, exc: BaseException) -> str:
+        """Why the raw transcript went in: "trial", "key", "timeout" or "error"."""
+
+        if isinstance(exc, TrialUnavailable):
+            self._trial_code = exc.code
+            return "trial"
+        if isinstance(exc, MissingAPIKey):
+            return "key"
+        return _failure_kind(exc)
+
+    def _note_trial(self, fallback: str) -> None:
+        """The trial server said no: keep the menu's "enter your own key" up until one is saved."""
+
+        if fallback == "trial":
+            self._trial_over = True
+
+    def _show_raw_key(self, fallback: str) -> None:
+        self._note_trial(fallback)
+        if fallback == "trial":
+            self.capsule.show("inserted-raw-trial", why=getattr(self, "_trial_code", ""))
+        else:
+            self.capsule.show("inserted-raw-key")
 
     def _refresh_issues(self) -> tuple[str, ...]:
         menubar = getattr(self, "menubar", None)
@@ -793,6 +872,7 @@ class TypelessLocalApp:
         self._refresh_issues()
         self._prime_microphone()
         self._start_model_prefetch()
+        AppHelper.callLater(STATS_FIRST_S, self._send_stats)
         # Deferred onto the run loop: this app is LSUIElement, and before
         # -[NSApplication run] it is not active yet, so a window can open
         # behind whatever the user is looking at or not come up at all.
@@ -1082,7 +1162,7 @@ class TypelessLocalApp:
         except Exception as exc:
             LOGGER.warning("Refinement failed again", exc_info=True)
             result = None
-            fallback = "key" if isinstance(exc, MissingAPIKey) else _failure_kind(exc)
+            fallback = self._fallback_for(exc)
         with self._lock:
             if session_id != getattr(self, "_active_session_id", 0) or self.state != "idle":
                 return  # a new dictation has the capsule now
@@ -1090,8 +1170,8 @@ class TypelessLocalApp:
         if result is None or fallback:
             if not current:
                 self.capsule.hide()
-            elif fallback == "key":
-                self.capsule.show("inserted-raw-key")
+            elif fallback in ("key", "trial"):
+                self._show_raw_key(fallback)
             else:
                 self.capsule.show("inserted-raw-net", why=fallback)
             return
@@ -1578,7 +1658,7 @@ class TypelessLocalApp:
                     # because the polish step failed is the worst outcome available.
                     LOGGER.exception("Refinement failed; pasting the raw transcript")
                     record.error = f"refine failed, pasted raw transcript: {exc!r}"
-                    fallback = "key" if isinstance(exc, MissingAPIKey) else _failure_kind(exc)
+                    fallback = self._fallback_for(exc)
                     refined = RefineResult(
                         text=transcript.text, raw_text=transcript.text, model=refine_model, fallback=fallback
                     )
@@ -1615,6 +1695,7 @@ class TypelessLocalApp:
         finally:
             record.ended_at = time.time()
             record.latency_total_ms = int((record.ended_at - started) * 1000)
+            self._count_dictation(record)
             trace = getattr(self, "trace", None)
             if trace is not None and prefs.save_history:
                 self._last_trace_id = trace.log(record)
@@ -1640,9 +1721,9 @@ class TypelessLocalApp:
             self._remember(text, context.app_name)
             self._insertion = Insertion(text=text, raw=raw, pid=frontmost_pid(), context=context)
             self._keys_wanted = True
-            if fallback == "key":
+            if fallback in ("key", "trial"):
+                self._show_raw_key(fallback)
                 self._refresh_issues()
-                self.capsule.show("inserted-raw-key")
             elif fallback:
                 self.capsule.show("inserted-raw-net", why=fallback)
             else:
@@ -1936,6 +2017,10 @@ def main() -> None:
     # Keys saved from Settings live in the login keychain; one still in
     # ~/.typlus/env (or the environment) is used as it is.
     keychain.fill_environ(api_key_names(config))
+    trial.ensure_token()
+    if not prefs.onboarding_done and not reach.in_mainland_china() and not os.environ.get(trial.OWN_KEY_ENV):
+        # A new Mac with no key starts on the free trial, so the first dictations are refined.
+        config = adopt_default_preset(config, trial.PRESET)
     coordinator = TypelessLocalApp(config)
     coordinator.start()
     app.run()

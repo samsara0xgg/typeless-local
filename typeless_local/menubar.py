@@ -49,6 +49,10 @@ ISSUES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ("缺少 API Key，只能贴原文", "No API key: raw transcripts only"),
         ("填写 API Key…", "Enter API Key…"),
     ),
+    "trial": (
+        ("免费试用不可用，只能贴原文", "Free trial unavailable: raw transcripts only"),
+        ("填写自己的 API Key…", "Enter Your Own API Key…"),
+    ),
 }
 SYSTEM_DEFAULT = ("系统默认", "System Default")
 RECENT_CHARS = 40
