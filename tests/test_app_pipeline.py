@@ -396,8 +396,14 @@ def test_start_shows_permission_state_when_hotkey_install_fails(monkeypatch) -> 
     app._retry_hotkeys()
     assert [fn for _, fn in later] == [app._retry_hotkeys]
 
+    # Never tries the tap untrusted: that pops macOS's own prompt before the guide.
+    tried = []
+    app.hotkeys.start = lambda: tried.append(True)
+    app._retry_hotkeys()
+    assert tried == []
+
     # Granted: the tap goes in and the permission capsule goes away.
-    app.hotkeys.start = lambda: None
+    monkeypatch.setattr("typeless_local.app.has_accessibility_trust", lambda: True)
     later.clear()
     app._retry_hotkeys()
     assert later == []

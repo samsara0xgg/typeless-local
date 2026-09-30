@@ -801,6 +801,10 @@ class TypelessLocalApp:
 
     def _start_hotkeys(self) -> bool:
         try:
+            # Creating the event tap untrusted makes macOS pop its own
+            # Accessibility prompt, ahead of the guide that explains it.
+            if not has_accessibility_trust():
+                raise RuntimeError("Accessibility is not granted")
             self.hotkeys.start()
             return True
         except RuntimeError:
