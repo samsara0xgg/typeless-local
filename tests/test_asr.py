@@ -176,3 +176,16 @@ def test_a_looping_chunk_is_heard_again_with_temperature_fallback(monkeypatch, t
 
     assert result.text == "模型是Turbo V3加上terra"
     assert isinstance(calls[1]["temperature"], tuple)
+
+
+def test_a_transcript_that_is_only_a_silence_phrase_is_dropped(monkeypatch, tmp_path: Path) -> None:
+    said = iter(["优优独播剧场——YoYo Television Series Exclusive", "Thank you for watching!", "谢谢观看，我们下期再见吧"])
+    module = ModuleType("mlx_whisper")
+    module.transcribe = lambda audio, **kwargs: {"text": next(said), "language": "zh", "segments": []}
+    monkeypatch.setitem(sys.modules, "mlx_whisper", module)
+    j = asr_module.JarvisASR(tmp_path, _mlx_config())
+    audio = np.ones(16000, dtype=np.float32) * 0.1
+
+    assert j.transcribe(audio).text == ""
+    assert j.transcribe(audio).text == ""
+    assert j.transcribe(audio).text == "谢谢观看，我们下期再见吧"

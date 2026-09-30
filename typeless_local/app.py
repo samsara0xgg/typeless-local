@@ -1330,7 +1330,7 @@ class TypelessLocalApp:
     def _hear(self, audio: np.ndarray) -> Transcript:
         """One stretch through Whisper; one too quiet for the recording's own gate is not sent."""
 
-        floor = float(getattr(self.config, "low_volume_threshold", 0.02))
+        floor = float(getattr(self.config, "low_volume_threshold", 0.003))
         if peak_level(audio, int(getattr(self.config, "sample_rate", 16000))) < floor:
             return Transcript(text="", language="unknown", confidence=0.0)
         return self._whisper(audio)
@@ -1401,7 +1401,7 @@ class TypelessLocalApp:
             quality_ok, quality_message = self.recorder.is_quality_ok(
                 audio,
                 min_duration=float(getattr(self.config, "min_recording_seconds", 0.25)),
-                low_volume_threshold=float(getattr(self.config, "low_volume_threshold", 0.02)),
+                low_volume_threshold=float(getattr(self.config, "low_volume_threshold", 0.003)),
             )
             if not quality_ok:
                 LOGGER.info("Dropping low-quality audio before ASR: %s", quality_message)
