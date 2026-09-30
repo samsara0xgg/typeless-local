@@ -81,9 +81,13 @@ $PYBUILD -m venv ~/.typlus-build-venv
 3. Publish:
 
    ```sh
-   gh release create v0.3.0 --title "言字 0.3.0" \
-     --notes-file notes.md dist/Yana-0.3.0.dmg
+   gh release create v0.3.0 --title "言字 (Yana) 0.3.0" \
+     --notes-file docs/release-notes/0.3.0.md dist/Yana-0.3.0.dmg
    ```
+
+   On GitHub the app is always called 言字 (Yana): the Chinese name first, the
+   English one in parentheses, in release titles, notes and the repository
+   description. Each release's notes live in `docs/release-notes/`.
 
 The first `codesign` call of the session raises a keychain prompt asking for the
 **login keychain password** (the Mac login password). Choose **Always Allow**,
