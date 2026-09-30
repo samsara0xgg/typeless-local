@@ -1319,6 +1319,8 @@ class TypelessLocalApp:
             changes["selected_text"] = ""
         if not prefs.send_window_title and (context.app_name or context.window_title):
             changes.update(app_name="", window_title="")
+        if not prefs.send_before_text and context.before_text:
+            changes["before_text"] = ""
         return dataclasses.replace(context, **changes) if changes else context
 
     def _process_audio(

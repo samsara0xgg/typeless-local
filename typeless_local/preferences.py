@@ -42,6 +42,7 @@ class Preferences:
     save_history: bool = True
     history_days: int = 0
     send_window_title: bool = True
+    send_before_text: bool = True
     onboarding_done: bool = False
 
     def to_dict(self) -> dict[str, Any]:
