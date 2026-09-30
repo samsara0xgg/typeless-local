@@ -547,13 +547,9 @@ def test_text_before_caret_is_empty_at_the_start_of_a_field(monkeypatch) -> None
 def test_capture_focus_context_leaves_the_field_unread_unless_asked(monkeypatch) -> None:
     read = []
     monkeypatch.setattr(mac_integration, "_text_before_caret", lambda element, role: read.append(role) or "上文")
-    monkeypatch.setattr(
-        mac_integration.NSWorkspace,
-        "sharedWorkspace",
-        lambda: SimpleNamespace(
-            frontmostApplication=lambda: SimpleNamespace(localizedName=lambda: "Notes", processIdentifier=lambda: 42)
-        ),
-    )
+    app = SimpleNamespace(localizedName=lambda: "Notes", processIdentifier=lambda: 42)
+    workspace = SimpleNamespace(frontmostApplication=lambda: app)
+    monkeypatch.setattr(mac_integration, "NSWorkspace", SimpleNamespace(sharedWorkspace=lambda: workspace))
     monkeypatch.setattr(mac_integration.ApplicationServices, "AXUIElementCreateApplication", lambda pid: object())
     monkeypatch.setattr(
         mac_integration,
