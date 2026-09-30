@@ -486,13 +486,19 @@ def test_finishing_the_guide_remembers_it_and_closes(ui) -> None:
     assert window.closed
 
 
+def test_the_guide_switches_the_interface_language(ui) -> None:
+    ui.windows.show_onboarding()
+    ui.windows._onboarding_message({"t": "lang", "v": "en"})
+    assert ("pref", "ui_language", "en") in ui.app.calls
+
+
 # ----------------------------------------------------------------- pages
 
 
 PAGES = {
     "settings": ({"ready", "set", "key", "migrate", "test", "vocab", "open", "count", "clear", "geo"}, "_settings_message"),
     "history": ({"ready", "geo", "copy", "delete", "vocab", "open"}, "_history_message"),
-    "onboarding": ({"ready", "mic", "a11y", "key", "download", "done"}, "_onboarding_message"),
+    "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang"}, "_onboarding_message"),
 }
 
 
@@ -519,5 +525,5 @@ def test_each_page_posts_only_what_its_controller_handles(page) -> None:
 
 def test_settings_page_opens_the_panes_python_can_ask_for() -> None:
     source = (web_root() / "settings.js").read_text(encoding="utf-8")
-    drawn = set(re.findall(r"\['([a-z]+)', '[^']+', '[a-z]+', '#", source))
+    drawn = set(re.findall(r"\['([a-z]+)', \['[^']+', '[^']+'\], '[a-z]+', '#", source))
     assert drawn == set(windows.SETTINGS_PANES)

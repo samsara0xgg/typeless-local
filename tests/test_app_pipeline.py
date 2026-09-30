@@ -817,6 +817,18 @@ def test_choosing_english_in_settings_relocalizes_the_app(monkeypatch) -> None:
     assert {entry[0] for entry in redrawn} == {"main menu", "menubar", "overlay", "windows"}
 
 
+def test_a_second_copy_of_the_app_cannot_take_the_lock(tmp_path) -> None:
+    first = app_module.claim_single_instance(tmp_path)
+    try:
+        assert first is not None
+        assert app_module.claim_single_instance(tmp_path) is None
+    finally:
+        first.close()
+    again = app_module.claim_single_instance(tmp_path)
+    assert again is not None
+    again.close()
+
+
 def _run_threads_inline(monkeypatch) -> None:
     monkeypatch.setattr(
         "typeless_local.app.threading.Thread",

@@ -3,17 +3,20 @@
    ({t:'items'}); copying, deleting and adding a word go back to it. */
 (() => {
 'use strict';
-const { I, esc, $, $$, post, on, env } = kit;
+const { I, esc, $, $$, post, on, env, L, lang } = kit;
 
 const COLORS = ['#007AFF', '#34C759', '#FF9500', '#AF52DE', '#FF2D55', '#5856D6', '#30B0C7', '#A2845E'];
-const FALLBACK = {
-  timeout: '润色超时，插入的是原始转写',
-  error: '润色出错，插入的是原始转写',
-  key: '没有 API Key，插入的是原始转写',
-  truncated: '润色结果不完整，插入的是原始转写',
-  empty: '模型没有返回内容，插入的是原始转写',
-};
-const FALLBACK_SHORT = { timeout: '超时', error: '出错', key: '没有 Key', truncated: '不完整', empty: '没有返回' };
+// Why the raw transcript went in instead: the long form for the detail, the short one for the metrics.
+const FALLBACK = k => ({
+  timeout: L('润色超时，插入的是原始转写', 'Refinement timed out; the raw transcript went in'),
+  key: L('没有 API Key，插入的是原始转写', 'No API key; the raw transcript went in'),
+  truncated: L('润色结果不完整，插入的是原始转写', 'Refinement came back incomplete; the raw transcript went in'),
+  empty: L('模型没有返回内容，插入的是原始转写', 'The model returned nothing; the raw transcript went in'),
+})[k] || L('润色出错，插入的是原始转写', 'Refinement failed; the raw transcript went in');
+const FALLBACK_SHORT = k => ({
+  timeout: L('润色超时', 'Refinement timed out'), key: L('润色没有 Key', 'Refinement had no key'),
+  truncated: L('润色不完整', 'Refinement incomplete'), empty: L('润色没有返回', 'Refinement empty'),
+})[k] || L('润色出错', 'Refinement failed');
 
 let D = { enabled: true, items: [], vocab: [] };
 let sel = null;           // id of the selected row
@@ -26,14 +29,19 @@ let ready = false;
 const pad = n => String(n).padStart(2, '0');
 const hhmm = d => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 const secs = ms => (ms / 1000).toFixed(1);
+const seconds = v => L(`${v} 秒`, `${v} s`);
 function dayLabel(d) {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const that = new Date(d); that.setHours(0, 0, 0, 0);
   const days = Math.round((today - that) / 86400000);
-  if (days === 0) return '今天';
-  if (days === 1) return '昨天';
+  if (days === 0) return L('今天', 'Today');
+  if (days === 1) return L('昨天', 'Yesterday');
+  const thisYear = d.getFullYear() === today.getFullYear();
+  if (lang() === 'en') {
+    return d.toLocaleDateString('en-US', thisYear ? { weekday: 'long', month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric' });
+  }
   const week = '日一二三四五六'[d.getDay()];
-  return d.getFullYear() === today.getFullYear()
+  return thisYear
     ? `${d.getMonth() + 1}月${d.getDate()}日 星期${week}`
     : `${d.getFullYear()}年${d.getMonth() + 1}月${d.getDate()}日`;
 }
@@ -47,7 +55,8 @@ function appTile(name) {
 const shown = it => it.text || it.raw;
 
 /* ---------------- diff (raw transcript -> what was inserted) ---------------- */
-const tok = s => String(s).match(/[A-Za-z0-9][A-Za-z0-9._\-'+#]*|\s+|[^\sA-Za-z0-9]/gu) || [];
+// A dot only belongs to a word inside it (v1.2, e.g): "Glass." is "Glass" and ".".
+const tok = s => String(s).match(/[A-Za-z0-9](?:[A-Za-z0-9_\-'+#]|\.(?=[A-Za-z0-9]))*|\s+|[^\sA-Za-z0-9]/gu) || [];
 function diff(a, b) {
   const A = tok(a), B = tok(b), n = A.length, m = B.length;
   if (n * m > 250000) return [['-', a], ['+', b]];
@@ -102,17 +111,17 @@ function visible() {
 }
 
 function listHTML(items) {
-  let out = `<label class="hsearch">${I('search')}<input id="q" type="search" placeholder="搜索" aria-label="搜索历史记录" value="${esc(query)}"></label>`;
-  if (!D.enabled) out += '<div class="hday">历史记录已关闭，新的听写不会保存</div>';
-  if (!items.length) return out + `<div class="hday">${query ? '没有找到' : ''}</div>`;
+  let out = `<label class="hsearch">${I('search')}<input id="q" type="search" placeholder="${L('搜索', 'Search')}" aria-label="${L('搜索历史记录', 'Search the history')}" value="${esc(query)}"></label>`;
+  if (!D.enabled) out += `<div class="hday">${L('历史记录已关闭，新的听写不会保存', 'History is off; new dictations are not saved')}</div>`;
+  if (!items.length) return out + `<div class="hday">${query ? L('没有找到', 'No matches') : ''}</div>`;
   let day = '';
   for (const it of items) {
     const d = new Date(it.at * 1000), label = dayLabel(d);
     if (label !== day) { day = label; out += `<div class="hday">${esc(label)}</div>`; }
-    const meta = [hhmm(d), it.app || '未知 App', `${it.audio_s.toFixed(1)} 秒`];
-    if (it.dropped) meta.push('没有插入');
-    else if (it.fallback) meta.push('未润色');
-    if (edited(it)) meta.push('发送前改过');
+    const meta = [hhmm(d), it.app || L('未知 App', 'Unknown app'), seconds(it.audio_s.toFixed(1))];
+    if (it.dropped) meta.push(L('没有插入', 'Not inserted'));
+    else if (it.fallback) meta.push(L('未润色', 'Not refined'));
+    if (edited(it)) meta.push(L('发送前改过', 'Edited before sending'));
     out += `<button class="hitem" role="option" id="h${it.id}" aria-selected="${it.id === sel}" data-h="${it.id}">${appTile(it.app)}<span class="ht">${esc(shown(it))}</span><span class="hm">${esc(meta.join(' · '))}</span></button>`;
   }
   return out;
@@ -121,21 +130,21 @@ function listHTML(items) {
 function detailHTML(it) {
   if (!it) return '';
   const d = new Date(it.at * 1000);
-  const where = [it.app || '未知 App', it.window, `${dayLabel(d)} ${hhmm(d)}`].filter(Boolean).join(' · ');
+  const where = [it.app || L('未知 App', 'Unknown app'), it.window, `${dayLabel(d)} ${hhmm(d)}`].filter(Boolean).join(' · ');
   let box;
-  if (it.dropped) box = `<span class="l">像是噪音里的幻听，没有插入</span>${esc(it.raw)}`;
-  else if (it.fallback) box = `<span class="l">${esc(FALLBACK[it.fallback] || FALLBACK.error)}</span>${esc(it.raw)}`;
-  else if (it.raw && it.raw !== it.text) box = `<span class="l">原始转写 → 润色</span>${diffHTML(it.raw, it.text)}`;
-  else box = '<span class="l">原始转写</span>和润色结果一样';
-  const sentBox = edited(it) ? `<div class="rawbox selectable"><span class="l">发送前你改成了</span>${diffHTML(it.text, it.sent)}</div>` : '';
+  if (it.dropped) box = `<span class="l">${L('像是噪音里的幻听，没有插入', 'Sounded like noise, so nothing went in')}</span>${esc(it.raw)}`;
+  else if (it.fallback) box = `<span class="l">${esc(FALLBACK(it.fallback))}</span>${esc(it.raw)}`;
+  else if (it.raw && it.raw !== it.text) box = `<span class="l">${L('原始转写 → 润色', 'Raw transcript → refined')}</span>${diffHTML(it.raw, it.text)}`;
+  else box = `<span class="l">${L('原始转写', 'Raw transcript')}</span>${L('和润色结果一样', 'Same as the refined text')}`;
+  const sentBox = edited(it) ? `<div class="rawbox selectable"><span class="l">${L('发送前你改成了', 'You sent it as')}</span>${diffHTML(it.text, it.sent)}</div>` : '';
 
-  const metrics = [`录音 ${it.audio_s.toFixed(1)} 秒`];
-  if (it.asr_ms) metrics.push(`转写 ${secs(it.asr_ms)} 秒`);
-  if (it.fallback) metrics.push(`润色${FALLBACK_SHORT[it.fallback] || '出错'}`);
-  else if (it.refine_ms) metrics.push(`润色 ${secs(it.refine_ms)} 秒`);
-  if (it.total_ms) metrics.push(`总共 ${secs(it.total_ms)} 秒`);
+  const metrics = [L(`录音 ${it.audio_s.toFixed(1)} 秒`, `Audio ${it.audio_s.toFixed(1)} s`)];
+  if (it.asr_ms) metrics.push(L(`转写 ${secs(it.asr_ms)} 秒`, `Transcribe ${secs(it.asr_ms)} s`));
+  if (it.fallback) metrics.push(FALLBACK_SHORT(it.fallback));
+  else if (it.refine_ms) metrics.push(L(`润色 ${secs(it.refine_ms)} 秒`, `Refine ${secs(it.refine_ms)} s`));
+  if (it.total_ms) metrics.push(L(`总共 ${secs(it.total_ms)} 秒`, `Total ${secs(it.total_ms)} s`));
   if (it.model) metrics.push(it.model);
-  if (!it.dropped) metrics.push(it.pasted ? '已插入' : '在剪贴板里');
+  if (!it.dropped) metrics.push(it.pasted ? L('已插入', 'Inserted') : L('在剪贴板里', 'On the clipboard'));
 
   let lat = '';
   if (it.total_ms > 0) {
@@ -143,15 +152,15 @@ function detailHTML(it) {
     const pct = v => (v / it.total_ms * 100).toFixed(1);
     const rc = it.fallback ? 'var(--orange)' : 'var(--accent)';
     lat = `<div class="latbar" aria-hidden="true"><i style="width:${pct(asr)}%; background:#AF52DE"></i><i style="width:${pct(ref)}%; background:${rc}"></i><i style="flex:1; background:var(--win-fg-3)"></i></div>`
-      + `<div class="latlegend"><span><b style="background:#AF52DE"></b>转写</span><span><b style="background:${rc}"></b>润色</span><span><b style="background:var(--win-fg-3)"></b>其余</span></div>`;
+      + `<div class="latlegend"><span><b style="background:#AF52DE"></b>${L('转写', 'Transcribe')}</span><span><b style="background:${rc}"></b>${L('润色', 'Refine')}</span><span><b style="background:var(--win-fg-3)"></b>${L('其余', 'Other')}</span></div>`;
   }
 
   const word = selection || suggestion(it);
-  const acts = [`<button class="mbtn" data-a="copy">${I('copy')} 复制</button>`];
-  if (word) acts.push(`<button class="mbtn pri" data-a="vocab" data-term="${esc(word)}">${I('book')} 把“${esc(word)}”加入词库</button>`);
+  const acts = [`<button class="mbtn" data-a="copy">${I('copy')} ${L('复制', 'Copy')}</button>`];
+  if (word) acts.push(`<button class="mbtn pri" data-a="vocab" data-term="${esc(word)}">${I('book')} ${L(`把“${esc(word)}”加入词库`, `Add “${esc(word)}” to Vocabulary`)}</button>`);
   acts.push(armedDelete === it.id
-    ? `<button class="mbtn danger" data-a="delete">${I('trash')} 确认删除</button>`
-    : `<button class="mbtn" data-a="delete">${I('trash')} 删除</button>`);
+    ? `<button class="mbtn danger" data-a="delete">${I('trash')} ${L('确认删除', 'Confirm Delete')}</button>`
+    : `<button class="mbtn" data-a="delete">${I('trash')} ${L('删除', 'Delete')}</button>`);
 
   return `<div class="appcell">${appTile(it.app)}<span>${esc(where)}</span></div>
 <p class="big selectable">${esc(shown(it))}</p>
@@ -162,9 +171,9 @@ ${lat}<div class="hact">${acts.join('')}</div>`;
 
 function emptyHTML() {
   if (!D.enabled) {
-    return `<div class="hempty">${I('clock')}<b>历史记录已关闭</b><span>打开后，每次听写的原文、润色结果和耗时都会保存在这台 Mac 上。</span><button class="mbtn pri" data-a="settings">打开设置</button></div>`;
+    return `<div class="hempty">${I('clock')}<b>${L('历史记录已关闭', 'History is off')}</b><span>${L('打开后，每次听写的原文、润色结果和耗时都会保存在这台 Mac 上。', 'Once on, each dictation’s transcript, refined text and timings are kept on this Mac.')}</span><button class="mbtn pri" data-a="settings">${L('打开设置', 'Open Settings')}</button></div>`;
   }
-  return `<div class="hempty">${I('wave')}<b>还没有听写</b><span>按 F5 说一句话，它会出现在这里。</span></div>`;
+  return `<div class="hempty">${I('wave')}<b>${L('还没有听写', 'No dictations yet')}</b><span>${L('按 F5 说一句话，它会出现在这里。', 'Press F5 and say something; it shows up here.')}</span></div>`;
 }
 
 function draw() {
@@ -176,7 +185,7 @@ function draw() {
   const typing = document.activeElement?.id === 'q';
   const caret = typing ? $('#q').selectionStart : 0;
   const scroll = $('#hlist')?.scrollTop || 0;
-  root.innerHTML = `<div class="hist"><nav class="hlist" id="hlist" role="listbox" aria-label="听写历史" tabindex="-1">${listHTML(items)}</nav><main class="hdet" id="hdet">${detailHTML(it)}</main></div>`;
+  root.innerHTML = `<div class="hist"><nav class="hlist" id="hlist" role="listbox" aria-label="${L('听写历史', 'Dictation history')}" tabindex="-1">${listHTML(items)}</nav><main class="hdet" id="hdet">${detailHTML(it)}</main></div>`;
   $('#hlist').scrollTop = scroll;
   if (typing) { const q = $('#q'); q.focus(); q.setSelectionRange(caret, caret); }
   reportGlass();
@@ -273,7 +282,12 @@ document.addEventListener('selectionchange', () => {
 });
 
 /* ---------------- from Python ---------------- */
-on('env', m => { env(m); document.body.classList.toggle('has-glass', !!m.native); });
+on('env', m => {
+  const relabel = env(m);
+  document.body.classList.toggle('has-glass', !!m.native);
+  document.title = L('历史记录', 'History');
+  if (relabel && ready) draw();
+});
 on('items', m => {
   D = { enabled: !!m.enabled, items: m.items || [], vocab: m.vocab || [] };
   if (!ready && D.items.length) sel = D.items[0].id;

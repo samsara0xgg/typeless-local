@@ -3,20 +3,24 @@
    here that Python does not also know, except what is being typed. */
 (() => {
 'use strict';
-const { I, esc, $, $$, post, on, env } = kit;
+const { I, esc, $, $$, post, on, env, L } = kit;
 
+// [id, [Chinese, English] title, icon, tile colour]
 const PANES = [
-  ['general', '通用', 'gear', '#8E8E93'],
-  ['dictation', '听写', 'wave', '#007AFF'],
-  ['keys', '快捷键', 'keyboard', '#636366'],
-  ['model', '润色模型', 'sparkles', '#AF52DE'],
-  ['vocab', '词库', 'book', '#FF9500'],
-  ['audio', '音频', 'speaker', '#FF3B30'],
-  ['usage', '用量', 'chart', '#34C759'],
-  ['privacy', '历史与隐私', 'shield', '#0A84FF'],
+  ['general', ['通用', 'General'], 'gear', '#8E8E93'],
+  ['dictation', ['听写', 'Dictation'], 'wave', '#007AFF'],
+  ['keys', ['快捷键', 'Shortcuts'], 'keyboard', '#636366'],
+  ['model', ['润色模型', 'Refinement'], 'sparkles', '#AF52DE'],
+  ['vocab', ['词库', 'Vocabulary'], 'book', '#FF9500'],
+  ['audio', ['音频', 'Audio'], 'speaker', '#FF3B30'],
+  ['usage', ['用量', 'Usage'], 'chart', '#34C759'],
+  ['privacy', ['历史与隐私', 'History & Privacy'], 'shield', '#0A84FF'],
 ];
-const DAYS = { 30: '30 天', 90: '90 天', 365: '1 年', 0: '永久' };
-const LANGS = [['', '自动（中英混说）'], ['zh', '中文'], ['en', 'English']];
+const paneTitle = id => L(...PANES.find(p => p[0] === id)[1]);
+const DAYS = v => ({ 30: L('30 天', '30 days'), 90: L('90 天', '90 days'), 365: L('1 年', '1 year'), 0: L('永久', 'Forever') })[v] || L(`${v} 天`, `${v} days`);
+const LANGS = () => [['', L('自动（中英混说）', 'Automatic (mixed Chinese and English)')], ['zh', '中文'], ['en', 'English']];
+// The interface language names itself in both, so it can be found whichever one is showing.
+const UI_LANGS = () => [['auto', L('跟随系统', 'Same as the Mac')], ['zh', '中文'], ['en', 'English']];
 
 let S = null;            // the state Python sent
 let pane = 'general';
@@ -36,38 +40,52 @@ const row = (label, control, note = '', cls = '') =>
   `<div class="row ${cls}"><div class="rl">${label}${note ? `<small>${note}</small>` : ''}</div>${control}</div>`;
 const grp = (rows, extra = '') => `<div class="grp">${rows.join('')}${extra}</div>`;
 const head = t => `<div class="pane-h"><b>${esc(t)}</b></div>`;
+const secs = v => L(`${v} 秒`, `${v} s`);
+const times = n => L(`${n} 次`, `${n} dictation${n === 1 ? '' : 's'}`);
 
 /* ---------------- panes ---------------- */
 function general() {
   const p = S.prefs, login = S.login;
-  const loginNote = login === 'unavailable' ? '只有安装好的 App 才能设置，从源码运行时不可用。'
-    : login === 'requires_approval' ? '需要在「系统设置 › 通用 › 登录项」里允许。' : '';
+  const loginNote = login === 'unavailable' ? L('只有安装好的 App 才能设置，从源码运行时不可用。', 'Only the installed app can do this; not available when running from source.')
+    : login === 'requires_approval' ? L('需要在「系统设置 › 通用 › 登录项」里允许。', 'Allow it in System Settings › General › Login Items.') : '';
+  const loginLabel = L('登录时打开', 'Open at login');
   const loginCtl = login === 'requires_approval'
-    ? `<span class="inline">${sw('login', true, '登录时打开')}<button class="mbtn" data-act="open" data-what="login">打开登录项…</button></span>`
-    : sw('login', login === 'enabled', '登录时打开', login === 'unavailable');
-  return head('通用')
+    ? `<span class="inline">${sw('login', true, loginLabel)}<button class="mbtn" data-act="open" data-what="login">${L('打开登录项…', 'Open Login Items…')}</button></span>`
+    : sw('login', login === 'enabled', loginLabel, login === 'unavailable');
+  const langLabel = L('界面语言 · Language', 'Language · 界面语言');
+  return head(paneTitle('general'))
     + grp([
-      row(`登录时打开${esc(S.name)}`, loginCtl, loginNote),
-      row('胶囊位置', seg('capsule_position', p.capsule_position, [['bottom', '屏幕底部'], ['caret', '跟随光标']]), '跟随光标需要目标 App 提供光标位置；拿不到时回到屏幕底部。'),
-      row('显示底部把手', sw('show_handle', p.show_handle, '显示底部把手'), '空闲时在 Dock 上方留一道细线，悬停变成麦克风按钮。'),
-      row('结果停留', select('dismiss_seconds', p.dismiss_seconds, S.choices.dismiss_seconds.map(v => [v, `${v} 秒`]), '结果停留'), '指针停在胶囊上时不计时；接着打字会立刻收起。'),
+      row(esc(langLabel), select('ui_language', p.ui_language, UI_LANGS(), langLabel), L('菜单、胶囊和所有窗口的文字。', 'The words in the menu, the capsule and every window.')),
     ])
-    + grp([row('提示音', select('sounds', p.sounds, [['off', '关闭'], ['start_end', '仅开始和结束']], '提示音'))]);
+    + grp([
+      row(L(`登录时打开${esc(S.name)}`, `Open ${esc(S.name)} at login`), loginCtl, loginNote),
+      row(L('胶囊位置', 'Capsule position'), seg('capsule_position', p.capsule_position, [['bottom', L('屏幕底部', 'Bottom of screen')], ['caret', L('跟随光标', 'At the cursor')]]),
+        L('跟随光标需要目标 App 提供光标位置；拿不到时回到屏幕底部。', 'At the cursor needs the app to report where its cursor is; otherwise it goes back to the bottom.')),
+      row(L('显示底部把手', 'Show the handle'), sw('show_handle', p.show_handle, L('显示底部把手', 'Show the handle')),
+        L('空闲时在 Dock 上方留一道细线，悬停变成麦克风按钮。', 'A thin line above the Dock while idle; hover to turn it into a microphone button.')),
+      row(L('结果停留', 'Result stays for'), select('dismiss_seconds', p.dismiss_seconds, S.choices.dismiss_seconds.map(v => [v, secs(v)]), L('结果停留', 'Result stays for')),
+        L('指针停在胶囊上时不计时；接着打字会立刻收起。', 'The pointer resting on the capsule pauses it; typing dismisses it at once.')),
+    ])
+    + grp([row(L('提示音', 'Sounds'), select('sounds', p.sounds, [['off', L('关闭', 'Off')], ['start_end', L('仅开始和结束', 'Start and end only')]], L('提示音', 'Sounds')))]);
 }
 
 function dictation() {
   const p = S.prefs;
-  return head('听写')
+  return head(paneTitle('dictation'))
     + grp([
-      row('识别语言', select('language', S.language, LANGS, '识别语言'), '自动能识别中英混说；固定一种语言会快一点。'),
-      row('语音模型', `<span class="val">${esc(S.asrModel || '—')} · 本地</span>`),
-      row('单次最长录音', select('max_minutes', p.max_minutes, S.choices.max_minutes.map(v => [v, `${v} 分钟`]), '单次最长录音'), '最后 60 秒会倒计时。'),
+      row(L('识别语言', 'Spoken language'), select('language', S.language, LANGS(), L('识别语言', 'Spoken language')),
+        L('自动能识别中英混说；固定一种语言会快一点。', 'Automatic handles Chinese and English mixed; one fixed language is a little faster.')),
+      row(L('语音模型', 'Speech model'), `<span class="val">${esc(S.asrModel || '—')} · ${L('本地', 'on this Mac')}</span>`),
+      row(L('单次最长录音', 'Longest recording'), select('max_minutes', p.max_minutes, S.choices.max_minutes.map(v => [v, L(`${v} 分钟`, `${v} minutes`)]), L('单次最长录音', 'Longest recording')),
+        L('最后 60 秒会倒计时。', 'The last 60 seconds count down.')),
     ])
     + grp([
-      row('润色', sw('refine', p.refine, '润色'), '去掉口头禅、处理改口、补标点和分段。'),
-      row('润色超时或失败时', '<span class="val">插入原始转写</span>', '胶囊里可以一键重新润色。'),
-      row('改写所选文字', sw('rewrite_selection', p.rewrite_selection, '改写所选文字'), '先选中文字再按 F5，说出要求，例如“改得更正式”“翻成英文”。'),
-      row('没有输入框时', '<span class="val">显示卡片并复制</span>', '结果放进可以修改的卡片，同时复制到剪贴板。'),
+      row(L('润色', 'Refine'), sw('refine', p.refine, L('润色', 'Refine')), L('去掉口头禅、处理改口、补标点和分段。', 'Removes filler words, applies self-corrections, adds punctuation and paragraphs.')),
+      row(L('润色超时或失败时', 'If refinement fails'), `<span class="val">${L('插入原始转写', 'Insert the raw transcript')}</span>`, L('胶囊里可以一键重新润色。', 'The capsule offers to refine it again.')),
+      row(L('改写所选文字', 'Rewrite the selection'), sw('rewrite_selection', p.rewrite_selection, L('改写所选文字', 'Rewrite the selection')),
+        L('先选中文字再按 F5，说出要求，例如“改得更正式”“翻成英文”。', 'Select text, press F5 and say what to do, like “make it more formal” or “translate to Chinese”.')),
+      row(L('没有输入框时', 'With no text field'), `<span class="val">${L('显示卡片并复制', 'Show a card and copy')}</span>`,
+        L('结果放进可以修改的卡片，同时复制到剪贴板。', 'The text goes into a card you can edit, and onto the clipboard.')),
     ]);
 }
 
@@ -75,14 +93,17 @@ function keys() {
   const top = ['esc', 'F1', 'F2', 'F3', 'F4', '', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'];
   const kb = `<div class="kb" aria-hidden="true">${top.map(k => k ? `<i>${k}</i>` : `<i class="hot">${I('mic')}</i>`).join('')}<i class="w2"></i>`
     + `<i>fn</i><i>⌃</i><i>⌥</i><i class="w2">⌘</i><i class="w6">space</i><i class="w2 hot">⌘</i><i>⌥</i><i>←→</i></div>`;
-  const conflict = S.f5 ? grp([row(`系统听写也在用 ${I('mic')} 键`, '<button class="mbtn" data-act="open" data-what="keyboard">打开键盘设置…</button>',
-    'Apple 芯片键盘上 F5 就是听写键，两个都开会互相抢。在键盘设置里把系统听写的快捷键换掉或关闭。', 'warnrow')]) : '';
-  return head('快捷键') + kb
+  const conflict = S.f5 ? grp([row(L(`系统听写也在用 ${I('mic')} 键`, `System dictation also uses the ${I('mic')} key`),
+    `<button class="mbtn" data-act="open" data-what="keyboard">${L('打开键盘设置…', 'Open Keyboard Settings…')}</button>`,
+    L('Apple 芯片键盘上 F5 就是听写键，两个都开会互相抢。在键盘设置里把系统听写的快捷键换掉或关闭。',
+      'On Apple keyboards F5 is the dictation key, and the two fight over it. Change or turn off the system dictation shortcut in Keyboard settings.'), 'warnrow')]) : '';
+  const rcmd = L('右 ⌘', 'Right ⌘');
+  return head(paneTitle('keys')) + kb
     + grp([
-      row('开始 / 结束', '<span class="kbd2"><kbd>F5</kbd><span class="arrow">或</span><kbd>右 ⌘</kbd><span class="arrow">轻点</span></span>'),
-      row('按住说话', '<span class="kbd2"><span class="arrow">按住</span><kbd>F5</kbd></span>', '按住超过 0.6 秒，松开就完成。'),
-      row('锁定（免手持）', '<span class="kbd2"><span class="arrow">连按两下</span><kbd>F5</kbd><span class="arrow">·</span><kbd>F5</kbd><kbd>Space</kbd><span class="arrow">·</span><kbd>右 ⌘</kbd><kbd>Space</kbd></span>'),
-      row('取消', '<span class="kbd2"><kbd>esc</kbd></span>'),
+      row(L('开始 / 结束', 'Start / finish'), `<span class="kbd2"><kbd>F5</kbd><span class="arrow">${L('或', 'or')}</span><kbd>${rcmd}</kbd><span class="arrow">${L('轻点', 'tap')}</span></span>`),
+      row(L('按住说话', 'Hold to talk'), `<span class="kbd2"><span class="arrow">${L('按住', 'hold')}</span><kbd>F5</kbd></span>`, L('按住超过 0.6 秒，松开就完成。', 'Hold for more than 0.6 s; letting go finishes.')),
+      row(L('锁定（免手持）', 'Lock (hands-free)'), `<span class="kbd2"><span class="arrow">${L('连按两下', 'double-press')}</span><kbd>F5</kbd><span class="arrow">·</span><kbd>F5</kbd><kbd>Space</kbd><span class="arrow">·</span><kbd>${rcmd}</kbd><kbd>Space</kbd></span>`),
+      row(L('取消', 'Cancel'), '<span class="kbd2"><kbd>esc</kbd></span>'),
     ])
     + conflict;
 }
@@ -90,122 +111,146 @@ function keys() {
 function model() {
   const rows = S.presets.map(m => `<tr data-preset="${esc(m.name)}" aria-selected="${m.name === S.active}">
     <td><span class="rad${m.name === S.active ? ' on' : ''}"></span></td><td>${esc(m.name)}<br><small class="arrow">${esc(m.model)}</small></td>
-    <td>${esc(m.service)}</td><td class="${m.hasKey ? 'st-ok' : 'st-no'}">${m.hasKey ? '已设置' : '需要 Key'}</td>
-    <td class="num">${m.median ? (m.median / 1000).toFixed(1) + ' 秒' : '—'}</td></tr>`).join('');
+    <td>${esc(m.service)}</td><td class="${m.hasKey ? 'st-ok' : 'st-no'}">${m.hasKey ? L('已设置', 'Set') : L('需要 Key', 'Needs key')}</td>
+    <td class="num">${m.median ? secs((m.median / 1000).toFixed(1)) : '—'}</td></tr>`).join('');
   const t = UI.test;
-  const testLine = !t ? '' : t.busy ? `<span class="val"><span class="spin"></span> 正在发送一次测试请求…</span>`
-    : t.ok ? `<span class="st-ok">已连接 · ${esc(t.preset)} · 往返 ${(t.ms / 1000).toFixed(1)} 秒</span>`
-    : `<span class="st-err">${esc(t.msg || '连接失败')}</span>`;
+  const testLine = !t ? '' : t.busy ? `<span class="val"><span class="spin"></span> ${L('正在发送一次测试请求…', 'Sending a test request…')}</span>`
+    : t.ok ? `<span class="st-ok">${L('已连接', 'Connected')} · ${esc(t.preset)} · ${L(`往返 ${(t.ms / 1000).toFixed(1)} 秒`, `${(t.ms / 1000).toFixed(1)} s round trip`)}</span>`
+    : `<span class="st-err">${esc(t.msg || L('连接失败', 'Connection failed'))}</span>`;
   const table = S.presets.length
-    ? `<table class="lst"><thead><tr><th></th><th>模型</th><th>服务</th><th>Key</th><th class="num">中位延迟</th></tr></thead><tbody>${rows}</tbody></table>`
-    : '<div class="row"><span class="empty">配置里没有润色模型。</span></div>';
+    ? `<table class="lst"><thead><tr><th></th><th>${L('模型', 'Model')}</th><th>${L('服务', 'Service')}</th><th>Key</th><th class="num">${L('中位延迟', 'Median time')}</th></tr></thead><tbody>${rows}</tbody></table>`
+    : `<div class="row"><span class="empty">${L('配置里没有润色模型。', 'The config has no refinement models.')}</span></div>`;
   const keyRows = S.keys.map(keyRow);
   const envKeys = S.keys.filter(k => k.where === 'env');
   const migrate = envKeys.length
-    ? `<p class="note">${envKeys.map(k => esc(k.env)).join('、')} 还以明文存在 ~/.typlus/env 里。<button class="mbtn" data-act="migrate">移到钥匙串</button></p>` : '';
-  return head('润色模型')
-    + (S.prefs.refine ? '' : '<p class="note">润色已关闭，听写会直接插入原始转写。可以在「听写」里打开。</p>')
-    + `<div class="grp">${table}<div class="btnrow">${testLine}<button class="mbtn" data-act="test"${t && t.busy ? ' disabled' : ''}>测试连接</button></div></div>`
-    + `<div class="grp-l">API Key · 保存在钥匙串</div>` + grp(keyRows) + migrate
-    + '<p class="note">中位延迟来自最近 50 次润色；关掉历史记录后不再统计。</p>';
+    ? `<p class="note">${envKeys.map(k => esc(k.env)).join(L('、', ', '))} ${L('还以明文存在 ~/.typlus/env 里。', 'is still in plain text in ~/.typlus/env.')}<button class="mbtn" data-act="migrate">${L('移到钥匙串', 'Move to Keychain')}</button></p>` : '';
+  return head(paneTitle('model'))
+    + (S.prefs.refine ? '' : `<p class="note">${L('润色已关闭，听写会直接插入原始转写。可以在「听写」里打开。', 'Refinement is off, so dictation inserts the raw transcript. Turn it on under Dictation.')}</p>`)
+    + `<div class="grp">${table}<div class="btnrow">${testLine}<button class="mbtn" data-act="test"${t && t.busy ? ' disabled' : ''}>${L('测试连接', 'Test Connection')}</button></div></div>`
+    + `<div class="grp-l">${L('API Key · 保存在钥匙串', 'API keys · kept in the keychain')}</div>` + grp(keyRows) + migrate
+    + `<p class="note">${L('中位延迟来自最近 50 次润色；关掉历史记录后不再统计。', 'Median time is over the last 50 refinements; it stops updating while history is off.')}</p>`;
 }
 
 function keyRow(k) {
-  const where = { keychain: '已保存', env: '明文保存在 env 文件', environ: '来自环境变量', '': '未设置' }[k.where] || '';
+  const where = { keychain: L('已保存', 'Saved'), env: L('明文保存在 env 文件', 'In plain text in the env file'), environ: L('来自环境变量', 'From the environment'), '': L('未设置', 'Not set') }[k.where] || '';
   const hint = [k.env, k.hint || where].filter(Boolean).join(' · ');
   const msg = UI.keyMsg[k.env];
   const msgLine = msg ? `<small class="${msg.ok ? 'st-ok' : 'st-err'}">${esc(msg.text)}</small>` : '';
   if (UI.keyEdit === k.env) {
     const busy = UI.keyBusy === k.env;
     return `<div class="row"><div class="rl">${esc(k.service)}<small>${esc(k.env)}</small>${msgLine}</div>
-      <span class="inline"><input class="field" id="key-${esc(k.env)}" type="password" placeholder="粘贴 API Key" autocomplete="off" spellcheck="false" style="width:220px" aria-label="${esc(k.service)} API Key">
-      <button class="mbtn pri" data-act="savekey" data-env="${esc(k.env)}"${busy ? ' disabled' : ''}>${busy ? '<span class="spin"></span>' : '保存'}</button>
-      <button class="mbtn" data-act="cancelkey">取消</button></span></div>`;
+      <span class="inline"><input class="field" id="key-${esc(k.env)}" type="password" placeholder="${L('粘贴 API Key', 'Paste the API key')}" autocomplete="off" spellcheck="false" style="width:220px" aria-label="${esc(k.service)} API Key">
+      <button class="mbtn pri" data-act="savekey" data-env="${esc(k.env)}"${busy ? ' disabled' : ''}>${busy ? '<span class="spin"></span>' : L('保存', 'Save')}</button>
+      <button class="mbtn" data-act="cancelkey">${L('取消', 'Cancel')}</button></span></div>`;
   }
   return `<div class="row"><div class="rl">${esc(k.service)}<small>${esc(hint)}</small>${msgLine}</div>
-    <button class="mbtn${k.where ? '' : ' pri'}" data-act="editkey" data-env="${esc(k.env)}">${k.where ? '更换…' : '添加…'}</button></div>`;
+    <button class="mbtn${k.where ? '' : ' pri'}" data-act="editkey" data-env="${esc(k.env)}">${k.where ? L('更换…', 'Change…') : L('添加…', 'Add…')}</button></div>`;
 }
 
 function vocab() {
   const v = S.vocab;
-  const mine = v.mine.map(w => `<span class="wchip">${esc(w)}<button data-act="unword" data-term="${esc(w)}" aria-label="删除 ${esc(w)}">${I('xmark')}</button></span>`).join('');
+  const mine = v.mine.map(w => `<span class="wchip">${esc(w)}<button data-act="unword" data-term="${esc(w)}" aria-label="${L('删除', 'Remove')} ${esc(w)}">${I('xmark')}</button></span>`).join('');
   const suggest = v.suggest.length ? v.suggest.map(s => row(`${esc(s.term)}`,
-    `<span class="inline"><button class="mbtn" data-act="reject" data-term="${esc(s.term)}">忽略</button><button class="mbtn pri" data-act="word" data-term="${esc(s.term)}">加入</button></span>`,
-    s.n ? `最近 30 天出现 ${s.n} 次` : '')) : [row('<span class="empty">暂时没有建议。多听写几天，这里会列出常被写错的词。</span>', '')];
+    `<span class="inline"><button class="mbtn" data-act="reject" data-term="${esc(s.term)}">${L('忽略', 'Ignore')}</button><button class="mbtn pri" data-act="word" data-term="${esc(s.term)}">${L('加入', 'Add')}</button></span>`,
+    s.n ? L(`最近 30 天出现 ${s.n} 次`, `${s.n} time${s.n === 1 ? '' : 's'} in the last 30 days`) : ''))
+    : [row(`<span class="empty">${L('暂时没有建议。多听写几天，这里会列出常被写错的词。', 'No suggestions yet. After a few days of dictation, words that keep coming out wrong show up here.')}</span>`, '')];
   const fixes = v.fixes.length ? v.fixes.map(f => row(`${f.wrong ? `<span class="del">${esc(f.wrong)}</span> <span class="arrow">→</span> ` : ''}${esc(f.right)}`,
-    v.mine.includes(f.right) ? '<span class="val">已在词库</span>' : `<button class="mbtn" data-act="word" data-term="${esc(f.right)}">加入词库</button>`, esc(f.at || ''))) : [row('<span class="empty">在胶囊的修改卡片里改过的词会出现在这里。</span>', '')];
-  return head('词库')
-    + '<div class="grp-l">我的词 · 同时提示给语音识别和润色模型</div>'
-    + `<div class="grp"><div class="chipset">${mine}<input class="field" id="newword" placeholder="添加词，回车确认" aria-label="添加词"></div></div>`
+    v.mine.includes(f.right) ? `<span class="val">${L('已在词库', 'In the vocabulary')}</span>` : `<button class="mbtn" data-act="word" data-term="${esc(f.right)}">${L('加入词库', 'Add to Vocabulary')}</button>`, esc(f.at || '')))
+    : [row(`<span class="empty">${L('在胶囊的修改卡片里改过的词会出现在这里。', 'Words you fix in the capsule’s edit card show up here.')}</span>`, '')];
+  return head(paneTitle('vocab'))
+    + `<div class="grp-l">${L('我的词 · 同时提示给语音识别和润色模型', 'My words · hinted to both speech recognition and refinement')}</div>`
+    + `<div class="grp"><div class="chipset">${mine}<input class="field" id="newword" placeholder="${L('添加词，回车确认', 'Add a word, press Return')}" aria-label="${L('添加词', 'Add a word')}"></div></div>`
     + (UI.vocabMsg ? `<p class="note">${esc(UI.vocabMsg)}</p>` : '')
-    + '<div class="grp-l">建议加入 · 从最近的润色差异里找出</div>' + grp(suggest)
-    + '<div class="grp-l">最近的手动修改</div>' + grp(fixes);
+    + `<div class="grp-l">${L('建议加入 · 从最近的润色差异里找出', 'Suggested · found in recent refinements')}</div>` + grp(suggest)
+    + `<div class="grp-l">${L('最近的手动修改', 'Recent hand corrections')}</div>` + grp(fixes);
 }
 
 function audio() {
-  const inputs = [['', '系统默认'], ...S.inputs.map(n => [n, n])];
-  if (S.input && !S.inputs.includes(S.input)) inputs.push([S.input, `${S.input}（未连接）`]);
-  return head('音频')
-    + grp([row('输入设备', select('input', S.input, inputs, '输入设备'), '每次录音都会重新读取设备；选中的设备不在时用系统默认。')])
+  const inputs = [['', L('系统默认', 'System default')], ...S.inputs.map(n => [n, n])];
+  if (S.input && !S.inputs.includes(S.input)) inputs.push([S.input, L(`${S.input}（未连接）`, `${S.input} (not connected)`)]);
+  return head(paneTitle('audio'))
+    + grp([row(L('输入设备', 'Input device'), select('input', S.input, inputs, L('输入设备', 'Input device')),
+      L('每次录音都会重新读取设备；选中的设备不在时用系统默认。', 'Read again for every recording; when the chosen device is missing, the system default is used.'))])
     + grp([
-      row('录音时静音其他声音', sw('duck', S.duck, '录音时静音其他声音'), '使用带回声消除的耳机时自动跳过。录音结束或意外退出后都会恢复。'),
-      row('静音时在胶囊里提示', sw('show_ducked', S.prefs.show_ducked, '静音时在胶囊里提示'), '显示一个小喇叭斜杠，让你知道音乐停了是谁干的。'),
+      row(L('录音时静音其他声音', 'Mute other sound while recording'), sw('duck', S.duck, L('录音时静音其他声音', 'Mute other sound while recording')),
+        L('使用带回声消除的耳机时自动跳过。录音结束或意外退出后都会恢复。', 'Skipped with an echo-cancelling headset. Sound comes back when recording ends, even after a crash.')),
+      row(L('静音时在胶囊里提示', 'Show when muted'), sw('show_ducked', S.prefs.show_ducked, L('静音时在胶囊里提示', 'Show when muted')),
+        L('显示一个小喇叭斜杠，让你知道音乐停了是谁干的。', 'A small crossed-out speaker, so you know why the music stopped.')),
     ]);
 }
 
 const money = v => v == null ? '—' : v === 0 ? '$0' : v < 0.01 ? '<$0.01' : `$${v.toFixed(2)}`;
+const about = v => L(`约 ${money(v)}`, `about ${money(v)}`);
 const kilo = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n);
-const dayLabel = iso => { const [, m, d] = iso.split('-'); return `${+m}月${+d}日`; };
+const dayLabel = iso => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return L(`${m}月${d}日`, new Date(y, m - 1, d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+};
 
 function usage() {
   const u = S.usage;
-  if (!u) return head('用量') + grp([row('<span class="empty">用量从听写历史里统计。打开「历史与隐私 › 保存听写历史」后开始记录。</span>', '')]);
+  if (!u) return head(paneTitle('usage')) + grp([row(`<span class="empty">${L('用量从听写历史里统计。打开「历史与隐私 › 保存听写历史」后开始记录。', 'Usage is counted from the dictation history. It starts once History & Privacy › Save dictation history is on.')}</span>`, '')]);
   const hasCost = u.daily.some(d => d.cost);
   const by = UI.usageBy || (hasCost ? 'cost' : 'n');
-  const tile = (label, t) => `<div class="ustat"><small>${label}</small><b>${t.n} 次</b><span>${t.refined > t.untracked ? '约 ' + money(t.cost) : '—'}</span></div>`;
+  const tile = (label, t) => `<div class="ustat"><small>${label}</small><b>${times(t.n)}</b><span>${t.refined > t.untracked ? about(t.cost) : '—'}</span></div>`;
   const val = d => by === 'cost' ? (d.cost || 0) : d.n;
   const max = Math.max(...u.daily.map(val), by === 'cost' ? 0.01 : 1);
   const bars = u.daily.map((d, i) => {
     const h = val(d) ? Math.max(2, Math.round(val(d) / max * 100)) : 0;
-    const tip = `${dayLabel(d.day)} · ${d.n} 次${d.refined > d.untracked ? ` · 约 ${money(d.cost)}` : ''}`;
+    const tip = `${dayLabel(d.day)} · ${times(d.n)}${d.refined > d.untracked ? ` · ${about(d.cost)}` : ''}`;
     return `<i tabindex="-1" data-tip="${esc(tip)}" aria-label="${esc(tip)}"${i === u.daily.length - 1 ? ' class="now"' : ''}><s style="height:${h}%"></s></i>`;
   }).join('');
-  const peak = by === 'cost' ? money(max) : `${max} 次`;
+  const peak = L('最高 ', 'Peak ') + (by === 'cost' ? money(max) : times(max));
   const m = u.month;
   const cacheRate = m.prompt ? Math.round(m.cached / m.prompt * 100) : null;
   const models = u.models.length ? u.models.map(x => row(esc(x.model),
-    `<span class="val">${x.refined} 次 · ${x.cost == null ? '没有价格' : '约 ' + money(x.cost)}</span>`,
-    x.prompt ? `输入 ${kilo(x.prompt)} token（缓存 ${kilo(x.cached)}）· 输出 ${kilo(x.completion)}` : '这段时间没有记下 token 数')) : [row('<span class="empty">最近 30 天没有润色。</span>', '')];
-  return head('用量')
-    + `<div class="ustats">${tile('今天', u.today)}${tile('最近 7 天', u.week)}${tile(`最近 ${u.days} 天`, m)}</div>`
-    + `<div class="grp uchart"><div class="uhead"><b>每天${by === 'cost' ? '花费' : '听写次数'}</b>${seg('usageBy', by, [['cost', '花费'], ['n', '次数']])}</div>`
-    + `<div class="ubars" role="img" aria-label="最近 ${u.days} 天每天的${by === 'cost' ? '花费' : '听写次数'}">${bars}</div>`
-    + `<div class="uaxis"><span>${dayLabel(u.daily[0].day)}</span><span class="utip" data-rest="最高 ${esc(peak)}">最高 ${esc(peak)}</span><span>今天</span></div></div>`
-    + `<div class="grp-l">按模型 · 最近 ${u.days} 天</div>` + grp(models)
-    + `<p class="note">只算这台 Mac 上言字发出的润色请求，按 API 返回的 token 数和官方价格估算，语音识别在本地不花钱。${cacheRate != null ? `输入里 ${cacheRate}% 走了缓存，按一成计价。` : ''}${m.untracked ? `有 ${m.untracked} 次是更新前的记录，没有 token 数，只计次数。` : ''}</p>`;
+    `<span class="val">${L(`${x.refined} 次`, `${x.refined} refinement${x.refined === 1 ? '' : 's'}`)} · ${x.cost == null ? L('没有价格', 'no price') : about(x.cost)}</span>`,
+    x.prompt ? L(`输入 ${kilo(x.prompt)} token（缓存 ${kilo(x.cached)}）· 输出 ${kilo(x.completion)}`, `In ${kilo(x.prompt)} tokens (${kilo(x.cached)} cached) · out ${kilo(x.completion)}`)
+      : L('这段时间没有记下 token 数', 'No token counts recorded for this period')))
+    : [row(`<span class="empty">${L('最近 30 天没有润色。', 'No refinements in the last 30 days.')}</span>`, '')];
+  const what = by === 'cost' ? L('花费', 'spend') : L('听写次数', 'dictations');
+  const lastDays = L(`最近 ${u.days} 天`, `Last ${u.days} days`);
+  const note = L(
+    `只算这台 Mac 上${S.name}发出的润色请求，按 API 返回的 token 数和官方价格估算，语音识别在本地不花钱。${cacheRate != null ? `输入里 ${cacheRate}% 走了缓存，按一成计价。` : ''}${m.untracked ? `有 ${m.untracked} 次是更新前的记录，没有 token 数，只计次数。` : ''}`,
+    `Only the refinement requests ${S.name} sent from this Mac, estimated from the token counts the API returned and list prices. Speech recognition runs locally and costs nothing.${cacheRate != null ? ` ${cacheRate}% of the input was cached, billed at a tenth.` : ''}${m.untracked ? ` ${m.untracked} dictations are from before this was recorded and are only counted.` : ''}`);
+  return head(paneTitle('usage'))
+    + `<div class="ustats">${tile(L('今天', 'Today'), u.today)}${tile(L('最近 7 天', 'Last 7 days'), u.week)}${tile(lastDays, m)}</div>`
+    + `<div class="grp uchart"><div class="uhead"><b>${L(`每天${what}`, by === 'cost' ? 'Daily spend' : 'Daily dictations')}</b>${seg('usageBy', by, [['cost', L('花费', 'Spend')], ['n', L('次数', 'Count')]])}</div>`
+    + `<div class="ubars" role="img" aria-label="${esc(L(`最近 ${u.days} 天每天的${what}`, `Daily ${what}, last ${u.days} days`))}">${bars}</div>`
+    + `<div class="uaxis"><span>${dayLabel(u.daily[0].day)}</span><span class="utip" data-rest="${esc(peak)}">${esc(peak)}</span><span>${L('今天', 'Today')}</span></div></div>`
+    + `<div class="grp-l">${L('按模型', 'By model')} · ${lastDays}</div>` + grp(models)
+    + `<p class="note">${esc(note)}</p>`;
 }
 
 function privacy() {
   const p = S.prefs, c = UI.confirm;
   const confirmBox = !c ? '' : c.kind === 'days'
-    ? `<div class="confirm"><span>${c.n ? `会删除 ${c.n} 条 ${esc(DAYS[c.days])}以前的听写。` : `以后只保留最近 ${esc(DAYS[c.days])}。`}</span><button class="mbtn" data-act="cancelconfirm">取消</button><button class="mbtn pri" data-act="confirmdays">${c.n ? '删除并保留' : '好'}</button></div>`
-    : `<div class="confirm"><span>${c.n ? `删除全部 ${c.n} 条听写历史？不能撤销。` : '现在没有听写历史。'}</span><button class="mbtn" data-act="cancelconfirm">取消</button>${c.n ? '<button class="mbtn pri" data-act="confirmclear">全部删除</button>' : ''}</div>`;
-  const days = select('history_days', c && c.kind === 'days' ? c.days : p.history_days, S.choices.history_days.map(v => [v, DAYS[v] || `${v} 天`]), '保留');
-  return head('历史与隐私')
+    ? `<div class="confirm"><span>${c.n ? L(`会删除 ${c.n} 条 ${esc(DAYS(c.days))}以前的听写。`, `This deletes ${c.n} dictation${c.n === 1 ? '' : 's'} older than ${esc(DAYS(c.days))}.`) : L(`以后只保留最近 ${esc(DAYS(c.days))}。`, `From now on only the last ${esc(DAYS(c.days))} are kept.`)}</span><button class="mbtn" data-act="cancelconfirm">${L('取消', 'Cancel')}</button><button class="mbtn pri" data-act="confirmdays">${c.n ? L('删除并保留', 'Delete and Keep') : L('好', 'OK')}</button></div>`
+    : `<div class="confirm"><span>${c.n ? L(`删除全部 ${c.n} 条听写历史？不能撤销。`, `Delete all ${c.n} dictations from the history? This can't be undone.`) : L('现在没有听写历史。', 'There is no dictation history.')}</span><button class="mbtn" data-act="cancelconfirm">${L('取消', 'Cancel')}</button>${c.n ? `<button class="mbtn pri" data-act="confirmclear">${L('全部删除', 'Delete All')}</button>` : ''}</div>`;
+  const days = select('history_days', c && c.kind === 'days' ? c.days : p.history_days, S.choices.history_days.map(v => [v, DAYS(v)]), L('保留', 'Keep'));
+  const count = S.history.count;
+  return head(paneTitle('privacy'))
     + grp([
-      row('保存听写历史', sw('save_history', p.save_history, '保存听写历史'), `文字、耗时和 App 名称存在这台 Mac 上；${S.history.count ? `现在有 ${S.history.count} 条，` : ''}从不保存音频。`),
-      row('保留', days),
-      row('记下发送前的修改', sw('save_sent_text', p.save_sent_text, '记下发送前的修改', !p.save_history), '插入后你手动改过再发送的，会把最后发出去的文字存在这条历史旁边，方便对照。只看刚插入的那个输入框，文档类的大段内容不记。'),
+      row(L('保存听写历史', 'Save dictation history'), sw('save_history', p.save_history, L('保存听写历史', 'Save dictation history')),
+        L(`文字、耗时和 App 名称存在这台 Mac 上；${count ? `现在有 ${count} 条，` : ''}从不保存音频。`,
+          `Text, timings and app names stay on this Mac${count ? ` (${count} now)` : ''}; audio is never saved.`)),
+      row(L('保留', 'Keep'), days),
+      row(L('记下发送前的修改', 'Keep edits made before sending'), sw('save_sent_text', p.save_sent_text, L('记下发送前的修改', 'Keep edits made before sending'), !p.save_history),
+        L('插入后你手动改过再发送的，会把最后发出去的文字存在这条历史旁边，方便对照。只看刚插入的那个输入框，文档类的大段内容不记。',
+          'If you edit the text after it is inserted and then send it, what you sent is kept next to it in the history. Only the field it went into is watched, and long documents are skipped.')),
     ], c && c.kind === 'days' ? confirmBox : '')
-    + '<div class="grp-l">发送给润色模型的内容</div>'
+    + `<div class="grp-l">${L('发送给润色模型的内容', 'What the refinement model receives')}</div>`
     + grp([
-      row('原始转写文字', '<span class="st-ok">发送</span>'),
-      row('当前 App 名称和窗口标题', sw('send_window_title', p.send_window_title, '发送窗口标题'), '用来判断语气。窗口标题可能包含文件名或邮件主题。'),
-      row('光标前的文字', sw('send_before_text', p.send_before_text, '发送光标前的文字'), '最多约 300 字，用来按上文写对人名、术语和同音字。会多花一点费用和时间，默认关闭；密码框从不读取。'),
-      row('所选文字', sw('rewrite_selection', p.rewrite_selection, '发送所选文字'), '只在“改写所选文字”时发送。'),
-      row('音频', '<span class="val">从不离开这台 Mac</span>'),
+      row(L('原始转写文字', 'The raw transcript'), `<span class="st-ok">${L('发送', 'Sent')}</span>`),
+      row(L('当前 App 名称和窗口标题', 'App name and window title'), sw('send_window_title', p.send_window_title, L('发送窗口标题', 'Send the window title')),
+        L('用来判断语气。窗口标题可能包含文件名或邮件主题。', 'Used to judge the tone. A window title can contain a file name or an email subject.')),
+      row(L('光标前的文字', 'Text before the cursor'), sw('send_before_text', p.send_before_text, L('发送光标前的文字', 'Send the text before the cursor')),
+        L('最多约 300 字，用来按上文写对人名、术语和同音字。会多花一点费用和时间，默认关闭；密码框从不读取。',
+          'Up to about 300 characters, to get names, terms and homophones right from context. Costs a little more time and money, so it is off by default; password fields are never read.')),
+      row(L('所选文字', 'The selected text'), sw('rewrite_selection', p.rewrite_selection, L('发送所选文字', 'Send the selected text')), L('只在“改写所选文字”时发送。', 'Only when rewriting the selection.')),
+      row(L('音频', 'Audio'), `<span class="val">${L('从不离开这台 Mac', 'Never leaves this Mac')}</span>`),
     ])
-    + `<div class="grp" style="background:transparent; box-shadow:none">${c && c.kind === 'clear' ? `<div class="grp">${confirmBox}</div>` : ''}<div class="btnrow left"><button class="mbtn" data-act="open" data-what="data">${I('folder')} 在访达中显示数据</button><button class="mbtn danger" data-act="clear">${I('trash')} 清除历史…</button></div></div>`;
+    + `<div class="grp" style="background:transparent; box-shadow:none">${c && c.kind === 'clear' ? `<div class="grp">${confirmBox}</div>` : ''}<div class="btnrow left"><button class="mbtn" data-act="open" data-what="data">${I('folder')} ${L('在访达中显示数据', 'Show Data in Finder')}</button><button class="mbtn danger" data-act="clear">${I('trash')} ${L('清除历史…', 'Clear History…')}</button></div></div>`;
 }
 
 const RENDER = { general, dictation, keys, model, vocab, audio, usage, privacy };
@@ -213,7 +258,7 @@ const RENDER = { general, dictation, keys, model, vocab, audio, usage, privacy }
 /* ---------------- drawing ---------------- */
 function drawSide() {
   $('#side').innerHTML = PANES.map(([id, t, ic, c]) =>
-    `<button role="tab" aria-selected="${id === pane}" data-pane="${id}"><span class="tile" style="background:${c}">${I(ic)}</span>${t}</button>`).join('')
+    `<button role="tab" aria-selected="${id === pane}" data-pane="${id}"><span class="tile" style="background:${c}">${I(ic)}</span>${esc(L(...t))}</button>`).join('')
     + `<div class="foot">${S ? esc(`${S.name} ${S.version || ''}`) : ''}</div>`;
 }
 
@@ -224,7 +269,7 @@ function draw() {
   const sel = a && a.selectionStart != null ? [a.selectionStart, a.selectionEnd] : null;
   drawSide();
   const main = $('#panes'), top = main.scrollTop;
-  main.innerHTML = `<section class="pane" role="tabpanel" aria-label="${esc(PANES.find(p => p[0] === pane)[1])}">${RENDER[pane]()}</section>`;
+  main.innerHTML = `<section class="pane" role="tabpanel" aria-label="${esc(paneTitle(pane))}">${RENDER[pane]()}</section>`;
   main.scrollTop = top;
   if (id) {
     const el = document.getElementById(id);
@@ -339,7 +384,13 @@ function saveKey(envName) {
 }
 
 /* ---------------- from Python ---------------- */
-on('env', m => { env(m); document.body.classList.toggle('has-glass', !!m.native); });
+on('env', m => {
+  env(m);
+  document.body.classList.toggle('has-glass', !!m.native);
+  document.title = L('设置', 'Settings');
+  $('#side').setAttribute('aria-label', L('设置分区', 'Settings sections'));
+  if (S) draw(); else drawSide();
+});
 on('state', m => { S = m; draw(); });
 on('pane', m => show(m.id));
 on('keyResult', m => {

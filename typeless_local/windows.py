@@ -603,6 +603,8 @@ class Windows:
         elif kind == "download":
             if getattr(self.app, "_download", None) is None and not self._model_cached():
                 self.app._start_model_prefetch()
+        elif kind == "lang":
+            self._apply_setting("ui_language", str(msg.get("v") or ""))
         elif kind == "done":
             try:
                 self.app.set_preference("onboarding_done", True)

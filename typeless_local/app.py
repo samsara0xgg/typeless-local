@@ -1753,13 +1753,61 @@ def configure_logging() -> None:
     )
 
 
+def claim_single_instance(config_dir: Path):
+    """Hold a lock on ~/.typlus/app.lock for the life of the process.
+
+    Returns the open lock file, or None when another copy already holds it:
+    two copies (the installed app and one run from source) would both answer
+    F5 and paste every dictation twice.
+    """
+
+    import fcntl  # noqa: PLC0415
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+    handle = open(config_dir / "app.lock", "a+")  # noqa: SIM115 - held until exit
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
+def _say_already_running(app) -> None:
+    try:
+        from AppKit import NSAlert  # noqa: PLC0415
+
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(t(f"{brand.DISPLAY_NAME}已经在运行", f"{brand.ENGLISH_NAME} is already running"))
+        alert.setInformativeText_(
+            t(
+                "另一个言字（可能是从源码运行的那个）已经在响应 F5。先退出它，再打开这个。",
+                "Another copy, perhaps one run from source, is already answering F5. Quit it first, then open this one.",
+            )
+        )
+        app.activateIgnoringOtherApps_(True)
+        alert.runModal()
+    except Exception:
+        LOGGER.debug("Could not show the already-running alert", exc_info=True)
+
+
+_INSTANCE_LOCK = None
+
+
 def main() -> None:
     """Run the macOS app."""
 
+    global _INSTANCE_LOCK
     configure_logging()
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     config = load_config()
+    _INSTANCE_LOCK = claim_single_instance(config.user_paths.config_dir)
+    if _INSTANCE_LOCK is None:
+        LOGGER.error("Another copy of %s is already running; quitting", brand.ENGLISH_NAME)
+        i18n.use(load_preferences(config.user_paths).ui_language)
+        _say_already_running(app)
+        return
     # Keys saved from Settings live in the login keychain; one still in
     # ~/.typlus/env (or the environment) is used as it is.
     keychain.fill_environ(api_key_names(config))
