@@ -658,6 +658,8 @@ class WebWindow:
         _OPEN.add(self)
         _set_regular(True)
         self.window.makeKeyAndOrderFront_(None)
+        # Keys go to the page (Enter, Cmd+1…7, the arrows) without a click first.
+        self.window.makeFirstResponder_(self.page.view)
         # A menu-bar app's window only gets the keyboard once the app is active.
         NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
 
@@ -732,7 +734,8 @@ def _drag_view_class():
     if _DragView is None:
         from AppKit import NSView  # noqa: PLC0415
 
-        class DragView(NSView):
+        # Objective-C class names are process-wide, hence the prefix.
+        class YanaDragView(NSView):
             def mouseDown_(self, event) -> None:  # noqa: N802 - Cocoa selector
                 window = self.window()
                 if window is None:
@@ -742,7 +745,7 @@ def _drag_view_class():
                     return
                 window.performWindowDragWithEvent_(event)
 
-        _DragView = DragView
+        _DragView = YanaDragView
     return _DragView
 
 
@@ -752,9 +755,9 @@ def _window_delegate(owner: WebWindow):
         import objc  # noqa: PLC0415
         from Foundation import NSObject  # noqa: PLC0415
 
-        class WindowDelegate(NSObject):
+        class YanaWindowDelegate(NSObject):
             def initWithOwner_(self, owner_):  # noqa: N802
-                self = objc.super(WindowDelegate, self).init()
+                self = objc.super(YanaWindowDelegate, self).init()
                 if self is None:
                     return None
                 self.owner = owner_
@@ -763,7 +766,7 @@ def _window_delegate(owner: WebWindow):
             def windowWillClose_(self, notification) -> None:  # noqa: N802
                 self.owner.will_close()
 
-        _Delegate = WindowDelegate
+        _Delegate = YanaWindowDelegate
     delegate = _Delegate.alloc().initWithOwner_(owner)
     _DELEGATES.append(delegate)
     return delegate
