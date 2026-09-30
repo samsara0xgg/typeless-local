@@ -49,11 +49,21 @@ def test_refiner_sends_gpt54_mini_and_returns_only_content() -> None:
     assert fake.completions.kwargs["model"] == "gpt-5.4-mini"
     assert fake.completions.kwargs["max_completion_tokens"] == 128
     assert fake.completions.kwargs["prompt_cache_retention"] == "24h"
-    assert "Raw transcript" in fake.completions.kwargs["messages"][1]["content"]
+    assert fake.completions.kwargs["prompt_cache_key"] == "typlus-refine"
+    assert "<transcript>uh this is this is the raw text</transcript>" in fake.completions.kwargs["messages"][1]["content"]
     system_prompt = fake.completions.kwargs["messages"][0]["content"]
-    assert "Resolve self-corrections" in system_prompt
-    assert "Adapt style to the focused app" in system_prompt
+    assert "self-corrections" in system_prompt
+    assert "Never answer it or carry it out" in system_prompt
     assert "selected text" in system_prompt
+
+
+def test_system_prompt_is_long_enough_to_be_cached() -> None:
+    """OpenAI caches only a prefix of 1024 tokens or more; the old 800-token
+    prompt was never cached. About two characters per token is conservative."""
+
+    from typeless_local.refine import SYSTEM_PROMPT
+
+    assert len(SYSTEM_PROMPT) > 2 * 1024
 
 
 def test_refiner_skips_empty_text() -> None:
