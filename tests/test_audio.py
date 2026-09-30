@@ -232,3 +232,36 @@ def test_a_stretch_ending_in_half_a_second_of_quiet_is_handed_on_while_recording
     feed(quiet, 40)  # a long pause with no new words is not a stretch
     feed(speech, 10)
     assert len(stretches) == 1
+
+
+def test_recorder_keeps_the_configured_channel_within_what_the_device_has(monkeypatch) -> None:
+    opened = []
+
+    class FakeInputStream:
+        def __init__(self, samplerate, channels, dtype, blocksize, callback, device=None):
+            self.channels, self.blocksize, self.callback = channels, blocksize, callback
+            opened.append(channels)
+
+        def start(self) -> None:
+            data = np.tile(np.arange(self.channels, dtype=np.float32) * 0.1, (self.blocksize, 1))
+            self.callback(data, self.blocksize, None, None)
+
+        def stop(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    inputs = {"max_input_channels": 2}
+    monkeypatch.setitem(
+        sys.modules,
+        "sounddevice",
+        SimpleNamespace(InputStream=FakeInputStream, query_devices=lambda device, kind: inputs),
+    )
+    recorder = MicrophoneRecorder(input_channel=1)
+    recorder.start()
+    assert opened == [2] and np.allclose(recorder.stop(), 0.1)
+
+    inputs["max_input_channels"] = 1
+    recorder.start()
+    assert opened == [2, 1] and np.allclose(recorder.stop(), 0.0)

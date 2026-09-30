@@ -56,6 +56,7 @@ class AppConfig:
     debug_hotkey: bool = False
     user_paths: UserPaths | None = None
     input_device: str = ""
+    input_channel: int = 0
     aec_pairs: tuple[dict[str, str], ...] = ()
 
 
@@ -289,6 +290,7 @@ def load_config() -> AppConfig:
         low_volume_threshold=float(audio_config.get("low_volume_threshold") or 0.02),
         keep_recordings=int(audio_config.get("keep_recordings") or 0),
         input_device=str(audio_config.get("input_device") or "").strip(),
+        input_channel=int(audio_config.get("input_channel") or 0),
         aec_pairs=_read_aec_pairs(jarvis_config),
         debug_hotkey=os.environ.get("TYPELESS_LOCAL_DEBUG_HOTKEY") == "1",
         user_paths=user_paths,

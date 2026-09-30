@@ -133,9 +133,13 @@ class MicrophoneRecorder:
         on_level: LevelCallback | None = None,
         device: int | None = None,
         on_stretch: StretchCallback | None = None,
+        input_channel: int = 0,
     ) -> None:
         self.sample_rate = sample_rate
         self.channels = channels
+        # Which of the device's channels to keep. The reSpeaker XVF3800 sends its
+        # hot, clipping AGC mix on 0 and a cleaner beam on 1.
+        self.input_channel = input_channel
         self.block_duration = block_duration
         self.on_level = on_level
         # Reassigned when the menu picks another input; None means system default.
@@ -253,12 +257,17 @@ class MicrophoneRecorder:
         self.heard_until = self._stretch_from = self._stretch_samples = self._quiet_samples = 0
         self._spoke = False
         blocksize = max(1, int(self.sample_rate * self.block_duration))
+        channel, channels = self.input_channel, self.channels
+        if channel:
+            available = int(sd.query_devices(self.device, "input")["max_input_channels"])
+            channel = min(channel, available - 1)
+            channels = max(channels, channel + 1)
 
         def callback(indata, frames, time_info, status) -> None:
             del frames, time_info
             if status:
                 LOGGER.warning("Audio input status: %s", status)
-            chunk = np.asarray(indata[:, 0], dtype=np.float32).copy()
+            chunk = np.asarray(indata[:, channel], dtype=np.float32).copy()
             with self._lock:
                 self._chunks.append(chunk)
             self._track_stretch(chunk)
@@ -267,7 +276,7 @@ class MicrophoneRecorder:
 
         stream = sd.InputStream(
             samplerate=self.sample_rate,
-            channels=self.channels,
+            channels=channels,
             dtype="float32",
             blocksize=blocksize,
             callback=callback,
