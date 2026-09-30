@@ -18,6 +18,7 @@ LOGGER = logging.getLogger(__name__)
 
 _PROMPT_ECHO_RE = re.compile(r"^\s*Common terms:[^\n]*\n", re.IGNORECASE)
 _LOOP_RE = re.compile(r"(.{2,8})\1{2,}")
+_RUN_RE = re.compile(r"(\S)\1{7,}")
 DEFAULT_MLX_WHISPER_REPO = "mlx-community/whisper-large-v3-turbo"
 
 
@@ -168,9 +169,10 @@ class JarvisASR:
 
 
 def _looks_looped(text: str) -> bool:
-    """A 2-8 character unit repeated three times in a row, e.g. 我都知道,我都知道,我都知道."""
+    """A 2-8 character unit repeated three times in a row (我都知道,我都知道,我都知道),
+    or one character, punctuation included, eight times (……… by the hundred)."""
 
-    return bool(_LOOP_RE.search(re.sub(r"[\s\W_]+", "", text)))
+    return bool(_LOOP_RE.search(re.sub(r"[\s\W_]+", "", text)) or _RUN_RE.search(text))
 
 
 def _strip_prompt_echo(text: str, *prompts: str) -> str:
