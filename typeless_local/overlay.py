@@ -1,43 +1,86 @@
-"""Typeless-like floating recording control rendered with WebKit/CSS."""
+"""The capsule's window: a transparent, non-activating panel near the bottom of the screen.
+
+The page in ``web/overlay.html`` draws the capsule and animates it. This module
+owns the window around it and follows the page: every frame the page reports
+the rectangles it drew, native glass views are moved under them, and the panel
+takes mouse events only while the pointer is over one of them, so the rest of
+the screen stays clickable through it.
+
+The panel never becomes key, except while a card needs the keyboard: a click on
+a button must leave the keyboard with the app the text went to, or a ⌘Z sent to
+undo a paste would land here instead.
+"""
 
 from __future__ import annotations
 
-import json
+import logging
+import time
 from typing import Callable
 
+import AppKit
 from AppKit import (
     NSBackingStoreBuffered,
     NSColor,
     NSEvent,
+    NSFloatingWindowLevel,
+    NSMakePoint,
     NSMakeRect,
     NSPanel,
     NSScreen,
-    NSFloatingWindowLevel,
     NSStatusWindowLevel,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorFullScreenAuxiliary,
+    NSWindowCollectionBehaviorIgnoresCycle,
     NSWindowStyleMaskBorderless,
     NSWindowStyleMaskNonactivatingPanel,
+    NSWorkspace,
 )
-from Foundation import NSObject, NSTimer
-from WebKit import WKUserContentController, WKWebView, WKWebViewConfiguration
+from Foundation import NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer
+from WebKit import WKWebView
 import objc
 
+from typeless_local.glass import FlippedView, GlassLayer
+from typeless_local.webview import WebPage, accessibility_env, announce
 
-ActionCallback = Callable[[str], None]
+LOGGER = logging.getLogger(__name__)
 
-PANEL_WIDTH = 500
-PANEL_HEIGHT = 500
-# How often the visible panel re-checks which display the pointer is on.
-SCREEN_FOLLOW_INTERVAL = 0.1
-BAR_HEIGHT = 34
-IDLE_WIDTH = 40
-IDLE_HEIGHT = 6
-STARTING_WIDTH = 54
-RECORDING_WIDTH = 116
-HANDS_FREE_WIDTH = 116
-COUNTDOWN_EXTRA_WIDTH = 40
+ActionCallback = Callable[[str, dict], None]
+HoverCallback = Callable[[bool], None]
 
+PANEL_WIDTH = 720
+PANEL_HEIGHT = 360
+# While the pointer is over the capsule, how often it is re-read: WebKit gets
+# no mouse-moved events in a window that is not key, so hover is fed by hand.
+POINTER_INTERVAL = 1 / 30
+# Which display the pointer is on is checked at most this often.
+FOLLOW_INTERVAL = 0.1
+# The capsule under (or over) the caret: gap to the caret, and room the page
+# keeps between the capsule and the panel's edge for the glass's shadow.
+CARET_GAP = 8.0
+CARET_PAD = 16.0
+# Height a card can grow to; the side of the caret with less room is not used.
+CARET_ROOM = 280.0
+# What the page can draw (web/overlay.js, view()) and the actions it posts back.
+STATES = frozenset({
+    "starting", "rec", "transcribing", "refining",
+    "inserted", "inserted-raw-net", "inserted-raw-key",
+    "edit-notarget", "edit-modify",
+    "empty", "mic", "download", "cancelled", "undone", "replaced", "copied",
+    "perm", "notice", "error",
+})
+CARD_STATES = frozenset({"edit-notarget", "edit-modify"})
+ACTIONS = frozenset({
+    "primary", "cancel", "finish",                          # idle handle, recording
+    "undo", "edit", "rerefine", "setkey", "input", "micperm", "perm", "log",  # buds
+    "close", "done", "replace",                             # cards
+})
+
+_A11Y_CHANGED = getattr(
+    AppKit,
+    "NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification",
+    "NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification",
+)
+_MOUSE_MOVED_MASK = (1 << 5) | (1 << 6) | (1 << 7)  # moved, left and right dragged
 
 
 def _screen_for_point(point, screens):
@@ -57,1063 +100,65 @@ def _screen_for_point(point, screens):
     return None
 
 
-def _hover_kind_for_local_point(
-    state: str,
-    x: float,
-    y: float,
-    *,
-    has_countdown: bool = False,
-) -> str:
-    """Return the tooltip target under a panel-local point."""
+def hit_shape(shapes: list[dict], x: float, y: float) -> str:
+    """The id of the clickable shape under page point (x, y), or "".
 
-    bar_bottom = 8.0
-    bar_height = float(BAR_HEIGHT)
+    Shapes are rounded rectangles in page coordinates (origin top-left), as the
+    page reports them; the corners outside the rounding are not the capsule.
+    """
 
-    if state == "hover":
-        bar_width = 70.0
-        bar_left = (PANEL_WIDTH - bar_width) / 2.0
-        if bar_left <= x <= bar_left + bar_width and bar_bottom <= y <= bar_bottom + bar_height:
-            return "idle"
-        return ""
-
-    if state not in {"recording", "hands-free"}:
-        return ""
-
-    bar_width = float(RECORDING_WIDTH + (COUNTDOWN_EXTRA_WIDTH if has_countdown else 0))
-    bar_left = (PANEL_WIDTH - bar_width) / 2.0
-    button_top = bar_bottom + 29.0
-    button_bottom = bar_bottom + 5.0
-    if y < button_bottom or y > button_top:
-        return ""
-
-    # Matches the recording-layer flex geometry: 3px centered slack, button margins,
-    # 24px circular controls, 38px waveform, and optional 40px countdown block.
-    cancel_left = bar_left + 7.0
-    cancel_right = cancel_left + 24.0
-    finish_left = bar_left + (125.0 if has_countdown else 85.0)
-    finish_right = finish_left + 24.0
-    if cancel_left <= x <= cancel_right:
-        return "cancel"
-    if finish_left <= x <= finish_right:
-        return "finish"
+    for shape in reversed(shapes):
+        if not shape.get("hit"):
+            continue
+        left, top = float(shape["x"]), float(shape["y"])
+        width, height = float(shape["w"]), float(shape["h"])
+        if not (left <= x <= left + width and top <= y <= top + height):
+            continue
+        radius = max(0.0, min(float(shape.get("r", 0.0)), width / 2.0, height / 2.0))
+        nearest_x = min(max(x, left + radius), left + width - radius)
+        nearest_y = min(max(y, top + radius), top + height - radius)
+        if (x - nearest_x) ** 2 + (y - nearest_y) ** 2 <= radius * radius + 1.0:
+            return str(shape.get("id", ""))
     return ""
 
 
-OVERLAY_HTML = r"""
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<style>
-  html, body {
-    margin: 0;
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-    background: transparent;
-    pointer-events: none;
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-  }
-
-  #root {
-    position: relative;
-    width: 100%;
-    height: 100%;
-    display: flex;
-    align-items: flex-end;
-    justify-content: center;
-    padding: 8px;
-    box-sizing: border-box;
-  }
-
-  #bar {
-    position: relative;
-    width: 40px;
-    height: 6px;
-    border-radius: 99px;
-    background: rgba(128, 128, 128, 0.5);
-    opacity: 0;
-    overflow: hidden;
-    transform: translateZ(0);
-    transform-origin: center;
-    transition:
-      width 200ms cubic-bezier(0.05, 0.6, 0.4, 0.95),
-      height 200ms cubic-bezier(0.05, 0.6, 0.4, 0.95),
-      opacity 160ms ease,
-      transform 200ms cubic-bezier(0.05, 0.6, 0.4, 0.95),
-      background-color 160ms ease,
-      border-color 160ms ease;
-    box-shadow:
-      0 2px 4px rgba(0, 0, 0, 0.25),
-      0 0 20px rgba(0, 0, 0, 0.15),
-      0 25px 30px rgba(0, 0, 0, 0.25);
-    border: 0 solid transparent;
-    pointer-events: none;
-  }
-
-  #bar.visible {
-    opacity: 1;
-  }
-
-  #bar.active {
-    height: 34px;
-    background: #000;
-    border: 1px solid rgba(255, 255, 255, 0.32);
-    box-sizing: border-box;
-  }
-
-  #bar.recording {
-    width: 116px;
-    pointer-events: auto;
-  }
-
-  #bar.hands-free {
-    width: 116px;
-    pointer-events: auto;
-  }
-
-  #bar.has-countdown.recording {
-    width: 156px;
-  }
-
-  #bar.has-countdown.hands-free {
-    width: 156px;
-  }
-
-  #bar.starting {
-    width: 54px;
-    height: 12px;
-    background: rgba(0, 0, 0, 0.5);
-    border: 1px solid rgba(255, 255, 255, 0.22);
-  }
-
-  #bar.thinking,
-  #bar.error,
-  #bar.empty {
-    width: 92px;
-    height: 34px;
-  }
-
-  #bar.error,
-  #bar.empty {
-    width: 116px;
-  }
-
-  #bar.hover {
-    width: 70px;
-    height: 34px;
-    background: #000;
-    border: 1px solid rgba(255, 255, 255, 0.32);
-    pointer-events: auto;
-  }
-
-  #bar.idle-base {
-    width: 40px;
-    height: 6px;
-    background: rgba(128, 128, 128, 0.5);
-  }
-
-  #bar.copy-fallback {
-    width: 360px;
-    height: auto;
-    border-radius: 8px;
-    background: rgba(29, 26, 26, 1);
-    border: 1px solid rgba(119, 119, 119, 0.30);
-    box-sizing: border-box;
-    box-shadow:
-      0px 25px 30px 0px rgba(0, 0, 0, 0.25),
-      0px 0px 20px 0px rgba(0, 0, 0, 0.15);
-    backdrop-filter: blur(4px);
-    pointer-events: auto;
-    overflow: visible;
-  }
-
-  .layer {
-    position: absolute;
-    inset: 0;
-    display: none;
-    align-items: center;
-    justify-content: center;
-  }
-
-  #bar.copy-fallback .copy-layer {
-    position: relative;
-    inset: auto;
-  }
-
-  #bar.starting .starting-layer,
-  #bar.recording .recording-layer,
-  #bar.hands-free .recording-layer,
-  #bar.thinking .thinking-layer,
-  #bar.error .thinking-layer,
-  #bar.empty .thinking-layer,
-  #bar.copy-fallback .copy-layer,
-  #bar.hover .hover-layer {
-    display: flex;
-  }
-
-  .starting-sweep {
-    position: absolute;
-    width: 27px;
-    height: 27px;
-    border-radius: 50%;
-    left: -27px;
-    top: 50%;
-    margin-top: -13.5px;
-    background: rgba(242, 241, 240, 0.25);
-    filter: blur(10px);
-    animation: loadingMove 500ms cubic-bezier(0.42, 0, 0.58, 1) infinite;
-  }
-
-  @keyframes loadingMove {
-    from { transform: translateX(0); }
-    to { transform: translateX(81px); }
-  }
-
-  .bars {
-    height: 24px;
-    width: 38px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 2px;
-    overflow: hidden;
-  }
-
-  .bar {
-    width: 2px;
-    height: 2px;
-    min-height: 2px;
-    border-radius: 99px;
-    background: rgba(255, 255, 255, 1);
-    transition: background-color 200ms ease;
-    opacity: 1;
-  }
-
-  .countdown {
-    display: none;
-    width: 32px;
-    margin-left: 8px;
-    color: #fff;
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 1;
-    text-align: left;
-  }
-
-  #bar.has-countdown .countdown {
-    display: block;
-  }
-
-  .side-button {
-    width: 24px;
-    height: 24px;
-    border: 0;
-    padding: 0;
-    border-radius: 50%;
-    display: none;
-    align-items: center;
-    justify-content: center;
-    pointer-events: auto;
-    cursor: default;
-  }
-
-  .control-tooltip {
-    position: absolute;
-    left: 50%;
-    bottom: 52px;
-    z-index: 20;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    width: max-content;
-    max-width: fit-content;
-    padding: 6px 10px;
-    border-radius: 8px;
-    background: rgba(29, 26, 26, 1);
-    color: rgba(242, 241, 240, 1);
-    font-size: 12px;
-    font-weight: 400;
-    line-height: 18px;
-    white-space: nowrap;
-    pointer-events: none;
-    opacity: 0;
-    transform: translateX(-50%) translateY(4px) scale(0.98);
-    transition: opacity 100ms ease, transform 100ms ease;
-    will-change: transform, opacity;
-    backdrop-filter: blur(4px);
-    box-shadow:
-      0px 4px 6px -2px rgba(17, 17, 17, 0.03),
-      0px 12px 16px -4px rgba(17, 17, 17, 0.10),
-      0px 0px 1px 0px rgba(242, 241, 240, 0.55);
-    filter: drop-shadow(0px 0px 1px rgba(128, 128, 128, 0.40));
-  }
-
-  .control-tooltip.visible {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0) scale(1);
-  }
-
-  .tooltip-key {
-    min-width: 18px;
-    height: 18px;
-    padding: 0 5px;
-    border-radius: 5px;
-    border: 1px solid rgba(242, 241, 240, 0.20);
-    background: rgba(242, 241, 240, 0.08);
-    color: rgba(242, 241, 240, 0.82);
-    display: none;
-    align-items: center;
-    justify-content: center;
-    box-sizing: border-box;
-    font-size: 11px;
-    line-height: 16px;
-  }
-
-  .control-tooltip.has-key .tooltip-key {
-    display: inline-flex;
-  }
-
-  #bar.recording .side-button,
-  #bar.hands-free .side-button {
-    display: flex;
-  }
-
-  .cancel {
-    margin-left: 4px;
-    margin-right: 8px;
-    background: rgba(66, 66, 66, 1);
-  }
-
-  .finish {
-    margin-left: 8px;
-    margin-right: 4px;
-    background: rgba(255, 255, 255, 1);
-  }
-
-  .control-icon {
-    width: 18px;
-    height: 18px;
-    display: block;
-    fill: currentColor;
-    flex-shrink: 0;
-  }
-
-  .cancel .control-icon {
-    width: 17px;
-    height: 17px;
-    color: #fff;
-  }
-
-  .finish .control-icon {
-    width: 20px;
-    height: 20px;
-    color: #000;
-  }
-
-  .progress {
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: 0%;
-    background: rgba(242, 241, 240, 0.25);
-    border-radius: 99px;
-    transition: width 100ms linear;
-  }
-
-  .thinking-text {
-    position: relative;
-    z-index: 1;
-    color: rgba(242, 241, 240, 0.56);
-    font-size: 14px;
-    font-weight: 450;
-    line-height: 34px;
-    white-space: nowrap;
-  }
-
-  #bar.thinking .thinking-text {
-    color: transparent;
-    background:
-      linear-gradient(
-        90deg,
-        rgba(242, 241, 240, 0.50) 0%,
-        rgba(242, 241, 240, 0.92) 45%,
-        rgba(242, 241, 240, 0.50) 90%
-      );
-    background-size: 220% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    animation: textShimmer 2400ms ease-in-out infinite;
-  }
-
-  @keyframes textShimmer {
-    0% { background-position: 180% 0; }
-    100% { background-position: -80% 0; }
-  }
-
-  .hover-dots {
-    display: flex;
-    gap: 2px;
-  }
-
-  .hover-dots span {
-    width: 2px;
-    height: 2px;
-    border-radius: 50%;
-    background: rgba(128, 128, 128, 1);
-  }
-
-  .copy-layer {
-    inset: 0;
-    padding: 16px;
-    box-sizing: border-box;
-    flex-direction: column;
-    align-items: stretch;
-    justify-content: flex-start;
-    gap: 8px;
-    color: #fff;
-  }
-
-  .copy-header {
-    min-height: 20px;
-    display: flex;
-    align-items: flex-start;
-    gap: 8px;
-    font-size: 14px;
-    font-weight: 500;
-    line-height: 20px;
-    color: #fff;
-  }
-
-  .copy-title-group {
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
-    gap: 8px;
-    min-width: 0;
-    margin-left: auto;
-    margin-right: auto;
-  }
-
-  .copy-info-wrap {
-    width: 20px;
-    height: 20px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    font-size: 16px;
-  }
-
-  .copy-info {
-    width: 16px;
-    height: 16px;
-    color: rgba(101, 138, 255, 1);
-    flex-shrink: 0;
-  }
-
-  .copy-title {
-    min-width: 0;
-    color: #fff;
-    word-break: break-word;
-    white-space: pre-wrap;
-  }
-
-  .copy-close {
-    width: 20px;
-    height: 20px;
-    border: 0;
-    padding: 0;
-    margin: 0;
-    background: transparent;
-    color: #8f8f8f;
-    pointer-events: auto;
-    cursor: default;
-  }
-
-  .copy-close .control-icon {
-    width: 16px;
-    height: 16px;
-  }
-
-  .copy-edit {
-    /* Height is set from the content by fitEdit(), up to seven lines. Anything
-       shorter shows whole, so the panel never hides the tail of a transcript. */
-    display: block;
-    width: 100%;
-    box-sizing: border-box;
-    margin: 0;
-    padding: 8px 10px;
-    border: 1px solid rgba(119, 119, 119, 0.35);
-    border-radius: 6px;
-    background: rgba(255, 255, 255, 0.07);
-    color: #f0f0f0;
-    font-family: inherit;
-    font-size: 13px;
-    font-weight: 400;
-    line-height: 19px;
-    text-align: left;
-    resize: none;
-    outline: none;
-    overflow-y: hidden;
-    white-space: pre-wrap;
-    word-break: break-word;
-    pointer-events: auto;
-    cursor: text;
-  }
-
-  .copy-edit:focus {
-    border-color: rgba(101, 138, 255, 0.75);
-    background: rgba(255, 255, 255, 0.10);
-  }
-
-  .copy-footer {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-top: 8px;
-  }
-
-  .copy-button {
-    min-width: 44px;
-    height: 28px;
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 6px;
-    padding: 0 10px;
-    background: rgba(255, 255, 255, 0.10);
-    color: #fff;
-    font-size: 12px;
-    font-weight: 500;
-    line-height: 26px;
-    pointer-events: auto;
-    cursor: default;
-  }
-
-  .copy-button.copied {
-    color: rgba(242, 241, 240, 0.56);
-  }
-
-  .copy-button .copied-check {
-    width: 12px;
-    height: 12px;
-    margin-right: 4px;
-    color: #2fb344;
-    vertical-align: -2px;
-  }
-</style>
-</head>
-<body>
-  <div id="root">
-    <div id="bar">
-      <div class="layer starting-layer"><div class="starting-sweep"></div></div>
-      <div class="layer recording-layer">
-        <button class="side-button cancel" data-action="cancel" data-tooltip="Cancel" aria-label="Cancel"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.71 12 12l6.3 6.29-1.41 1.41-6.3-6.29-6.3 6.29-1.41-1.41L9.17 12 2.88 5.7 4.29 4.29l6.3 6.3 6.3-6.3z"></path></svg></button>
-        <div class="bars" id="bars"></div>
-        <div class="countdown" id="countdown"></div>
-        <button class="side-button finish" data-action="finish" data-tooltip="Finish" data-tooltip-key="F5" aria-label="Finish"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"></path></svg></button>
-      </div>
-      <div class="layer thinking-layer">
-        <div class="progress" id="progress"></div>
-        <div class="thinking-text" id="message">Thinking</div>
-      </div>
-      <div class="layer copy-layer">
-        <div class="copy-header">
-          <div class="copy-title-group">
-            <div class="copy-info-wrap"><svg class="copy-info" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M11 17h2v-6h-2zm0-8h2V7h-2zm1-7a10 10 0 1 0 0 20 10 10 0 0 0 0-20m0 18a8 8 0 1 1 0-16 8 8 0 0 1 0 16"></path></svg></div>
-            <div class="copy-title">Copy last transcript</div>
-          </div>
-          <button class="copy-close" data-action="dismiss"><svg class="control-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M18.3 5.71 12 12l6.3 6.29-1.41 1.41-6.3-6.29-6.3 6.29-1.41-1.41L9.17 12 2.88 5.7 4.29 4.29l6.3 6.3 6.3-6.3z"></path></svg></button>
-        </div>
-        <textarea class="copy-edit" id="copyEdit" spellcheck="false"></textarea>
-        <div class="copy-footer"><button class="copy-button" id="copyButton" data-action="copy-fallback">Copy</button></div>
-      </div>
-      <div class="layer hover-layer">
-        <div class="hover-dots"><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span></div>
-      </div>
-    </div>
-    <div class="control-tooltip" id="controlTooltip" role="tooltip"><span id="tooltipText"></span><span class="tooltip-key" id="tooltipKey">F5</span></div>
-  </div>
-<script>
-  const root = document.getElementById("root");
-  const bar = document.getElementById("bar");
-  const bars = document.getElementById("bars");
-  const progress = document.getElementById("progress");
-  const message = document.getElementById("message");
-  const countdown = document.getElementById("countdown");
-  const copyEdit = document.getElementById("copyEdit");
-
-  const EDIT_LINE_HEIGHT = 19;
-  const EDIT_MAX_LINES = 7;
-
-  function fitEdit() {
-    // Grow to the text, up to seven lines, and only scroll past that. Sizing off
-    // scrollHeight needs the height cleared first or it can only ever grow.
-    // Forced to zero, not "auto", before measuring: inside the flex layer an
-    // auto height resolves to the field's intrinsic row height, so scrollHeight
-    // reports that instead of the text and every transcript comes out tall.
-    if (copyEdit.clientWidth < 100) {
-      // Too narrow to measure against: #bar is still animating open, and the
-      // text would wrap at a width it is about to leave. One line now, the
-      // real fit when the width lands.
-      copyEdit.style.height = EDIT_LINE_HEIGHT + 18 + "px";
-      copyEdit.style.overflowY = "hidden";
-      return;
-    }
-    copyEdit.style.height = "0px";
-    const max = EDIT_LINE_HEIGHT * EDIT_MAX_LINES + 18;
-    // scrollHeight covers the content and the padding but not the border, and
-    // the field is border-box, so the border has to be added back or the last
-    // line is clipped.
-    const wanted =
-      copyEdit.scrollHeight + copyEdit.offsetHeight - copyEdit.clientHeight;
-    copyEdit.style.height = Math.min(wanted, max) + "px";
-    copyEdit.style.overflowY = wanted > max ? "auto" : "hidden";
-  }
-  const copyButton = document.getElementById("copyButton");
-  const controlTooltip = document.getElementById("controlTooltip");
-  const tooltipText = document.getElementById("tooltipText");
-  const tooltipKey = document.getElementById("tooltipKey");
-  const barEls = [];
-  for (let i = 0; i < 10; i += 1) {
-    const el = document.createElement("div");
-    el.className = "bar";
-    bars.appendChild(el);
-    barEls.push(el);
-  }
-
-  let state = "idle-hidden";
-  const MIN_HEIGHT = 2;
-  const MAX_HEIGHT = 18;
-  const MAX_PULSE_HEIGHT = 18;
-  const NOISE_THRESHOLD = 0.03;
-  const VOICE_THRESHOLD = 0.12;
-  const DIFFUSION_DELAY = 80;
-  const INPUT_RESPONSE_GAIN = 0.60;
-  const TRIGGER_PROBABILITY_GAIN = 0.60;
-  const TRIGGER_MAX_PROBABILITY = 0.32;
-  const PULSE_TRIGGER_THRESHOLD = NOISE_THRESHOLD * 0.85;
-  const SILENCE_DECAY_THRESHOLD = NOISE_THRESHOLD * 1.15;
-  let lastInputLevel = 0;
-  let smoothedHeight = 3;
-  let lastPulseAt = 0;
-  let volumeBuffer = [];
-  let pendingPulses = [];
-  let sideTimers = [];
-  let barVolumes = new Array(10).fill(MIN_HEIGHT);
-  let barAges = new Array(10).fill(0);
-
-  function setClass(nextState, hasCountdown) {
-    bar.className = "";
-    if (nextState !== "idle-hidden") bar.classList.add("visible");
-    if (["recording", "hands-free", "thinking", "error", "empty", "hover", "copy-fallback"].includes(nextState)) {
-      bar.classList.add("active");
-    }
-    if (hasCountdown) bar.classList.add("has-countdown");
-    if (nextState !== "idle-hidden") bar.classList.add(nextState);
-  }
-
-  window.setOverlayState = function(payload) {
-    const previousState = state;
-    state = payload.state || "idle-hidden";
-    message.textContent = payload.message || "Thinking";
-    progress.style.width = `${Math.max(0, Math.min(1, payload.progress || 0)) * 100}%`;
-    countdown.textContent = payload.countdown || "";
-    if (state === "copy-fallback") {
-      copyEdit.value = payload.transcript || "";
-    }
-    setCopyButton(Boolean(payload.copied));
-    setClass(state, Boolean(payload.countdown));
-    // Sized only once setClass has made the layer visible: a display:none
-    // textarea reports scrollHeight 0, which collapses the field onto its
-    // own padding and cuts the text in half.
-    if (state === "copy-fallback") fitEdit();
-    if (previousState !== state && !["recording", "hands-free", "hover"].includes(state)) {
-      hideControlTooltip();
-    }
-    if (state !== "recording" && state !== "hands-free") {
-      resetBars();
-    }
-  };
-
-  window.setAudioLevel = function(level) {
-    const incoming = Math.max(0, Math.min(1, Number(level) || 0));
-    const active = state === "recording" || state === "hands-free";
-    if (!active) {
-      resetBars();
-      return;
-    }
-
-    const now = performance.now();
-    processPendingPulses(now);
-    pushVolume(incoming);
-    const averaged = Math.max(0, Math.min(1, averageVolume() * INPUT_RESPONSE_GAIN));
-    const mappedHeight = mapLevelToHeight(averaged);
-    smoothedHeight = smoothedHeight * 0.15 + mappedHeight * 0.85;
-    maybeQueuePulse(averaged, smoothedHeight, now);
-    processPendingPulses(now);
-    decayBars(averaged);
-    renderBars();
-    lastInputLevel = incoming;
-  };
-
-  window.focusEdit = function () {
-    copyEdit.focus();
-    copyEdit.setSelectionRange(copyEdit.value.length, copyEdit.value.length);
-  };
-
-  window.blurEdit = function () {
-    copyEdit.blur();
-  };
-
-  // #bar animates its width from 40px over 200ms, so a fit measured the instant
-  // the class lands wraps one line into seven. Re-fit once the width arrives.
-  bar.addEventListener("transitionend", (event) => {
-    if (event.propertyName === "width" && state === "copy-fallback") fitEdit();
-  });
-
-  copyEdit.addEventListener("input", () => {
-    fitEdit();
-    // Every keystroke goes straight to the clipboard. The field exists to fix
-    // the transcript, so the fixed version has to be the one waiting to paste
-    // the moment the user stops typing, not only once Return commits it.
-    window.webkit?.messageHandlers?.overlayAction?.postMessage(
-      "edit-live:" + copyEdit.value
-    );
-  });
-
-  // The app needs to know when this field owns the keyboard: while it does, a
-  // Return belongs to the field, not to the message being sent behind it.
-  copyEdit.addEventListener("focus", () => {
-    window.webkit?.messageHandlers?.overlayAction?.postMessage("edit-focused");
-  });
-  copyEdit.addEventListener("blur", () => {
-    window.webkit?.messageHandlers?.overlayAction?.postMessage("edit-blurred");
-  });
-
-  copyEdit.addEventListener("keydown", (event) => {
-    const post = window.webkit?.messageHandlers?.overlayAction;
-    if (!post) return;
-    // While an IME is composing, Enter picks the highlighted candidate and
-    // Escape drops the candidate list -- both belong to the input method, not
-    // to this panel. Committing here would close the panel and throw away the
-    // characters the user was in the middle of choosing.
-    if (event.isComposing || event.keyCode === 229) return;
-    // Enter commits; Shift+Enter is how you get a newline into the text.
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      post.postMessage("edit-commit:" + event.target.value);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      post.postMessage("edit-cancel");
-    }
-  });
-
-  document.addEventListener("click", (event) => {
-    const action = event.target.closest("[data-action]")?.dataset.action;
-    if (!action) return;
-    event.preventDefault();
-    hideControlTooltip();
-    if (window.webkit?.messageHandlers?.overlayAction) {
-      window.webkit.messageHandlers.overlayAction.postMessage(action);
-    }
-  });
-
-  function showControlTooltip(target, text, keyText) {
-    if (!target || !text) return;
-    const rootRect = root.getBoundingClientRect();
-    const targetRect = target.getBoundingClientRect();
-    const centerX = targetRect.left - rootRect.left + targetRect.width / 2;
-    const bottom = rootRect.bottom - targetRect.top + 10;
-    tooltipText.textContent = text;
-    tooltipKey.textContent = keyText || "";
-    controlTooltip.classList.toggle("has-key", Boolean(keyText));
-    controlTooltip.style.left = `${centerX}px`;
-    controlTooltip.style.bottom = `${bottom}px`;
-    controlTooltip.classList.add("visible");
-    controlTooltip.dataset.target = target.dataset.tooltip || "bar";
-  }
-
-  function hideControlTooltip() {
-    controlTooltip.classList.remove("visible", "has-key");
-    controlTooltip.dataset.target = "";
-  }
-
-  document.querySelectorAll("[data-tooltip]").forEach((target) => {
-    const show = () => showControlTooltip(target, target.dataset.tooltip, target.dataset.tooltipKey || "");
-    target.addEventListener("mouseenter", show);
-    target.addEventListener("mouseover", show);
-    target.addEventListener("pointerenter", show);
-    target.addEventListener("focus", show);
-    target.addEventListener("mouseleave", hideControlTooltip);
-    target.addEventListener("pointerleave", hideControlTooltip);
-    target.addEventListener("blur", hideControlTooltip);
-  });
-
-  function updateTooltipFromPointer(event) {
-    const hovered = document.elementFromPoint(event.clientX, event.clientY)?.closest("[data-tooltip]");
-    if (hovered) {
-      showControlTooltip(hovered, hovered.dataset.tooltip, hovered.dataset.tooltipKey || "");
-      return;
-    }
-    if (state === "hover" && bar.contains(event.target)) {
-      showControlTooltip(bar, "Click to start dictating", "");
-      return;
-    }
-    hideControlTooltip();
-  }
-
-  bar.addEventListener("mousemove", updateTooltipFromPointer);
-  bar.addEventListener("pointermove", updateTooltipFromPointer);
-
-  window.setPointerTooltip = function(kind) {
-    if (kind === "cancel") {
-      const target = document.querySelector('[data-action="cancel"]');
-      showControlTooltip(target, target?.dataset.tooltip, target?.dataset.tooltipKey || "");
-      return;
-    }
-    if (kind === "finish") {
-      const target = document.querySelector('[data-action="finish"]');
-      showControlTooltip(target, target?.dataset.tooltip, target?.dataset.tooltipKey || "");
-      return;
-    }
-    if (kind === "idle") {
-      showControlTooltip(bar, "Click to start dictating", "");
-      return;
-    }
-    hideControlTooltip();
-  };
-
-  bar.addEventListener("mouseenter", (event) => {
-    if (event.target.closest("[data-tooltip]")) return;
-    if (state === "hover") {
-      showControlTooltip(bar, "Click to start dictating", "");
-    }
-  });
-
-  bar.addEventListener("mouseleave", (event) => {
-    if (!bar.contains(event.relatedTarget)) {
-      hideControlTooltip();
-    }
-  });
-
-  function resetBars() {
-    sideTimers.forEach((timer) => clearTimeout(timer));
-    barVolumes = barVolumes.map(() => MIN_HEIGHT);
-    barAges = barAges.map(() => 0);
-    volumeBuffer = [];
-    pendingPulses = [];
-    sideTimers = [];
-    smoothedHeight = 3;
-    lastInputLevel = 0;
-    lastPulseAt = 0;
-    renderBars();
-  }
-
-  function pushVolume(level) {
-    volumeBuffer.push(level);
-    if (volumeBuffer.length > 3) volumeBuffer.shift();
-  }
-
-  function averageVolume() {
-    if (volumeBuffer.length === 0) return 0;
-    return volumeBuffer.reduce((sum, value) => sum + value, 0) / volumeBuffer.length;
-  }
-
-  function randomBetween(min, max) {
-    return min + Math.random() * (max - min);
-  }
-
-  function decayBars(level) {
-    const count = barVolumes.length;
-    const center = Math.floor(count / 2);
-    const isQuietInput = level < SILENCE_DECAY_THRESHOLD;
-    for (let i = 0; i < barEls.length; i += 1) {
-      if (barVolumes[i] <= MIN_HEIGHT) continue;
-      const increment = Math.random() > 0.45 ? 1 : Math.random() > 0.88 ? 2 : 0;
-      const age = barAges[i] + increment + (isQuietInput ? 1 : 0);
-      const maxAge = 50 + Math.floor(Math.random() * 15);
-      const baseDecay = isQuietInput ? randomBetween(0.94, 0.975) : randomBetween(0.97, 0.99);
-      const positionFactor = 1 + Math.abs(i - center) / count * 0.3;
-      const effectiveDecay = Math.max(isQuietInput ? 0.90 : 0.93, baseDecay / positionFactor);
-      const decayed = barVolumes[i] * Math.pow(effectiveDecay, age / 12);
-      const next = Math.max(MIN_HEIGHT, Math.round(decayed * randomBetween(0.95, 1.05)));
-      if (age > maxAge || next <= MIN_HEIGHT) {
-        barVolumes[i] = MIN_HEIGHT;
-        barAges[i] = 0;
-      } else {
-        barVolumes[i] = next;
-        barAges[i] = age;
-      }
-    }
-  }
-
-  function mapLevelToHeight(level) {
-    let response;
-    if (level < NOISE_THRESHOLD) {
-      response = 0.12 + (level / NOISE_THRESHOLD) * 0.18 + Math.random() * 0.03;
-    } else if (level < VOICE_THRESHOLD) {
-      const t = (level - NOISE_THRESHOLD) / (VOICE_THRESHOLD - NOISE_THRESHOLD);
-      response = 0.32 + t * 0.38 + (Math.random() * 2 - 1) * 0.10;
-      response = Math.max(0.28, Math.min(0.75, response));
-    } else {
-      const t = Math.pow((level - VOICE_THRESHOLD) / (1 - VOICE_THRESHOLD), 0.25);
-      const normalized = (level - VOICE_THRESHOLD) / (1 - VOICE_THRESHOLD);
-      const randomFactor = Math.max(0.15, 0.25 * normalized);
-      let voice = Math.max(0, Math.min(1, t + (Math.random() * 2 - 1) * randomFactor));
-      if (normalized > 0.4) {
-        voice = Math.min(1, voice * (1.4 + (Math.random() * 0.4 - 0.2)));
-      }
-      response = 0.55 + 0.4 * voice + (Math.random() * 2 - 1) * 0.10;
-      response = Math.max(0.45, Math.min(1, response));
-    }
-    response = Math.max(0.12, Math.min(1, response));
-    return Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, MIN_HEIGHT + Math.round((MAX_HEIGHT - MIN_HEIGHT) * response)));
-  }
-
-  function maybeQueuePulse(level, height, now) {
-    if (level <= PULSE_TRIGGER_THRESHOLD) return;
-    if (now - lastPulseAt < 130) return;
-    const probability = Math.min(TRIGGER_MAX_PROBABILITY, level * TRIGGER_PROBABILITY_GAIN);
-    if (Math.random() > probability) return;
-    pendingPulses.push({
-      timestamp: now,
-      volume: Math.max(MIN_HEIGHT, Math.min(MAX_PULSE_HEIGHT, Math.round(height * randomBetween(0.95, 1.15)))),
-    });
-    lastPulseAt = now;
-  }
-
-  function processPendingPulses(now) {
-    const next = [];
-    for (const pulse of pendingPulses) {
-      if (now - pulse.timestamp >= DIFFUSION_DELAY) {
-        applyPulse(pulse, now);
-      } else {
-        next.push(pulse);
-      }
-    }
-    pendingPulses = next;
-  }
-
-  function applyPulse(pulse, now) {
-    void now;
-    const count = barVolumes.length;
-    const baseCenter = Math.floor(count / 2);
-    const centerOffset = Math.floor((Math.random() - 0.5) * Math.min(count * 0.15, 3));
-    const center = Math.max(0, Math.min(count - 1, baseCenter + centerOffset));
-    const centerVolume = Math.round(pulse.volume * randomBetween(0.95, 1.05));
-    setBar(center, centerVolume, 0);
-
-    const leftSpan = center;
-    const rightSpan = count - 1 - center;
-    const maxSpan = Math.max(leftSpan, rightSpan);
-    for (let distance = 1; distance <= maxSpan; distance += 1) {
-      const leftIndex = center - distance;
-      const rightIndex = center + distance;
-      const leftDecay = Math.max(0.12, 1 - distance / Math.max(leftSpan, 1) * (0.65 + Math.random() * 0.08));
-      const rightDecay = Math.max(0.12, 1 - distance / Math.max(rightSpan, 1) * (0.65 + Math.random() * 0.08));
-      const leftVolume = Math.max(MIN_HEIGHT, Math.round(pulse.volume * leftDecay * randomBetween(0.9, 1.1)));
-      const rightVolume = Math.max(MIN_HEIGHT, Math.round(pulse.volume * rightDecay * randomBetween(0.9, 1.1)));
-      const leftDelay = distance * DIFFUSION_DELAY * randomBetween(0.15, 0.20) + Math.random() * 15;
-      const rightDelay = distance * DIFFUSION_DELAY * randomBetween(0.15, 0.20) + Math.random() * 15;
-      if (leftIndex >= 0) {
-        scheduleSideUpdate(leftIndex, leftVolume, leftDelay);
-      }
-      if (rightIndex < count) {
-        scheduleSideUpdate(rightIndex, rightVolume, rightDelay);
-      }
-    }
-    renderBars();
-  }
-
-  function setBar(index, height, age) {
-    barVolumes[index] = Math.max(MIN_HEIGHT, Math.min(MAX_PULSE_HEIGHT, Math.round(height)));
-    barAges[index] = age;
-  }
-
-  function scheduleSideUpdate(index, height, delay) {
-    const timer = setTimeout(() => {
-      sideTimers = sideTimers.filter((value) => value !== timer);
-      if (state !== "recording" && state !== "hands-free") return;
-      blendBar(index, height);
-      renderBars();
-    }, delay);
-    sideTimers.push(timer);
-  }
-
-  function blendBar(index, height) {
-    const target = Math.max(MIN_HEIGHT, Math.min(MAX_PULSE_HEIGHT, Math.round(height)));
-    const current = barVolumes[index] || MIN_HEIGHT;
-    const blend = randomBetween(0.65, 0.75);
-    barVolumes[index] = Math.max(target, Math.round(current * (1 - blend) + target * blend));
-    barAges[index] = Math.floor(Math.random() * 2);
-  }
-
-  function renderBars() {
-    const active = state === "recording" || state === "hands-free";
-    for (let i = 0; i < barEls.length; i += 1) {
-      const height = active ? Math.max(MIN_HEIGHT, Math.min(MAX_PULSE_HEIGHT, barVolumes[i])) : MIN_HEIGHT;
-      barEls[i].style.height = `${height.toFixed(2)}px`;
-      barEls[i].style.opacity = active && height > MIN_HEIGHT + 0.2 ? "1" : "0.5";
-    }
-  }
-
-  function setCopyButton(copied) {
-    copyButton.classList.toggle("copied", copied);
-    if (copied) {
-      copyButton.innerHTML = '<svg class="copied-check" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"></path></svg>Copied';
-    } else {
-      copyButton.textContent = "Copy";
-    }
-  }
-  window.setOverlayState({ state: "idle-hidden" });
-</script>
-</body>
-</html>
-"""
-
-
-class OverlayActionHandler(NSObject):
-    """Bridge button clicks from WKWebView back to Python."""
-
-    def initWithOwner_(self, owner):
-        self = objc.super(OverlayActionHandler, self).init()
-        if self is None:
-            return None
-        self.owner = owner
-        return self
-
-    def userContentController_didReceiveScriptMessage_(self, controller, message) -> None:
-        del controller
-        callback = getattr(self.owner, "action_callback", None)
-        if callback is not None:
-            callback(str(message.body()))
+def caret_placement(caret, visible, width: float = PANEL_WIDTH, height: float = PANEL_HEIGHT):
+    """Where the panel goes to show the capsule just under the caret.
+
+    ``caret`` and ``visible`` are (x, y, w, h) in screen coordinates, origin at
+    the bottom left. The capsule goes above the caret when there is not room
+    for a card below it. Returns ``(panel_x, panel_y, anchor)``, the anchor in
+    the page's coordinates, or ``None`` when neither side has room.
+    """
+
+    cx, cy, cw, ch = (float(v) for v in caret)
+    vx, vy, vw, vh = (float(v) for v in visible)
+    need = CARET_GAP + CARET_ROOM
+    panel_x = min(max(cx + cw / 2.0 - width / 2.0, vx), vx + vw - width)
+    anchor_x = round(cx + cw / 2.0 - panel_x, 1)
+    if cy - vy >= need:
+        panel_y = cy - CARET_GAP + CARET_PAD - height
+        return panel_x, panel_y, {"mode": "top", "x": anchor_x, "y": CARET_PAD}
+    if vy + vh - (cy + ch) >= need:
+        panel_y = cy + ch + CARET_GAP - CARET_PAD
+        return panel_x, panel_y, {"mode": "bottom", "x": anchor_x, "y": height - CARET_PAD}
+    return None
 
 
 class EditablePanel(NSPanel):
-    """A non-activating panel that is allowed to take keyboard focus.
+    """A non-activating panel that takes the keyboard only while a card is up.
 
-    Borderless panels refuse key status by default, which is right while the
-    overlay only reports status. Editing needs real keystrokes and a working
-    input method, so it has to be allowed to become key. Non-activating keeps
-    the app the text belongs to in the foreground, so the paste still lands
-    where the caret already is. Merely allowing it changes nothing on its own:
-    the panel is ordered front without being made key until editing starts.
+    Non-activating keeps the app the text belongs to in front, so a paste still
+    lands where the caret already is. The card's field needs real keystrokes
+    and a working input method, so the panel may become key while it shows.
     """
 
-    def canBecomeKeyWindow(self) -> bool:
-        return True
+    def canBecomeKeyWindow(self) -> bool:  # noqa: N802 - Cocoa selector
+        return bool(getattr(self, "allow_key", False))
 
 
 class FirstMouseWebView(WKWebView):
-    """A web view that acts on the click which made its panel key.
-
-    A non-activating panel is not key while it only reports status, so the
-    first click on it is spent making it key and never reaches the field.
-    Accepting the first mouse makes one click land in the text, which is what
-    a click on a text field is expected to do.
-    """
+    """A web view that acts on the first click, though its panel is not key."""
 
     def acceptsFirstMouse_(self, event) -> bool:  # noqa: N802 - Cocoa selector
         del event
@@ -1121,296 +166,421 @@ class FirstMouseWebView(WKWebView):
 
 
 class FloatingOverlay(NSObject):
-    """Owns the bottom-centered non-activating overlay panel."""
+    """Owns the capsule's panel. Every method runs on the main thread."""
 
     def init(self):
         self = objc.super(FloatingOverlay, self).init()
         if self is None:
             return None
         self.panel = None
-        self.webview = None
-        self._handler = None
-        self._state = "idle-hidden"
-        self._has_countdown = False
-        self._hover_timer = None
-        self._follow_timer = None
-        self._hover_kind = ""
+        self.page = None
+        self.glass = None
         self.action_callback = None
+        self.hover_callback = None
+        self._ready = False
+        self._state = "hidden"
+        self._data: dict = {}
+        self._rec_started = 0.0
+        self._card = False
+        self._handle = False
+        self._anchor = {"mode": "bottom", "x": None, "y": None}
+        self._caret = False
+        self._back_to_bottom = False
+        self._shapes: list[dict] = []
+        self._shown = False
+        self._over = ""
+        self._pointer = None
+        self._timer = None
+        self._monitors: list = []
+        self._followed_at = 0.0
         return self
+
+    # ------------------------------------------------------------------ setup
 
     @objc.python_method
     def set_action_callback(self, callback: ActionCallback | None) -> None:
+        """``callback(action, data)`` for buttons, card edits and the idle handle."""
+
         self.action_callback = callback
 
     @objc.python_method
+    def set_hover_callback(self, callback: HoverCallback | None) -> None:
+        """``callback(on)`` while the pointer is over the capsule (dismissal waits)."""
+
+        self.hover_callback = callback
+
+    @objc.python_method
     def setup(self) -> None:
-        frame = NSScreen.mainScreen().visibleFrame()
-        rect = self._panel_rect(frame)
-        self.panel = EditablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            rect,
+        panel = EditablePanel.alloc().initWithContentRect_styleMask_backing_defer_(
+            self._bottom_rect(self._pointer_screen()),
             NSWindowStyleMaskBorderless | NSWindowStyleMaskNonactivatingPanel,
             NSBackingStoreBuffered,
             False,
         )
-        self.panel.setOpaque_(False)
-        self.panel.setBackgroundColor_(NSColor.clearColor())
-        self.panel.setHasShadow_(False)
-        self.panel.setLevel_(NSStatusWindowLevel)
-        self.panel.setIgnoresMouseEvents_(True)
-        self.panel.setAcceptsMouseMovedEvents_(True)
-        self.panel.setHidesOnDeactivate_(False)
-        self.panel.setCollectionBehavior_(
-            NSWindowCollectionBehaviorCanJoinAllSpaces
-            | NSWindowCollectionBehaviorFullScreenAuxiliary
-        )
+        panel.allow_key = False
+        panel.setOpaque_(False)
+        panel.setBackgroundColor_(NSColor.clearColor())
+        panel.setHasShadow_(False)
+        panel.setLevel_(NSStatusWindowLevel)
+        panel.setIgnoresMouseEvents_(True)
+        panel.setAcceptsMouseMovedEvents_(True)
+        panel.setHidesOnDeactivate_(False)
+        self.panel = panel
+        self._set_spaces(capsule=False)
 
-        controller = WKUserContentController.alloc().init()
-        self._handler = OverlayActionHandler.alloc().initWithOwner_(self)
-        controller.addScriptMessageHandler_name_(self._handler, "overlayAction")
-        config = WKWebViewConfiguration.alloc().init()
-        config.setUserContentController_(controller)
+        root = FlippedView.alloc().initWithFrame_(NSMakeRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT))
+        panel.setContentView_(root)
+        # Glass first, so it sits under the transparent page.
+        self.glass = GlassLayer(root)
+        self.page = WebPage(NSMakeRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT), self._on_message, FirstMouseWebView)
+        self.page.view.setAutoresizingMask_(18)
+        root.addSubview_(self.page.view)
+        self.page.load("overlay.html")
 
-        self.webview = FirstMouseWebView.alloc().initWithFrame_configuration_(
-            NSMakeRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT),
-            config,
+        NSWorkspace.sharedWorkspace().notificationCenter().addObserver_selector_name_object_(
+            self, "accessibilityChanged:", _A11Y_CHANGED, None
         )
-        self.webview.setOpaque_(False)
-        self.webview.setBackgroundColor_(NSColor.clearColor())
-        self.webview.setValue_forKey_(False, "drawsBackground")
-        self.webview.loadHTMLString_baseURL_(OVERLAY_HTML, None)
-        self.panel.setContentView_(self.webview)
-        self.panel.orderFrontRegardless()
-        self.hide()
+        panel.orderFrontRegardless()
+
+    # ------------------------------------------------------------ public API
+
+    @objc.python_method
+    def show(self, state: str, **data) -> None:
+        """Morph the capsule to ``state``; ``data`` fills in the state's details."""
+
+        if state not in STATES:
+            LOGGER.warning("Unknown capsule state %r", state)
+            return
+        was_hidden = self._state == "hidden"
+        if state == "rec" and self._state != "rec":
+            self._rec_started = time.monotonic() - float(data.get("elapsed") or 0.0)
+        self._state = state
+        self._data = dict(data)
+        self._back_to_bottom = False
+        if self.panel is None:
+            return
+        if was_hidden and not self._caret:
+            self._follow_pointer(force=True)
+        self._set_spaces(capsule=True)
+        if state in CARD_STATES:
+            self._begin_card()
+        else:
+            self._end_card()
+            self.panel.orderFrontRegardless()
+        self._send({"t": "show", "st": state, "d": data})
+        if self._card:
+            self._send({"t": "focus"})
+        self._watch_pointer(True)
 
     @objc.python_method
     def hide(self) -> None:
-        self._state = "idle-hidden"
-        self._set_mouse_events(False)
-        self._send_state("idle-hidden")
-        if self.panel is not None:
-            self.panel.setAlphaValue_(0.0)
-
-    @objc.python_method
-    def show_hover(self) -> None:
-        self._send_state("hover")
-
-    @objc.python_method
-    def show_idle_base(self) -> None:
-        self._send_state("idle-base")
-
-    @objc.python_method
-    def show_starting(self) -> None:
-        self._send_state("starting")
-
-    @objc.python_method
-    def show_recording(self, hands_free: bool = False, countdown_text: str = "") -> None:
-        self._send_state("hands-free" if hands_free else "recording", countdown=countdown_text)
-
-    @objc.python_method
-    def show_thinking(self, progress: float = 0.0, message: str = "Thinking") -> None:
-        self._send_state("thinking", message=message, progress=progress)
-
-    @objc.python_method
-    def show_error(self, message: str) -> None:
-        self._send_state("error", message=message, progress=1.0)
-
-    @objc.python_method
-    def show_empty(self) -> None:
-        self._send_state("empty", message="No speech", progress=1.0)
-
-    @objc.python_method
-    def show_copy_fallback(
-        self, transcript: str, copied: bool = False, focus: bool = False
-    ) -> None:
-        """Show the transcript in an editable field.
-
-        ``focus`` takes the keyboard straight away, which suits the case where
-        there was nowhere to paste. After a successful paste it must stay False:
-        the text is already in the target app and the user is about to press
-        Return there, so stealing the keyboard would break the common path. A
-        click on the field still focuses it, because the panel may become key.
-        """
-
-        self._send_state("copy-fallback", transcript=transcript, copied=copied)
-        if focus:
-            if self.panel is not None:
-                self.panel.makeKeyAndOrderFront_(None)
-            self._eval("window.focusEdit();")
-
-    @objc.python_method
-    def update_level(self, level: float) -> None:
-        self._eval(f"window.setAudioLevel({float(level):.5f});")
-
-    @objc.python_method
-    def _send_state(
-        self,
-        state: str,
-        message: str = "",
-        progress: float = 0.0,
-        countdown: str = "",
-        transcript: str = "",
-        copied: bool = False,
-    ) -> None:
-        self._state = state
-        self._has_countdown = bool(countdown)
-        self._set_mouse_events(state in {"idle-base", "hover", "recording", "hands-free", "copy-fallback"})
-        if self.panel is not None:
-            if state != "idle-hidden":
-                self._move_to_mouse_screen()
-                self._start_screen_follow()
+        self._state = "hidden"
+        self._data = {}
+        self._end_card()
+        self._send({"t": "hide"})
+        if self._caret:
+            if self._shown:
+                # Back above the Dock once the capsule has faded out where it was.
+                self._back_to_bottom = True
             else:
-                self._stop_screen_follow()
-            # An input method draws its candidate list at window level 20, and
-            # the status level this panel normally sits at is 25, so the panel
-            # would cover the candidates for the text being typed into it. Drop
-            # below the candidates while the field is editable; stay above
-            # everything the rest of the time, when nothing is being typed.
-            self.panel.setLevel_(
-                NSFloatingWindowLevel
-                if state == "copy-fallback"
-                else NSStatusWindowLevel
-            )
-            self.panel.setAlphaValue_(0.0 if state == "idle-hidden" else 1.0)
-            self.panel.orderFrontRegardless()
-        payload = json.dumps(
-            {
-                "state": state,
-                "message": message,
-                "progress": progress,
-                "countdown": countdown,
-                "transcript": transcript,
-                "copied": copied,
-            }
-        )
-        self._eval(f"window.setOverlayState({payload});")
-        if state in {"hover", "recording", "hands-free"}:
-            self._start_hover_tracking()
-        else:
-            self._stop_hover_tracking()
+                self._anchor_bottom()
 
     @objc.python_method
     def end_edit(self) -> None:
-        """Hand the keyboard back to whatever had it before the field appeared.
+        """Hand the keyboard back to the app it came from."""
 
-        hide() only fades the panel out, so a panel left as key window would go
-        on swallowing keystrokes while invisible. Ordering out and back in drops
-        key status without disturbing what is in front.
+        self._end_card()
+
+    @objc.python_method
+    def update_level(self, level: float) -> None:
+        if self._state == "rec":
+            self._send({"t": "level", "v": round(max(0.0, min(1.0, float(level))), 4)})
+
+    @objc.python_method
+    def set_handle(self, on: bool) -> None:
+        """The thin line above the Dock that turns into a mic button on hover."""
+
+        self._handle = bool(on)
+        self._send_handle()
+        self._watch_pointer(self._needs_pointer())
+
+    @objc.python_method
+    def set_anchor(self, mode: str, caret=None) -> None:
+        """``"bottom"``: centred above the Dock. ``"caret"``: just under ``caret``,
+        the caret's (x, y, w, h) in screen coordinates; bottom when it is unknown
+        or there is no room around it."""
+
+        self._back_to_bottom = False
+        placement = None
+        if mode == "caret" and caret is not None and self.panel is not None:
+            screen = _screen_for_point(NSMakePoint(caret[0], caret[1]), NSScreen.screens()) or NSScreen.mainScreen()
+            if screen is not None:
+                frame = screen.visibleFrame()
+                visible = (frame.origin.x, frame.origin.y, frame.size.width, frame.size.height)
+                placement = caret_placement(caret, visible)
+        if placement is None:
+            self._anchor_bottom()
+            return
+        panel_x, panel_y, anchor = placement
+        self._caret = True
+        self._anchor = anchor
+        self.panel.setFrame_display_(NSMakeRect(panel_x, panel_y, PANEL_WIDTH, PANEL_HEIGHT), True)
+        self._send({"t": "anchor", **anchor})
+        self._send_handle()
+
+    @objc.python_method
+    def is_card(self) -> bool:
+        return self._card
+
+    @objc.python_method
+    def state(self) -> str:
+        return self._state
+
+    # --------------------------------------------------------------- bridge
+
+    @objc.python_method
+    def _on_message(self, message: dict) -> None:
+        kind = message.get("t")
+        if kind == "geo":
+            self._on_geo(message.get("s") or [])
+        elif kind == "act":
+            data = {"text": str(message.get("text") or "")} if "text" in message else {}
+            self._emit(str(message.get("a") or ""), data)
+        elif kind == "edit":
+            self._emit("edit", {"text": str(message.get("text") or "")})
+        elif kind == "field":
+            self._emit("field", {"focus": bool(message.get("focus"))})
+        elif kind == "hover":
+            if self.hover_callback is not None:
+                self.hover_callback(bool(message.get("on")))
+        elif kind == "say":
+            announce(str(message.get("text") or ""))
+        elif kind == "ready":
+            self._ready = True
+            self._replay()
+
+    @objc.python_method
+    def _emit(self, action: str, data: dict) -> None:
+        if action and self.action_callback is not None:
+            self.action_callback(action, data)
+
+    @objc.python_method
+    def _send(self, message: dict) -> None:
+        # Before the page is ready there is nobody to receive; _replay() catches up.
+        if self.page is not None and self._ready:
+            self.page.send(message)
+
+    @objc.python_method
+    def _replay(self) -> None:
+        """Bring a freshly loaded page up to date (first load, or after a reload)."""
+
+        self._push_env()
+        self._send({"t": "anchor", **self._anchor})
+        self._send_handle()
+        if self._state != "hidden":
+            data = dict(self._data)
+            if self._state == "rec":
+                data["elapsed"] = time.monotonic() - self._rec_started
+            self._send({"t": "show", "st": self._state, "d": data})
+            if self._card:
+                self._send({"t": "focus"})
+
+    @objc.python_method
+    def _send_handle(self) -> None:
+        self._send({"t": "handle", "on": self._handle and not self._caret})
+
+    @objc.python_method
+    def _push_env(self) -> None:
+        env = accessibility_env()
+        if self.glass is not None:
+            self.glass.set_suppressed(env["rt"])
+            if not env["rt"]:
+                self.glass.apply(self._shapes)
+        env["native"] = bool(self.glass is not None and self.glass.kind)
+        self._send({"t": "env", **env})
+
+    def accessibilityChanged_(self, note) -> None:  # noqa: N802 - Cocoa selector
+        del note
+        self._push_env()
+
+    # -------------------------------------------------------- shapes, pointer
+
+    @objc.python_method
+    def _on_geo(self, shapes: list[dict]) -> None:
+        self._shapes = shapes
+        if self.glass is not None:
+            self.glass.apply(shapes)
+        shown = any(s.get("id") not in ("handle", "hb") and float(s.get("a", 0)) > 0.01 for s in shapes)
+        if self._shown and not shown:
+            if self._back_to_bottom:
+                self._back_to_bottom = False
+                self._anchor_bottom()
+            if self._state == "hidden":
+                # The idle handle stays out of full-screen apps.
+                self._set_spaces(capsule=False)
+        self._shown = shown
+        self._watch_pointer(self._needs_pointer())
+        self._refresh_pointer()
+
+    @objc.python_method
+    def _needs_pointer(self) -> bool:
+        return self._shown or self._state != "hidden" or (self._handle and not self._caret)
+
+    @objc.python_method
+    def _watch_pointer(self, on: bool) -> None:
+        """Follow the pointer only while something can be hovered or clicked.
+
+        Mouse moves elsewhere come from a global monitor, so an idle handle
+        costs nothing while the mouse is still; a timer runs only while the
+        pointer is over the capsule, where the panel itself gets the events.
         """
 
-        self._eval("window.blurEdit();")
-        if self.panel is not None:
-            self.panel.orderOut_(None)
-            self.panel.orderFrontRegardless()
+        if on and not self._monitors and self._timer is None:
+            try:
+                monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                    _MOUSE_MOVED_MASK, lambda event: self._on_mouse_moved()
+                )
+            except Exception:
+                monitor = None
+            if monitor is not None:
+                self._monitors.append(monitor)
+            else:
+                self._set_timer(True)
+        elif not on and self._monitors:
+            for monitor in self._monitors:
+                NSEvent.removeMonitor_(monitor)
+            self._monitors = []
+        if not on:
+            self._set_timer(False)
+            self._set_over("")
+            if self._pointer is not None:
+                self._pointer = None
+                self._send({"t": "pointer", "x": None, "y": None})
 
     @objc.python_method
-    def _eval(self, script: str) -> None:
-        if self.webview is not None:
-            self.webview.evaluateJavaScript_completionHandler_(script, None)
+    def _set_timer(self, on: bool) -> None:
+        if on and self._timer is None:
+            timer = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(
+                POINTER_INTERVAL, self, "pollPointer:", None, True
+            )
+            NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
+            self._timer = timer
+        elif not on and self._timer is not None:
+            self._timer.invalidate()
+            self._timer = None
 
-    @objc.python_method
-    def _set_mouse_events(self, enabled: bool) -> None:
-        if self.panel is not None:
-            self.panel.setIgnoresMouseEvents_(not enabled)
-
-    @objc.python_method
-    def _start_hover_tracking(self) -> None:
-        if self._hover_timer is not None:
-            return
-        self._hover_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            0.05,
-            self,
-            "pollHover:",
-            None,
-            True,
-        )
-
-    @objc.python_method
-    def _stop_hover_tracking(self) -> None:
-        timer = getattr(self, "_hover_timer", None)
-        if timer is not None:
-            timer.invalidate()
-            self._hover_timer = None
-        self._set_pointer_tooltip("")
-
-    @objc.python_method
-    def _start_screen_follow(self) -> None:
-        if self._follow_timer is not None:
-            return
-        self._follow_timer = NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            SCREEN_FOLLOW_INTERVAL,
-            self,
-            "pollScreen:",
-            None,
-            True,
-        )
-
-    @objc.python_method
-    def _stop_screen_follow(self) -> None:
-        timer = getattr(self, "_follow_timer", None)
-        if timer is not None:
-            timer.invalidate()
-            self._follow_timer = None
-
-    def pollScreen_(self, timer) -> None:
+    def pollPointer_(self, timer) -> None:  # noqa: N802 - Cocoa selector
         del timer
-        self._move_to_mouse_screen()
+        self._on_mouse_moved()
 
-    def pollHover_(self, timer) -> None:
-        del timer
+    @objc.python_method
+    def _on_mouse_moved(self) -> None:
+        if not self._caret and not self._card:
+            self._follow_pointer()
+        self._refresh_pointer()
+
+    @objc.python_method
+    def _refresh_pointer(self) -> None:
         if self.panel is None:
-            self._set_pointer_tooltip("")
             return
-        frame = self.panel.frame()
         point = NSEvent.mouseLocation()
-        local_x = float(point.x - frame.origin.x)
-        local_y = float(point.y - frame.origin.y)
-        if local_x < 0 or local_y < 0 or local_x > PANEL_WIDTH or local_y > PANEL_HEIGHT:
-            self._set_pointer_tooltip("")
-            return
-        kind = _hover_kind_for_local_point(
-            self._state,
-            local_x,
-            local_y,
-            has_countdown=bool(getattr(self, "_has_countdown", False)),
-        )
-        self._set_pointer_tooltip(kind)
+        frame = self.panel.frame()
+        x = float(point.x - frame.origin.x)
+        y = float(frame.size.height - (point.y - frame.origin.y))
+        inside = 0.0 <= x <= frame.size.width and 0.0 <= y <= frame.size.height
+        self._set_over(hit_shape(self._shapes, x, y) if inside else "")
+        position = (round(x, 1), round(y, 1)) if inside else None
+        if position != self._pointer:
+            self._pointer = position
+            self._send({"t": "pointer", "x": position[0] if position else None, "y": position[1] if position else None})
 
     @objc.python_method
-    def _set_pointer_tooltip(self, kind: str) -> None:
-        kind = kind or ""
-        if kind == getattr(self, "_hover_kind", ""):
+    def _set_over(self, shape_id: str) -> None:
+        over = bool(shape_id)
+        if over == bool(self._over):
+            self._over = shape_id
             return
-        self._hover_kind = kind
-        self._eval(f"window.setPointerTooltip({json.dumps(kind)});")
+        # A drag that started on the capsule keeps its mouse events until release.
+        if not over and NSEvent.pressedMouseButtons():
+            return
+        self._over = shape_id
+        if self.panel is not None:
+            self.panel.setIgnoresMouseEvents_(not over)
+        # Over the capsule the panel gets the mouse events itself, and the global
+        # monitor goes quiet, so hover is polled until the pointer leaves.
+        self._set_timer(over or not self._monitors and self._needs_pointer())
+
+    # ------------------------------------------------------------ placement
 
     @objc.python_method
-    def _move_to_mouse_screen(self) -> None:
-        """Put the panel on the display the pointer is on.
+    def _pointer_screen(self):
+        return _screen_for_point(NSEvent.mouseLocation(), NSScreen.screens()) or NSScreen.mainScreen()
 
-        ``setup`` frames the panel once from ``NSScreen.mainScreen()``, so on a
-        multi-display setup the overlay stayed on whichever screen was main at
-        launch however far the pointer moved.
-        """
-
-        screen = _screen_for_point(NSEvent.mouseLocation(), NSScreen.screens())
+    @objc.python_method
+    def _bottom_rect(self, screen):
         if screen is None:
-            screen = NSScreen.mainScreen()
-        if screen is None:
-            return
-        rect = self._panel_rect(screen.visibleFrame())
-        current = self.panel.frame()
-        if (
-            abs(current.origin.x - rect.origin.x) < 1.0
-            and abs(current.origin.y - rect.origin.y) < 1.0
-        ):
-            return
-        self.panel.setFrame_display_(rect, True)
-
-    @objc.python_method
-    def _panel_rect(self, frame):
+            return NSMakeRect(0, 0, PANEL_WIDTH, PANEL_HEIGHT)
+        frame = screen.visibleFrame()
         return NSMakeRect(
-            frame.origin.x + (frame.size.width - PANEL_WIDTH) / 2,
+            frame.origin.x + (frame.size.width - PANEL_WIDTH) / 2.0,
             frame.origin.y,
             PANEL_WIDTH,
             PANEL_HEIGHT,
         )
+
+    @objc.python_method
+    def _follow_pointer(self, force: bool = False) -> None:
+        """Keep the panel on the display the pointer is on."""
+
+        now = time.monotonic()
+        if self.panel is None or (not force and now - self._followed_at < FOLLOW_INTERVAL):
+            return
+        self._followed_at = now
+        rect = self._bottom_rect(self._pointer_screen())
+        current = self.panel.frame()
+        if abs(current.origin.x - rect.origin.x) >= 1.0 or abs(current.origin.y - rect.origin.y) >= 1.0:
+            self.panel.setFrame_display_(rect, True)
+
+    @objc.python_method
+    def _anchor_bottom(self) -> None:
+        self._caret = False
+        self._anchor = {"mode": "bottom", "x": None, "y": None}
+        self._follow_pointer(force=True)
+        self._send({"t": "anchor", **self._anchor})
+        self._send_handle()
+
+    @objc.python_method
+    def _set_spaces(self, capsule: bool) -> None:
+        behavior = NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorIgnoresCycle
+        if capsule:
+            behavior |= NSWindowCollectionBehaviorFullScreenAuxiliary
+        if self.panel is not None:
+            self.panel.setCollectionBehavior_(behavior)
+
+    # ----------------------------------------------------------------- cards
+
+    @objc.python_method
+    def _begin_card(self) -> None:
+        self._card = True
+        self.panel.allow_key = True
+        # An input method draws its candidate list at window level 20, under the
+        # status level (25) the capsule normally sits at; drop below it while
+        # something can be typed.
+        self.panel.setLevel_(NSFloatingWindowLevel)
+        self.panel.makeKeyAndOrderFront_(None)
+        if self.page is not None:
+            self.panel.makeFirstResponder_(self.page.view)
+
+    @objc.python_method
+    def _end_card(self) -> None:
+        if not self._card:
+            return
+        self._card = False
+        if self.panel is None:
+            return
+        self.panel.allow_key = False
+        self.panel.setLevel_(NSStatusWindowLevel)
+        # Ordering out and back in drops key status without disturbing what is
+        # in front; a panel left key would go on swallowing keystrokes.
+        self.panel.orderOut_(None)
+        self.panel.orderFrontRegardless()
