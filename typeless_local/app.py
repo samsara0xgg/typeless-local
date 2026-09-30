@@ -214,6 +214,7 @@ class TypelessLocalApp:
             on_level=self._on_audio_level,
             device=devices.resolve_input_index(getattr(config, "input_device", "")),
             on_stretch=self._on_stretch,
+            input_channel=getattr(config, "input_channel", 0),
         )
         return SimpleNamespace(asr=asr, refiner=refiner, recorder=recorder)
 
