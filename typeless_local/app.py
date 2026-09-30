@@ -35,6 +35,7 @@ from typeless_local.config import (
     refine_config_for,
     save_input_device,
     save_default_preset,
+    save_user_setting,
 )
 from typeless_local.mac_integration import (
     FocusContext,
@@ -49,6 +50,7 @@ from typeless_local.mac_integration import (
     undo_last_edit,
 )
 from typeless_local.first_run import (
+    _store_api_key,
     download_model,
     ensure_api_key,
     model_is_cached,
@@ -61,6 +63,7 @@ from typeless_local.preferences import Preferences, load_preferences, save_prefe
 from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
 from typeless_local.vocab import as_initial_prompt, load_user_terms, load_vocab, write_starter_file
+from typeless_local.windows import Windows, install_main_menu
 
 LOGGER = logging.getLogger(__name__)
 Mode = Literal["tap", "hands_free"]
@@ -147,11 +150,13 @@ class TypelessLocalApp:
             )
 
             self.menubar = MenuBarIcon(on_action=self._on_menu_action, snapshot=self._menu_snapshot)
+            self.windows = Windows(self)
         else:
             self.overlay = None
             self.audio_ducker = None
             self.hotkeys = None
             self.menubar = None
+            self.windows = None
         self.capsule = Capsule(self.overlay, self._call_ui)
         self.capsule.inserted_dismiss_s = self.prefs.dismiss_seconds
 
@@ -269,6 +274,7 @@ class TypelessLocalApp:
         user_paths = getattr(self.config, "user_paths", None)
         if user_paths is not None:
             save_input_device(user_paths, name)
+        self._windows_changed()
         LOGGER.info("Capture device set to %s", name or "(system default)")
 
     def select_model(self, preset: str) -> None:
@@ -281,7 +287,55 @@ class TypelessLocalApp:
         if user_paths is not None:
             save_default_preset(user_paths, preset)
         self._refresh_issues()
+        self._windows_changed()
         LOGGER.info("Refinement model switched to %s (%s)", preset, refine.model)
+
+    def set_language(self, language: str) -> None:
+        """Recognise ``language`` ("" detects it) from the next dictation on, and persist it."""
+
+        language = language if language in ("zh", "en") else ""
+        set_language = getattr(self.asr, "set_language", None)
+        if set_language is not None:
+            set_language(language)
+        self._engine_setting("asr", "language", language)
+        LOGGER.info("Recognition language set to %s", language or "auto")
+
+    def set_ducking(self, enabled: bool) -> None:
+        """Whether other apps' sound is lowered while recording."""
+
+        ducker = getattr(self, "audio_ducker", None)
+        if ducker is not None:
+            ducker.enabled = bool(enabled)
+        self._engine_setting("audio_ducking", "enabled", bool(enabled))
+
+    def _engine_setting(self, section: str, key: str, value) -> None:
+        """A setting the engine reads from its own config section: live and on disk."""
+
+        jarvis = getattr(self.config, "jarvis_config", None)
+        if isinstance(jarvis, dict):
+            if not isinstance(jarvis.get(section), dict):
+                jarvis[section] = {}
+            jarvis[section][key] = value
+        user_paths = getattr(self.config, "user_paths", None)
+        if user_paths is not None:
+            save_user_setting(user_paths, section, key, value)
+
+    def store_api_key(self, env_name: str, key: str) -> None:
+        """Keep ``key`` for ``env_name`` (keychain first) and use it from the next dictation."""
+
+        user_paths = getattr(self.config, "user_paths", None)
+        env_path = user_paths.env_path if user_paths is not None else Path(os.devnull)
+        _store_api_key(env_name, key, env_path)
+        if env_name == self.config.refine.api_key_env:
+            # The client holds the key it was made with.
+            self.refiner = TextRefiner(self.config.refine)
+        self._call_ui(self._refresh_issues)
+        LOGGER.info("%s saved", env_name)
+
+    def _windows_changed(self, history: bool = False) -> None:
+        windows = getattr(self, "windows", None)
+        if windows is not None:
+            self._call_ui(windows.refresh, history)
 
     def set_preference(self, key: str, value) -> Preferences:
         """Change one setting from the Settings window: validate, persist, apply."""
@@ -309,6 +363,8 @@ class TypelessLocalApp:
             self._purge_history()
         if changed in (None, "refine"):
             self._refresh_issues()
+        if changed == "save_history":
+            self._windows_changed(history=True)
 
     def _purge_history(self) -> None:
         """Drop dictations older than the limit the user picked; none by default."""
@@ -320,6 +376,31 @@ class TypelessLocalApp:
         threading.Thread(
             target=purge_older_than, args=(user_paths.trace_db_path, days), daemon=True, name="history-purge"
         ).start()
+
+    def _first_run(self) -> None:
+        """Open the guide on first launch, unless everything it sets up is already there."""
+
+        windows = getattr(self, "windows", None)
+        if windows is None:
+            self._prompt_for_missing_api_key()
+            return
+        if self.prefs.onboarding_done:
+            return
+        if self._set_up_already():
+            # Someone who used the app before the guide existed.
+            self.set_preference("onboarding_done", True)
+            return
+        windows.show_onboarding()
+
+    def _set_up_already(self) -> bool:
+        asr_config = self.config.jarvis_config.get("asr") or {}
+        provider = str(asr_config.get("provider") or "").strip().lower()
+        return (
+            bool(os.environ.get(self.config.refine.api_key_env or ""))
+            and has_accessibility_trust()
+            and permissions.microphone_status() == "authorized"
+            and (provider != "mlx_whisper" or model_is_cached(mlx_whisper_repo(asr_config)))
+        )
 
     def _prompt_for_missing_api_key(self) -> None:
         """Ask for the key on first launch, once the app can show a window."""
@@ -486,6 +567,7 @@ class TypelessLocalApp:
 
         def report(fraction: float) -> None:
             self._download = (fraction, started)
+            self._download_progress(fraction, _eta_text(fraction, time.monotonic() - started))
             with self._lock:
                 # Only while nothing else is on screen: the progress used to
                 # replace a dictation in the middle of it.
@@ -497,16 +579,27 @@ class TypelessLocalApp:
                 report(0.0)
                 download_model(repo_id, report)
                 LOGGER.info("ASR model %s is ready", repo_id)
+                self._download = None
+                self._download_progress(1.0, done=True)
                 self._warm_up_asr()
             except Exception:
                 # The first dictation will download it the slow way; that is a
                 # worse experience, not a broken one, so the app stays up.
                 LOGGER.exception("Model prefetch failed for %s", repo_id)
+                self._download = None
+                self._download_progress(0.0, error=True)
             finally:
                 self._download = None
                 self.capsule.hide_if("download")
 
         threading.Thread(target=run, daemon=True, name="model-prefetch").start()
+
+    def _download_progress(self, fraction: float, eta: str = "", done: bool = False, error: bool = False) -> None:
+        """The guide's progress bar, when it is open."""
+
+        windows = getattr(self, "windows", None)
+        if windows is not None:
+            self._call_ui(windows.download, fraction, eta, done, error)
 
     def _show_download(self) -> None:
         download = getattr(self, "_download", None)
@@ -563,25 +656,30 @@ class TypelessLocalApp:
         """Start the app."""
 
         self.overlay.setup()
+        install_main_menu()
         self._apply_preferences()
+        # On first launch the guide asks for each permission after saying why.
+        guided = not self.prefs.onboarding_done and getattr(self, "windows", None) is not None
         if not has_accessibility_trust():
             LOGGER.warning("Accessibility permission is not granted; Fn capture/paste may fail.")
-            request_accessibility_trust()
+            if not guided:
+                request_accessibility_trust()
         menubar = getattr(self, "menubar", None)
         if menubar is not None:
             menubar.setup()
             menubar.set_state("idle")
         if not self._start_hotkeys():
             # Picked up by itself once Accessibility is granted: no restart.
-            self.capsule.show("perm")
+            if not guided:
+                self.capsule.show("perm")
             AppHelper.callLater(HOTKEY_RETRY_S, self._retry_hotkeys)
         self._refresh_issues()
         self._prime_microphone()
         self._start_model_prefetch()
         # Deferred onto the run loop: this app is LSUIElement, and before
-        # -[NSApplication run] it is not active yet, so a modal alert can open
+        # -[NSApplication run] it is not active yet, so a window can open
         # behind whatever the user is looking at or not come up at all.
-        AppHelper.callLater(0.3, self._prompt_for_missing_api_key)
+        AppHelper.callLater(0.3, self._first_run)
         LOGGER.info("%s ready. Press F5 to start/stop dictation.", brand.ENGLISH_NAME)
 
     def _start_hotkeys(self) -> bool:
@@ -1326,6 +1424,7 @@ class TypelessLocalApp:
             trace = getattr(self, "trace", None)
             if trace is not None and prefs.save_history:
                 self._last_trace_id = trace.log(record)
+                self._windows_changed(history=True)
             self._keep_recording(audio, sample_rate, started)
 
     def _deliver(self, text: str, raw: str, context: FocusContext, fallback: str, record: SessionRecord) -> None:

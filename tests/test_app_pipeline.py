@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -1197,3 +1198,103 @@ def test_microphone_is_primed_at_launch_under_the_hotkey_lock(monkeypatch) -> No
     app._prime_microphone()
 
     assert primed == [(2, 16000, True)]
+
+
+# ------------------------------------------------------------- windows
+
+
+class _FakeWindows:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def show_onboarding(self) -> None:
+        self.calls.append(("onboarding",))
+
+    def refresh(self, history=False) -> None:
+        self.calls.append(("refresh", history))
+
+    def download(self, fraction, eta="", done=False, error=False) -> None:
+        self.calls.append(("download", fraction, done, error))
+
+
+def _windows_app(monkeypatch, env=None):
+    app = _menu_app(monkeypatch, env)
+    app.windows = _FakeWindows()
+    app.prefs = app_module.Preferences()
+    saved = []
+    app.set_preference = lambda key, value: saved.append((key, value))
+    app._saved = saved
+    monkeypatch.setattr(app_module.permissions, "microphone_status", lambda: "authorized")
+    monkeypatch.setattr(app_module, "model_is_cached", lambda repo: True)
+    return app
+
+
+def test_first_launch_opens_the_guide(monkeypatch) -> None:
+    app = _windows_app(monkeypatch)  # no API key yet
+    app._first_run()
+    assert app.windows.calls == [("onboarding",)]
+    assert app._saved == []
+
+
+def test_first_launch_skips_the_guide_when_everything_is_set_up(monkeypatch) -> None:
+    app = _windows_app(monkeypatch, {"TEST_KEY_A": "sk-test-aaaaaaaaaaaa1234"})
+    app._first_run()
+    assert app.windows.calls == []
+    assert app._saved == [("onboarding_done", True)]
+
+
+def test_the_guide_is_shown_only_once(monkeypatch) -> None:
+    app = _windows_app(monkeypatch)
+    app.prefs = app_module.Preferences(onboarding_done=True)
+    app._first_run()
+    assert app.windows.calls == []
+
+
+def test_language_and_ducking_apply_live_and_persist(monkeypatch, tmp_path) -> None:
+    app = _windows_app(monkeypatch)
+    written = []
+    monkeypatch.setattr(app_module, "save_user_setting", lambda paths, *args: written.append(args))
+    app.config.user_paths = SimpleNamespace(env_path=tmp_path / "env")
+    languages = []
+    app.asr = SimpleNamespace(set_language=languages.append)
+
+    app.set_language("en")
+    app.set_language("klingon")
+    app.set_ducking(False)
+
+    assert languages == ["en", ""]
+    assert app.config.jarvis_config["asr"]["language"] == ""
+    assert app.audio_ducker.enabled is False
+    assert app.config.jarvis_config["audio_ducking"]["enabled"] is False
+    assert written == [("asr", "language", "en"), ("asr", "language", ""), ("audio_ducking", "enabled", False)]
+
+
+def test_a_new_key_for_the_active_model_replaces_the_client(monkeypatch, tmp_path) -> None:
+    app = _windows_app(monkeypatch)
+    stored = []
+    monkeypatch.setattr(app_module, "_store_api_key", lambda env, key, path: stored.append((env, key, path)))
+    app.config.user_paths = SimpleNamespace(env_path=tmp_path / "env")
+    old = app.refiner = object()
+
+    app.store_api_key("TEST_KEY_A", "sk-test-aaaaaaaaaaaa1234")
+
+    assert stored == [("TEST_KEY_A", "sk-test-aaaaaaaaaaaa1234", tmp_path / "env")]
+    assert app.refiner is not old and app.refiner.config.api_key_env == "TEST_KEY_A"
+
+
+def test_download_progress_reaches_the_guide(monkeypatch) -> None:
+    app = _windows_app(monkeypatch)
+    app._download_progress(0.4, "约 30 秒")
+    app._download_progress(1.0, done=True)
+    assert app.windows.calls == [("download", 0.4, False, False), ("download", 1.0, True, False)]
+
+
+def test_switching_model_or_mic_redraws_settings(monkeypatch) -> None:
+    app = _windows_app(monkeypatch)
+    monkeypatch.setattr(app_module.devices, "resolve_input_index", lambda name: None)
+    app.config = app_module.AppConfig(
+        root=Path("."), jarvis_root=Path("."), jarvis_config=app.config.jarvis_config, refine=app.config.refine
+    )
+    app.select_model("deep")
+    app.select_input_device("USB Mic")
+    assert app.windows.calls == [("refresh", False), ("refresh", False)]
