@@ -152,7 +152,7 @@ def download_model(repo_id: str, on_progress: Callable[[float], None]) -> None:
 
     def run() -> None:
         try:
-            snapshot_download(repo_id)
+            snapshot_download(repo_id, endpoint=_endpoint())
         except BaseException as exc:  # reported on the caller's thread below
             failure.append(exc)
         finally:
@@ -177,11 +177,17 @@ def _expected_size(repo_id: str) -> int:
     try:
         from huggingface_hub import HfApi
 
-        info = HfApi().model_info(repo_id, files_metadata=True)
+        info = HfApi(endpoint=_endpoint()).model_info(repo_id, files_metadata=True)
         return sum(int(sibling.size or 0) for sibling in (info.siblings or []))
     except Exception:
         LOGGER.debug("Could not read %s file sizes; progress stays indeterminate", repo_id)
         return 0
+
+
+def _endpoint() -> str | None:
+    """The download source reach.use_model_source picked (Hugging Face or its mirror)."""
+
+    return os.environ.get("HF_ENDPOINT") or None
 
 
 def _cache_dir(repo_id: str) -> Path:

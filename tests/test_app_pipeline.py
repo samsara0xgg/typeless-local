@@ -1449,3 +1449,88 @@ def test_music_playing_elsewhere_is_paused_for_the_recording_and_resumed(monkeyp
     assert _media_keys == ["play_pause"]
     app._finish_recording()
     assert _media_keys == ["play_pause", "play_pause"]
+
+
+def _main_env(monkeypatch, tmp_path, *, chip: str, china: bool, onboarding_done: bool = False):
+    """Run main() up to the point it builds the app, with nothing real underneath."""
+
+    from typeless_local import config as cfg_mod
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "jarvis").mkdir()
+    monkeypatch.setenv("JARVIS_PROJECT_ROOT", str(tmp_path / "jarvis"))
+    if onboarding_done:
+        cfg_mod.save_user_setting(cfg_mod.resolve_user_paths(), "ui", "onboarding_done", True)
+    seen = SimpleNamespace(alerts=[], built=[])
+    monkeypatch.setattr(app_module, "configure_logging", lambda: None)
+    monkeypatch.setattr(app_module, "claim_single_instance", lambda config_dir: object())
+    monkeypatch.setattr(app_module.reach, "machine", lambda: chip)
+    monkeypatch.setattr(app_module.reach, "in_mainland_china", lambda: china)
+    monkeypatch.setattr(app_module, "_alert", lambda app, title, body: seen.alerts.append(title))
+    monkeypatch.setattr(app_module.keychain, "fill_environ", lambda names: None)
+    monkeypatch.setattr(
+        app_module,
+        "TypelessLocalApp",
+        lambda config: seen.built.append(config) or SimpleNamespace(start=lambda: None),
+    )
+    app_module.main()
+    return seen
+
+
+def test_main_explains_and_stops_on_an_intel_mac(monkeypatch, tmp_path) -> None:
+    seen = _main_env(monkeypatch, tmp_path, chip="intel", china=False)
+    assert seen.built == []
+    assert seen.alerts == ["言字需要 Apple 芯片的 Mac"]
+
+
+def test_main_asks_to_turn_rosetta_off(monkeypatch, tmp_path) -> None:
+    seen = _main_env(monkeypatch, tmp_path, chip="rosetta", china=False)
+    assert seen.built == [] and seen.alerts == ["言字正在用 Rosetta 打开"]
+
+
+def test_a_new_install_in_mainland_china_starts_on_deepseek(monkeypatch, tmp_path) -> None:
+    (config,) = _main_env(monkeypatch, tmp_path, chip="apple", china=True).built
+    assert config.refine.preset == app_module.reach.CHINA_PRESET
+
+
+def test_an_install_that_finished_the_guide_keeps_its_model(monkeypatch, tmp_path) -> None:
+    (config,) = _main_env(monkeypatch, tmp_path, chip="apple", china=True, onboarding_done=True).built
+    assert config.refine.preset == "gpt-5.6-terra"
+
+
+def test_diagnostics_are_zipped_into_the_data_folder_without_keys(monkeypatch, tmp_path) -> None:
+    import zipfile
+
+    from typeless_local.config import UserPaths
+
+    _run_threads_inline(monkeypatch)
+    opened = []
+    monkeypatch.setattr(app_module.subprocess, "Popen", lambda args: opened.append(args))
+    monkeypatch.setattr(app_module.devices, "list_input_devices", lambda: ["USB Mic"])
+    monkeypatch.setattr(app_module.devices, "current_input_device", lambda: "USB Mic")
+    monkeypatch.setattr(app_module, "model_is_cached", lambda repo: True)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-0123456789abcdefghij")
+    app = _recording_app()
+    app.prefs = Preferences()
+    paths = UserPaths(
+        config_dir=tmp_path, vocab_path=tmp_path / "v.yaml", corrections_path=tmp_path / "c.yaml",
+        trace_db_path=tmp_path / "trace.db", log_path=tmp_path / "app.log", stopwords_dir=tmp_path,
+        user_config_path=tmp_path / "config.yaml", env_path=tmp_path / "env",
+    )
+    paths.log_path.write_text("using sk-test-0123456789abcdefghij\n")
+    from typeless_local.config import refine_config_for
+
+    jarvis = {"asr": {"provider": "mlx_whisper"}, "llm": {"presets": {"mini": {"model": "gpt-5.4-mini"}}}}
+    app.config = SimpleNamespace(
+        jarvis_config=jarvis, refine=refine_config_for(jarvis, "mini"), user_paths=paths, input_device="", input_channel=0
+    )
+    app._current_issues = lambda: ()
+
+    app.export_diagnostics()
+
+    ((_, flag, path),) = opened
+    assert flag == "-R" and path.startswith(str(tmp_path / "diagnostics"))
+    with zipfile.ZipFile(path) as archive:
+        everything = b"".join(archive.read(name) for name in archive.namelist()).decode()
+    assert "sk-test-0123456789abcdefghij" not in everything
+    assert '"OPENAI_API_KEY": true' in everything and "USB Mic" in everything

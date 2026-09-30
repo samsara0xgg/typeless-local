@@ -25,7 +25,7 @@ import time
 from typing import Callable
 from urllib.parse import urlparse
 
-from typeless_local import app_version, brand, history, i18n, keychain, login_item, permissions, preferences, usage, vocab
+from typeless_local import app_version, brand, history, i18n, keychain, login_item, permissions, preferences, reach, usage, vocab
 from typeless_local.asr import mlx_whisper_repo
 from typeless_local.config import preset_names, refine_config_for
 from typeless_local.mac_integration import FocusContext, has_accessibility_trust, request_accessibility_trust, set_clipboard_text
@@ -499,6 +499,8 @@ class Windows:
             subprocess.Popen(["/usr/bin/open", str(user_paths.config_dir)])
         elif what == "log":
             self.app.show_log()
+        elif what == "diagnostics":
+            self.app.export_diagnostics()
         elif what == "keyboard":
             permissions.open_url(permissions.KEYBOARD_SETTINGS)
         elif what == "login":
@@ -570,6 +572,7 @@ class Windows:
                 # (offline) before the guide was open to hear about it.
                 "downloading": download is not None,
                 "p": round(download[0], 3) if download else (1.0 if model_ready else 0.0),
+                "mirror": reach.model_endpoint(app.prefs.model_source) == reach.MIRROR,
             },
         }
 
@@ -605,6 +608,10 @@ class Windows:
                 self.app._start_model_prefetch()
         elif kind == "lang":
             self._apply_setting("ui_language", str(msg.get("v") or ""))
+        elif kind == "source":
+            self._apply_setting("model_source", str(msg.get("v") or ""))
+            if getattr(self.app, "_download", None) is None and not self._model_cached():
+                self.app._start_model_prefetch()
         elif kind == "done":
             try:
                 self.app.set_preference("onboarding_done", True)

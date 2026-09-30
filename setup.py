@@ -93,6 +93,9 @@ OPTIONS = {
         "CFBundleLocalizations": ["en", "zh-Hans"],
         "LSHasLocalizedDisplayName": True,
         "LSUIElement": True,
+        # MLX has no Intel build: never start under Rosetta on Apple silicon.
+        "LSRequiresNativeExecution": True,
+        "LSArchitecturePriority": ["arm64"],
         "LSMinimumSystemVersion": "13.0",
         "NSHighResolutionCapable": True,
         "NSMicrophoneUsageDescription":

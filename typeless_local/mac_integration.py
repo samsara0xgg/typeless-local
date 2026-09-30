@@ -6,12 +6,13 @@ import ctypes
 import ctypes.util
 from dataclasses import dataclass
 import logging
-import time
 from typing import Callable
 
 import ApplicationServices
 from AppKit import NSEvent, NSPasteboard, NSPasteboardTypeString, NSWorkspace
 import Quartz
+
+from typeless_local import keyboard_layout
 
 LOGGER = logging.getLogger(__name__)
 
@@ -59,8 +60,6 @@ PRIMARY_KEYCODES = frozenset({F5_KEYCODE, DICTATION_KEYCODE})
 RIGHT_OPTION_KEYCODE = 61
 SPACE_KEYCODE = 49
 ESCAPE_KEYCODE = 53
-V_KEYCODE = 9
-Z_KEYCODE = 6
 OPTION_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskAlternate", 1 << 19)
 SHIFT_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskShift", 1 << 17)
 # Right Command arrives as a FlagsChanged event with keycode 54 (kVK_RightCommand).
@@ -400,13 +399,13 @@ def paste_text(text: str) -> None:
     pasteboard = NSPasteboard.generalPasteboard()
     pasteboard.clearContents()
     pasteboard.setString_forType_(text, NSPasteboardTypeString)
-    _post_command_key(V_KEYCODE)
+    _post_command_key(keyboard_layout.keycode("v"))
 
 
 def undo_last_edit() -> None:
     """Send Cmd+Z to the app in front, to take back the paste just made there."""
 
-    _post_command_key(Z_KEYCODE)
+    _post_command_key(keyboard_layout.keycode("z"))
 
 
 def _post_command_key(keycode: int) -> None:
@@ -517,6 +516,7 @@ class GlobalHotkeyMonitor:
         )
         Quartz.CGEventTapEnable(self._tap, True)
         self._watch_mouse()
+        keyboard_layout.watch()
         LOGGER.info("Global hotkey monitor started")
 
     def _watch_mouse(self) -> None:
@@ -627,7 +627,7 @@ class GlobalHotkeyMonitor:
             # work stalls the keyboard.
             if self.watch_keys_fn is not None and self.watch_keys_fn() and not self._is_synthetic(event):
                 flags = Quartz.CGEventGetFlags(event)
-                undo = keycode == Z_KEYCODE and flags & COMMAND_FLAG_MASK and not flags & SHIFT_FLAG_MASK
+                undo = keycode == keyboard_layout.keycode("z") and flags & COMMAND_FLAG_MASK and not flags & SHIFT_FLAG_MASK
                 self.callback("undo" if undo else "typed")
             return event
         if event_type == Quartz.kCGEventKeyUp and keycode in PRIMARY_KEYCODES:

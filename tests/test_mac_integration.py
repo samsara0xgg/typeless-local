@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from typeless_local import mac_integration
+from typeless_local import keyboard_layout, mac_integration
 
 
 def test_copy_ax_attribute_accepts_error_value_tuple(monkeypatch) -> None:
@@ -193,7 +193,7 @@ def test_paste_text_leaves_the_text_on_the_clipboard(monkeypatch) -> None:
     # Nothing is put back after the Cmd+V: an app slower than the restore
     # used to paste the old clipboard instead of the dictation.
     assert events[:2] == ["clear", ("set", "Hello", mac_integration.NSPasteboardTypeString)]
-    assert events[2][0] == "post" and events[2][1]["keycode"] == mac_integration.V_KEYCODE
+    assert events[2][0] == "post" and events[2][1]["keycode"] == keyboard_layout.QWERTY["v"]
     assert "clear" not in events[2:]
 
 
@@ -396,17 +396,48 @@ def test_cmd_z_is_reported_as_undo_and_shift_cmd_z_as_typing(monkeypatch) -> Non
     monitor = _watching_monitor(monkeypatch, events)
     cmd = mac_integration.COMMAND_FLAG_MASK
 
-    _key(monitor, _TypedEvent(mac_integration.Z_KEYCODE, cmd))
-    _key(monitor, _TypedEvent(mac_integration.Z_KEYCODE, cmd | mac_integration.SHIFT_FLAG_MASK))
+    _key(monitor, _TypedEvent(keyboard_layout.QWERTY["z"], cmd))
+    _key(monitor, _TypedEvent(keyboard_layout.QWERTY["z"], cmd | mac_integration.SHIFT_FLAG_MASK))
 
     assert events == ["undo", "typed"]
+
+
+def test_cmd_z_is_found_where_the_layout_puts_z(monkeypatch) -> None:
+    """On AZERTY, Z is the key QWERTY calls W; the key at QWERTY's Z is W there."""
+    events = []
+    monitor = _watching_monitor(monkeypatch, events)
+    monkeypatch.setattr(keyboard_layout, "_codes", {"v": 9, "z": 13})
+    cmd = mac_integration.COMMAND_FLAG_MASK
+
+    _key(monitor, _TypedEvent(13, cmd))
+    _key(monitor, _TypedEvent(6, cmd))
+
+    assert events == ["undo", "typed"]
+
+
+def test_paste_and_undo_press_the_layouts_own_v_and_z(monkeypatch) -> None:
+    posted = []
+    monkeypatch.setattr(keyboard_layout, "_codes", {"v": 47, "z": 44})  # Dvorak
+    pasteboard = SimpleNamespace(clearContents=lambda: None, setString_forType_=lambda text, kind: None)
+    monkeypatch.setattr(mac_integration, "NSPasteboard", SimpleNamespace(generalPasteboard=lambda: pasteboard))
+    monkeypatch.setattr(mac_integration.Quartz, "CGEventSourceCreate", lambda state: object())
+    monkeypatch.setattr(
+        mac_integration.Quartz, "CGEventCreateKeyboardEvent", lambda source, keycode, down: {"keycode": keycode, "down": down}
+    )
+    monkeypatch.setattr(mac_integration.Quartz, "CGEventSetFlags", lambda event, flags: None)
+    monkeypatch.setattr(mac_integration.Quartz, "CGEventPost", lambda tap, event: posted.append(event["keycode"]))
+
+    mac_integration.paste_text("Hi")
+    mac_integration.undo_last_edit()
+
+    assert posted == [47, 47, 44, 44]
 
 
 def test_the_apps_own_paste_and_undo_are_not_mistaken_for_typing(monkeypatch) -> None:
     events = []
     monitor = _watching_monitor(monkeypatch, events)
     ours = _TypedEvent(
-        mac_integration.V_KEYCODE, mac_integration.COMMAND_FLAG_MASK, mac_integration.SYNTHETIC_EVENT_TAG
+        keyboard_layout.QWERTY["v"], mac_integration.COMMAND_FLAG_MASK, mac_integration.SYNTHETIC_EVENT_TAG
     )
 
     assert _key(monitor, ours) is ours
@@ -448,7 +479,7 @@ def test_paste_and_undo_events_carry_the_apps_tag(monkeypatch) -> None:
 
     mac_integration.undo_last_edit()
 
-    tag = (mac_integration.Z_KEYCODE, mac_integration._USER_DATA_FIELD, mac_integration.SYNTHETIC_EVENT_TAG)
+    tag = (keyboard_layout.QWERTY["z"], mac_integration._USER_DATA_FIELD, mac_integration.SYNTHETIC_EVENT_TAG)
     assert tagged == [tag, tag]
     assert [event["down"] for event in posted] == [True, False]
 

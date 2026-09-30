@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from typeless_local.config import _absolutize_jarvis_paths, _resolve_refine_config, resolve_jarvis_root
 
 
@@ -121,8 +123,53 @@ def test_load_config_reads_own_config_not_jarvis(monkeypatch, tmp_path):
     assert bundled.refine.model == "gpt-5.6-terra"  # from assets/config.yaml
 
     user_cfg = tmp_path / ".typlus" / "config.yaml"
-    user_cfg.write_text("llm:\n  presets:\n    fast:\n      model: user-override\n")
-    assert cfg_mod.load_config().refine.model == "user-override"
+    user_cfg.write_text("llm:\n  default_preset: fast\n  presets:\n    fast:\n      model: user-override\n")
+    loaded = cfg_mod.load_config()
+    assert loaded.refine.model == "user-override"
+    assert "deepseek-flash" in cfg_mod.preset_names(loaded.jarvis_config)  # bundled presets still there
+
+
+def test_user_config_only_overrides_the_keys_it_names(monkeypatch, tmp_path):
+    """A new default in the bundled file reaches users who never changed that key."""
+    from typeless_local import config as cfg_mod
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "jarvis").mkdir()
+    monkeypatch.setenv("JARVIS_PROJECT_ROOT", str(tmp_path / "jarvis"))
+    paths = cfg_mod.resolve_user_paths()
+    paths.user_config_path.write_text("audio:\n  input_channel: 2\nllm:\n  presets:\n    deepseek-flash:\n      max_tokens: 900\n")
+
+    loaded = cfg_mod.load_config()
+
+    assert loaded.input_channel == 2
+    assert loaded.low_volume_threshold == 0.003  # still the bundled value
+    assert loaded.refine.preset == "gpt-5.6-terra"
+    flash = cfg_mod.refine_config_for(loaded.jarvis_config, "deepseek-flash")
+    assert (flash.max_tokens, flash.base_url) == (900, "https://api.deepseek.com/v1")
+
+
+def test_merge_config_keeps_defaults_under_an_empty_section() -> None:
+    from typeless_local.config import merge_config
+    base = {"audio": {"min_duration": 0.15, "keep_recordings": 0}, "llm": {"default_preset": "a"}}
+
+    merged = merge_config(base, {"audio": None, "llm": {"default_preset": "b"}, "ui": {"sounds": "off"}})
+
+    assert merged == {"audio": {"min_duration": 0.15, "keep_recordings": 0}, "llm": {"default_preset": "b"}, "ui": {"sounds": "off"}}
+    assert base["llm"]["default_preset"] == "a"
+
+
+def test_unreadable_user_config_falls_back_and_is_kept_aside(monkeypatch, tmp_path):
+    from typeless_local import config as cfg_mod
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "jarvis").mkdir()
+    monkeypatch.setenv("JARVIS_PROJECT_ROOT", str(tmp_path / "jarvis"))
+    paths = cfg_mod.resolve_user_paths()
+    paths.user_config_path.write_text("audio: [unclosed\n")
+
+    assert cfg_mod.load_config().refine.preset == "gpt-5.6-terra"
+
+    cfg_mod.save_input_device(paths, "USB Mic")
+    assert "unclosed" in paths.user_config_path.with_name("config.yaml.unreadable").read_text()
+    assert cfg_mod.load_config().input_device == "USB Mic"
 
 
 def test_bundled_config_keeps_the_silence_gate_at_the_code_default(monkeypatch, tmp_path):
@@ -153,7 +200,7 @@ def test_refine_config_for_preset_and_names() -> None:
     assert refine_config_for(cfg, "a").extra_body is None
 
 
-def test_save_default_preset_seeds_user_config_and_load_config_reads_it(monkeypatch, tmp_path):
+def test_save_default_preset_writes_only_that_key_and_load_config_reads_it(monkeypatch, tmp_path):
     from typeless_local import config as cfg_mod
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / "jarvis").mkdir()
@@ -166,7 +213,9 @@ def test_save_default_preset_seeds_user_config_and_load_config_reads_it(monkeypa
     loaded = cfg_mod.load_config()
     assert loaded.refine.preset == "gpt-5.6-luna"
     assert loaded.refine.model == "gpt-5.6-luna"
-    assert "deepseek-flash" in cfg_mod.preset_names(loaded.jarvis_config)  # seeded from assets
+    assert "deepseek-flash" in cfg_mod.preset_names(loaded.jarvis_config)  # from the bundled file
+    written = yaml.safe_load(paths.user_config_path.read_text(encoding="utf-8"))
+    assert written == {"llm": {"default_preset": "gpt-5.6-luna"}}
 
 
 def test_load_env_file_fills_missing_only(monkeypatch, tmp_path):
@@ -181,3 +230,19 @@ def test_load_env_file_fills_missing_only(monkeypatch, tmp_path):
     import os
     assert os.environ["TL_TEST_NEW"] == "from-file"
     assert os.environ["TL_TEST_SET"] == "from-shell"
+
+
+def test_a_new_install_can_start_on_another_preset_but_a_chosen_one_stays(monkeypatch, tmp_path):
+    from typeless_local import config as cfg_mod
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "jarvis").mkdir()
+    monkeypatch.setenv("JARVIS_PROJECT_ROOT", str(tmp_path / "jarvis"))
+
+    fresh = cfg_mod.adopt_default_preset(cfg_mod.load_config(), "deepseek-flash")
+    assert (fresh.refine.preset, fresh.refine.api_key_env) == ("deepseek-flash", "DEEPSEEK_API_KEY")
+    assert cfg_mod.load_config().refine.preset == "deepseek-flash"  # remembered
+
+    paths = cfg_mod.resolve_user_paths()
+    cfg_mod.save_default_preset(paths, "gpt-5.6-luna")
+    assert cfg_mod.adopt_default_preset(cfg_mod.load_config(), "deepseek-flash").refine.preset == "gpt-5.6-luna"
+    assert cfg_mod.adopt_default_preset(cfg_mod.load_config(), "no-such-preset").refine.preset == "gpt-5.6-luna"

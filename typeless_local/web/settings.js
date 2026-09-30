@@ -21,6 +21,7 @@ const DAYS = v => ({ 30: L('30 天', '30 days'), 90: L('90 天', '90 days'), 365
 const LANGS = () => [['', L('自动（中英混说）', 'Automatic (mixed Chinese and English)')], ['zh', '中文'], ['en', 'English']];
 // The interface language names itself in both, so it can be found whichever one is showing.
 const UI_LANGS = () => [['auto', L('跟随系统', 'Same as the Mac')], ['zh', '中文'], ['en', 'English']];
+const SOURCES = () => [['auto', L('自动', 'Automatic')], ['huggingface', 'Hugging Face'], ['mirror', L('国内镜像 hf-mirror.com', 'China mirror (hf-mirror.com)')]];
 
 let S = null;            // the state Python sent
 let pane = 'general';
@@ -66,7 +67,10 @@ function general() {
       row(L('结果停留', 'Result stays for'), select('dismiss_seconds', p.dismiss_seconds, S.choices.dismiss_seconds.map(v => [v, secs(v)]), L('结果停留', 'Result stays for')),
         L('指针停在胶囊上时不计时；接着打字会立刻收起。', 'The pointer resting on the capsule pauses it; typing dismisses it at once.')),
     ])
-    + grp([row(L('提示音', 'Sounds'), select('sounds', p.sounds, [['off', L('关闭', 'Off')], ['start_end', L('仅开始和结束', 'Start and end only')]], L('提示音', 'Sounds')))]);
+    + grp([row(L('提示音', 'Sounds'), select('sounds', p.sounds, [['off', L('关闭', 'Off')], ['start_end', L('仅开始和结束', 'Start and end only')]], L('提示音', 'Sounds')))])
+    + grp([row(L('诊断信息', 'Diagnostics'), `<button class="mbtn" data-act="open" data-what="diagnostics">${L('导出…', 'Export…')}</button>`,
+      L('反馈问题时附上这个文件：日志、改过的设置和这台 Mac 的情况。不含 API Key，也不含听写历史。',
+        'Attach this file when you report a problem: the log, the settings you changed and details of this Mac. No API keys, no dictation history.'))]);
 }
 
 function dictation() {
@@ -76,6 +80,9 @@ function dictation() {
       row(L('识别语言', 'Spoken language'), select('language', S.language, LANGS(), L('识别语言', 'Spoken language')),
         L('自动能识别中英混说；固定一种语言会快一点。', 'Automatic handles Chinese and English mixed; one fixed language is a little faster.')),
       row(L('语音模型', 'Speech model'), `<span class="val">${esc(S.asrModel || '—')} · ${L('本地', 'on this Mac')}</span>`),
+      row(L('模型下载源', 'Model download'), select('model_source', p.model_source, SOURCES(), L('模型下载源', 'Model download')),
+        L('自动：在中国大陆用国内镜像，其他地方用 Hugging Face。只管下载，识别始终在这台 Mac 上。',
+          'Automatic uses the China mirror in mainland China and Hugging Face elsewhere. Only for the download; recognition always runs on this Mac.')),
       row(L('单次最长录音', 'Longest recording'), select('max_minutes', p.max_minutes, S.choices.max_minutes.map(v => [v, L(`${v} 分钟`, `${v} minutes`)]), L('单次最长录音', 'Longest recording')),
         L('最后 60 秒会倒计时。', 'The last 60 seconds count down.')),
     ])

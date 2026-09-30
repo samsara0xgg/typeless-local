@@ -22,7 +22,7 @@ from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 import numpy as np
 from PyObjCTools import AppHelper
 
-from typeless_local import app_version, brand, i18n, keychain, permissions, usage
+from typeless_local import app_version, brand, diagnostics, i18n, keyboard_layout, keychain, permissions, reach, usage
 from typeless_local.i18n import t
 from typeless_local.asr import JarvisASR, Transcript, mlx_whisper_repo
 from typeless_local.audio import MicrophoneRecorder, keep_recording, peak_level
@@ -30,6 +30,7 @@ from typeless_local import devices
 from typeless_local.capsule import INSERTED_STATES, Capsule
 from typeless_local.config import (
     AppConfig,
+    adopt_default_preset,
     load_config,
     migrate_legacy_config_dir,
     preset_names,
@@ -386,6 +387,8 @@ class TypelessLocalApp:
         if changed == "ui_language":
             i18n.use(prefs.ui_language)
             self._relocalize()
+        if changed in (None, "model_source"):
+            reach.use_model_source(prefs.model_source)
 
     def _relocalize(self) -> None:
         """Redraw everything that has words in it, in the language just chosen."""
@@ -586,6 +589,84 @@ class TypelessLocalApp:
             subprocess.Popen(["/usr/bin/open", str(user_paths.log_path)])
         except Exception:
             LOGGER.warning("Could not open the log", exc_info=True)
+
+    def export_diagnostics(self) -> None:
+        """Zip the log, the changed settings and a summary for a bug report, and show it in Finder."""
+
+        user_paths = getattr(self.config, "user_paths", None)
+        if user_paths is None:
+            return
+        summary = self._diagnostic_summary()
+        secrets = [os.environ.get(name, "") for name in api_key_names(self.config)]
+
+        def run() -> None:
+            try:
+                # Inside ~/.typlus rather than on the Desktop, which macOS guards
+                # with a permission prompt of its own.
+                path = diagnostics.export(
+                    user_paths.config_dir / "diagnostics",
+                    name=brand.ENGLISH_NAME,
+                    version=app_version(),
+                    summary=summary,
+                    log_path=user_paths.log_path,
+                    user_config_path=user_paths.user_config_path,
+                    secrets=secrets,
+                )
+                LOGGER.info("Diagnostics written to %s", path)
+                subprocess.Popen(["/usr/bin/open", "-R", str(path)])
+            except Exception:
+                LOGGER.exception("Could not export diagnostics")
+
+        threading.Thread(target=run, daemon=True, name="diagnostics").start()
+
+    def _diagnostic_summary(self) -> dict:
+        """What a bug report needs to know about this Mac and this install. No keys."""
+
+        import platform  # noqa: PLC0415
+
+        def safe(read):
+            try:
+                return read()
+            except Exception as exc:
+                return f"unavailable: {exc!r}"
+
+        config = self.config
+        asr_config = (config.jarvis_config or {}).get("asr") or {}
+        repo_id = mlx_whisper_repo(asr_config)
+        return {
+            "app": {"version": app_version(), "state": self.state, "issues": safe(lambda: list(self._current_issues()))},
+            "mac": {
+                "macos": platform.mac_ver()[0],
+                "chip": reach.machine(),
+                "mainland_china": reach.in_mainland_china(),
+                "interface_language": i18n.current(),
+                "keycodes": {"v": keyboard_layout.keycode("v"), "z": keyboard_layout.keycode("z")},
+            },
+            "permissions": {
+                "microphone": safe(permissions.microphone_status),
+                "accessibility": safe(has_accessibility_trust),
+            },
+            "audio": {
+                "inputs": safe(devices.list_input_devices),
+                "chosen": config.input_device or "(system default)",
+                "system_default": safe(devices.current_input_device),
+                "input_channel": config.input_channel,
+            },
+            "speech": {
+                "provider": asr_config.get("provider"),
+                "model": repo_id,
+                "cached": safe(lambda: model_is_cached(repo_id)),
+                "download_from": os.environ.get("HF_ENDPOINT", ""),
+                "language": asr_config.get("language") or "auto",
+            },
+            "refine": {
+                "preset": config.refine.preset,
+                "model": config.refine.model,
+                "base_url": config.refine.base_url,
+                "keys_set": {name: bool(os.environ.get(name)) for name in api_key_names(config)},
+            },
+            "preferences": self.prefs.to_dict(),
+        }
 
     def _start_model_prefetch(self) -> None:
         """Pull the ASR weights now, with the capsule showing progress, instead of
@@ -1773,22 +1854,52 @@ def claim_single_instance(config_dir: Path):
     return handle
 
 
-def _say_already_running(app) -> None:
+def _alert(app, title: str, body: str) -> None:
+    """A modal alert before the app is up, for the reasons it will not start."""
+
     try:
         from AppKit import NSAlert  # noqa: PLC0415
 
         alert = NSAlert.alloc().init()
-        alert.setMessageText_(t(f"{brand.DISPLAY_NAME}已经在运行", f"{brand.ENGLISH_NAME} is already running"))
-        alert.setInformativeText_(
-            t(
-                "另一个言字（可能是从源码运行的那个）已经在响应 F5。先退出它，再打开这个。",
-                "Another copy, perhaps one run from source, is already answering F5. Quit it first, then open this one.",
-            )
-        )
+        alert.setMessageText_(title)
+        alert.setInformativeText_(body)
         app.activateIgnoringOtherApps_(True)
         alert.runModal()
     except Exception:
-        LOGGER.debug("Could not show the already-running alert", exc_info=True)
+        LOGGER.debug("Could not show the alert %r", title, exc_info=True)
+
+
+def _say_already_running(app) -> None:
+    _alert(
+        app,
+        t(f"{brand.DISPLAY_NAME}已经在运行", f"{brand.ENGLISH_NAME} is already running"),
+        t(
+            "另一个言字（可能是从源码运行的那个）已经在响应 F5。先退出它，再打开这个。",
+            "Another copy, perhaps one run from source, is already answering F5. Quit it first, then open this one.",
+        ),
+    )
+
+
+def _say_unsupported_mac(app, chip: str) -> None:
+    if chip == "rosetta":
+        _alert(
+            app,
+            t(f"{brand.DISPLAY_NAME}正在用 Rosetta 打开", f"{brand.ENGLISH_NAME} is running under Rosetta"),
+            t(
+                f"语音识别需要直接在 Apple 芯片上运行。在访达里选中{brand.DISPLAY_NAME}，按 ⌘I，取消勾选“使用 Rosetta 打开”，然后再打开。",
+                f"Speech recognition has to run natively on Apple silicon. Select {brand.ENGLISH_NAME} in Finder, "
+                "press ⌘I, turn off “Open using Rosetta”, then open it again.",
+            ),
+        )
+        return
+    _alert(
+        app,
+        t(f"{brand.DISPLAY_NAME}需要 Apple 芯片的 Mac", f"{brand.ENGLISH_NAME} needs a Mac with Apple silicon"),
+        t(
+            "语音识别在这台 Mac 上用 MLX 运行，只支持 M1 及更新的芯片，这台 Mac 用的是 Intel 处理器。",
+            "Speech recognition runs on this Mac with MLX, which needs an M1 chip or later. This Mac has an Intel processor.",
+        ),
+    )
 
 
 _INSTANCE_LOCK = None
@@ -1803,11 +1914,21 @@ def main() -> None:
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     config = load_config()
     _INSTANCE_LOCK = claim_single_instance(config.user_paths.config_dir)
+    prefs = load_preferences(config.user_paths)
+    i18n.use(prefs.ui_language)
     if _INSTANCE_LOCK is None:
         LOGGER.error("Another copy of %s is already running; quitting", brand.ENGLISH_NAME)
-        i18n.use(load_preferences(config.user_paths).ui_language)
         _say_already_running(app)
         return
+    chip = reach.machine()
+    if chip != "apple":
+        LOGGER.error("%s needs Apple silicon; this process runs on %s", brand.ENGLISH_NAME, chip)
+        _say_unsupported_mac(app, chip)
+        return
+    if not prefs.onboarding_done and reach.in_mainland_china():
+        # OpenAI does not serve mainland China: a new install there starts on
+        # DeepSeek, so the key the guide asks for is one that can work.
+        config = adopt_default_preset(config, reach.CHINA_PRESET)
     # Keys saved from Settings live in the login keychain; one still in
     # ~/.typlus/env (or the environment) is used as it is.
     keychain.fill_environ(api_key_names(config))
