@@ -10,7 +10,7 @@ From this folder:
 
 ```sh
 npx wrangler login
-npx wrangler d1 create yana            # put the printed database_id in wrangler.toml
+npx wrangler d1 create yana            # already done; the id is in wrangler.toml
 npx wrangler d1 execute yana --remote --file=schema.sql
 npx wrangler secret put OPENAI_API_KEY # the trial key; paste it at the prompt
 npx wrangler secret put ADMIN_TOKEN    # any long random string

@@ -16,7 +16,7 @@ TRIAL_COUNTRIES = "US,CA"
 [[d1_databases]]
 binding = "DB"
 database_name = "yana"
-database_id = "00000000-0000-0000-0000-000000000000"  # from `npx wrangler d1 create yana`
+database_id = "77bec8f7-5894-4bde-a4f9-cbea27ca9ff5"
 
 [[ratelimits]]
 name = "PER_IP"
