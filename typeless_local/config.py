@@ -49,7 +49,7 @@ class AppConfig:
     jarvis_config: dict[str, Any]
     refine: RefineConfig
     sample_rate: int = 16000
-    max_recording_seconds: float = 540.0
+    max_recording_seconds: float = 900.0
     min_recording_seconds: float = 0.15
     low_volume_threshold: float = 0.02
     keep_recordings: int = 0
