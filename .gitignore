@@ -14,3 +14,10 @@ build/
 dist/
 dist2/
 *.egg-info/
+
+# Kept on the maintainer's Mac only, not published: plans and specs, release
+# notes and the release guide, and the old pixel-audit tooling.
+/docs/
+/scripts/video_pixel_audit.py
+/scripts/final_pixel_gate.sh
+/tests/test_video_pixel_audit.py
