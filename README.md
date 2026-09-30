@@ -4,10 +4,10 @@ A standalone macOS dictation app: hold a key, talk, and the cleaned-up text is
 pasted into whatever app you were in. Speech recognition runs locally through
 Whisper; only the final tidy-up pass goes to a language model.
 
-The app is called 言字 on a Chinese system and Yana everywhere else (the
-English name is a placeholder; `typeless_local/brand.py` holds both). It used
-to be called Typlus: the bundle ID and the `~/.typlus` folder keep that name,
-so the permissions macOS granted and your key, words and history carry over.
+The app is called 言字 on a Chinese system and Yana everywhere else
+(`typeless_local/brand.py` holds both). It used to be called Typlus: the bundle
+ID and the `~/.typlus` folder keep that name, so the permissions macOS granted
+and your key, words and history carry over.
 
 ## Install
 
@@ -49,9 +49,13 @@ always wins.
 - `Esc` cancels the active or pending dictation.
 - The menu-bar **润色模型** submenu lists every `llm.presets` entry from the
   config; picking one switches the refinement model immediately.
-- During recording, macOS system output is muted and restored afterwards.
-- **Settings** (`⌘,` from the menu) has seven panes: general, dictation,
-  shortcuts, refinement models and keys, vocabulary, audio, history and privacy.
+- While recording, playing media is paused and system output is lowered, then
+  both are restored.
+- If refinement fails, times out, or its reply is cut off, the raw transcript
+  is pasted instead, so a dictation is never lost to the polish step.
+- **Settings** (`⌘,` from the menu) has eight panes: general, dictation,
+  shortcuts, refinement models and keys, vocabulary, audio, usage, and history
+  and privacy.
 - **History** (`⌘Y`) lists every dictation by day, shows what the model changed
   and where the time went, and adds a misheard word to the vocabulary in one
   click. Nothing is ever deleted unless you pick a retention limit.
@@ -69,111 +73,26 @@ always wins.
   `~/.typlus/config.yaml` as `model: [input, cached input, output]` dollars per
   million tokens.
 
-## Build from source
+## Settings file
 
-Dev mode (uses the sibling `jarvis/` checkout + its `.venv`):
+`~/.typlus/config.yaml` holds only what you changed. It is laid over the
+bundled `assets/config.yaml` key by key, so a default changed in an update
+reaches everyone who hasn't changed that key; delete a line to go back to the
+default. Older installs have a full copy there, which keeps working as is.
 
-```bash
-./scripts/run.sh
-```
+API keys live in the login keychain. Older installs may still have them in
+`~/.typlus/env` as `KEY=value` lines; variables already in the environment win.
 
-### Build a fresh `.app`
-
-```bash
-# A Homebrew or python.org Python with libpython.dylib (uv-standalone Pythons
-# don't ship one, so py2app's launcher can't link against them).
-PYBUILD=/opt/homebrew/bin/python3.13
-$PYBUILD -m venv /tmp/build-venv
-/tmp/build-venv/bin/pip install \
-  pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-Quartz \
-  pyobjc-framework-ApplicationServices pyobjc-framework-WebKit \
-  numpy sounddevice openai pyyaml mlx-whisper py2app
-/tmp/build-venv/bin/python scripts/build_app.py
-# Result at dist/Yana.app — move to /Applications/.
-```
-
-For a build other people can run, `--release` signs with a Developer ID,
-notarizes through Apple, staples the ticket, and produces a `.dmg`:
-
-```bash
-/tmp/build-venv/bin/python scripts/build_app.py --release
-```
-
-`docs/RELEASING.md` is the full procedure: the one-time certificate and notary
-setup, what each build step is working around, the traps that each cost a
-notarization round trip, and how to verify a build the way a downloader's Mac
-will.
-
-Every rebuild has to be signed with the same Developer ID: an ad-hoc signed
-build looks like a different app to macOS, which then drops the Accessibility
-permission.
-
-The app icon is drawn by `scripts/make_icon.mjs` (`node scripts/make_icon.mjs
---icns` rewrites `assets/AppIcon.icns`; it needs Playwright).
-
-The bundle is fully self-contained: it includes its own Python interpreter,
-all wheels, and the vendored Jarvis core subset (`speech_recognizer` +
-`media_ducking`). No external `jarvis/` checkout required at runtime.
-First launch downloads the Whisper model to `~/.cache/huggingface/`
-(~1.5 GB) on first F5 press.
-
-Default behavior:
-
-- `F5` starts and stops dictation.
-- `F5+Space` starts hands-free dictation.
-- A single right `Cmd` tap does the same as `F5` (Typeless-style); right
-  `Cmd+Space` starts hands-free. Right `Cmd` used as a modifier (`Cmd+C`,
-  `Cmd+Tab`) is ignored.
-- `Esc` cancels the active or pending dictation.
-- The menu-bar icon has a `Model` submenu listing every `llm.presets` entry from
-  the config; picking one switches the refinement model immediately and writes
-  `llm.default_preset` to `~/.typlus/config.yaml`.
-- `~/.typlus/config.yaml` holds only what you changed. It is laid over the
-  bundled `assets/config.yaml` key by key, so a default changed in an update
-  reaches everyone who hasn't changed that key; delete a line to go back to the
-  default. Older installs have a full copy there, which keeps working as is.
-- Cmd+V and Cmd+Z are sent on whichever key types V and Z on the current
-  keyboard layout (AZERTY, Dvorak and so on), re-read when the layout changes.
-- API keys for Finder/Spotlight launches go in `~/.typlus/env`
-  (`KEY=value` lines, loaded at startup; variables already in the environment win).
-- During recording, macOS system output is muted through Jarvis' Inherent
-  `SystemAudioDucker` and restored when recording ends or is canceled.
-- After recording stops, audio is transcribed through Jarvis ASR, refined with
-  the Jarvis fast OpenAI preset (`gpt-5.4-mini`), then pasted into the previously
-  focused app.
-- If refinement fails, times out, or its reply is cut off, the raw transcript is
-  pasted instead, so a dictation is never lost to the polish step.
-
-Permissions macOS may require:
-
-- Microphone access for recording.
-- Accessibility access for global key capture and paste insertion.
-
-## Environment
-
-Optional variables:
-
-- `JARVIS_PROJECT_ROOT`: path to the Jarvis checkout. Defaults to the sibling
-  `../jarvis` directory when present.
-- `TYPELESS_LOCAL_LOG_LEVEL`: Python logging level, default `INFO`.
-- `TYPELESS_LOCAL_DEBUG_HOTKEY`: set to `1` to also use `RightOption` as a
-  debug trigger when F5 cannot be captured by the OS event tap.
-- `TYPELESS_LOCAL_ASR_LANGUAGE`: optional fixed Whisper language code. Empty by
-  default so dictation can auto-detect mixed Chinese/English input.
-- `TYPELESS_LOCAL_MLX_INITIAL_PROMPT`: optional Whisper initial prompt. Empty by
-  default to avoid Jarvis' command-oriented Chinese bias in this dictation app.
-
-Secrets are not stored here. The OpenAI API key is read through Jarvis'
-`config.yaml` preset, normally `OPENAI_API_KEY`.
+Cmd+V and Cmd+Z are sent on whichever key types V and Z on the current keyboard
+layout (AZERTY, Dvorak and so on), re-read when the layout changes.
 
 ## Vocabulary
 
-Edit `~/.typlus/vocab.yaml` to bias the ASR + refine LLM toward
+Edit `~/.typlus/vocab.yaml` to bias speech recognition and refinement toward
 your proper nouns and domain terms:
 
 ```yaml
 user:
-  - Jarvis
   - Typeless
   - mlx-whisper
 auto: []   # auto-filled by scripts/extract_hotwords.py
@@ -183,9 +102,20 @@ auto: []   # auto-filled by scripts/extract_hotwords.py
 script. **Settings › 词库** edits `user:`, offers `auto:` terms to add or
 reject, and lists words from your recent hand corrections.
 
-## Trace database
+To fill `auto:` from your own history:
 
-Every dictation session writes one row to `~/.typlus/trace.db`:
+```bash
+python scripts/extract_hotwords.py --days 30 --min-count 2 --top-k 50
+```
+
+The script diffs `refined_text` against `raw_asr_text` per dictation, counts
+added tokens, filters bilingual stopwords (`assets/stopwords-{en,zh}.txt`) and
+existing `user:` terms, and writes the top survivors to `auto:`. `--dry-run`
+prints the candidates without saving.
+
+## History database
+
+Every dictation writes one row to `~/.typlus/trace.db`:
 
 ```bash
 sqlite3 ~/.typlus/trace.db \
@@ -194,9 +124,9 @@ sqlite3 ~/.typlus/trace.db \
      FROM sessions ORDER BY id DESC LIMIT 20'
 ```
 
-Fields cover audio quality (rms, duration), per-stage latency, the vocab
-list sent to ASR, focus context, paste outcome, and any pipeline error. The
-History window reads the same table.
+Fields cover audio quality (rms, duration), per-stage latency, the vocabulary
+sent to speech recognition, focus context, paste outcome, token counts, and any
+pipeline error. The History window reads the same table.
 
 ## Interface
 
@@ -213,19 +143,6 @@ language). Every string is written where it is used as a pair, `t("设置",
 in the pages (`kit.js`), so a new string cannot ship in one language only
 without it showing in review.
 
-## Auto-discover hotwords
-
-```bash
-python scripts/extract_hotwords.py --days 30 --min-count 2 --top-k 50
-```
-
-The script diffs `refined_text` vs `raw_asr_text` per session, counts
-"added" tokens, filters bilingual stopwords (`assets/stopwords-{en,zh}.txt`)
-and existing `user:` terms, and writes the top survivors to `auto:`.
-`--dry-run` prints candidates without saving.
-
-## Menu bar
-
 When running, the app is a 言 glyph in the menu bar (a Dock icon appears only
 while one of its windows is open). A dot blinks while recording and the glyph
 breathes while it transcribes and refines. An orange badge means something
@@ -234,40 +151,47 @@ menu's first items say what and fix it. The menu also has the last dictation
 to copy, the model and input-device pickers, vocabulary, history and
 settings.
 
-## Pixel Audit
+## Build from source
 
-Recommended capture protocol for the final local recording:
-
-1. Open a bright, non-editable background window, such as a blank browser page.
-2. Do not focus a text input. The end of the recording should show the Copy
-   fallback instead of inserting text.
-3. Use the same macOS screen-recording UI used for the reference videos. The
-   command-line `screencapture -v` path may miss the floating overlay and should
-   not be used as final proof.
-4. Start recording, press `F5`, speak a short phrase, press `F5` again to finish,
-   and keep recording until Thinking and Copy fallback have both appeared.
-5. Run the audit command below against the official and latest local `.mov`.
-
-To compare an official Typeless recording against a local recording:
+Run from the checkout:
 
 ```bash
-python scripts/video_pixel_audit.py \
-  --official "/path/to/official.mov" \
-  --local "/path/to/local.mov" \
-  --fps 5 \
-  --gate
+PYTHON=/path/to/venv/bin/python ./scripts/run.sh
 ```
 
-Or use the wrapper:
+Build the app. py2app needs a Python with `libpython.dylib`, so use Homebrew's
+or python.org's rather than a uv-standalone one:
 
 ```bash
-scripts/final_pixel_gate.sh "/path/to/official.mov" "/path/to/local.mov"
+/opt/homebrew/bin/python3.13 -m venv ~/.typlus-build-venv
+~/.typlus-build-venv/bin/pip install \
+  pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-Quartz \
+  pyobjc-framework-ApplicationServices pyobjc-framework-WebKit \
+  numpy sounddevice openai pyyaml mlx-whisper py2app
+~/.typlus-build-venv/bin/python scripts/build_app.py
+# Result at dist/Yana.app
 ```
 
-The audit extracts frames with `ffmpeg` and reports recording, Thinking, copy
-fallback, and waveform metrics as JSON. With `--gate`, it exits non-zero when
-the local recording misses required UI states or exceeds pixel/waveform
-thresholds. By default, each run uses a process-specific extraction directory
-under `/tmp`; `--reuse` requires `--workdir <path>` and should only be used
-when intentionally reusing a single extracted frame cache. It is intended for
-regression checks against new local screen recordings.
+`--release` also signs with a Developer ID, notarizes through Apple, staples
+the ticket, and produces `dist/Yana-<version>.dmg`. Every build has to be
+signed with the same Developer ID: an ad-hoc signed build looks like a
+different app to macOS, which then drops the Accessibility permission.
+
+The bundle is self-contained: its own Python, every wheel, and the vendored
+Jarvis subset (`speech_recognizer`, `media_ducking`). The Whisper weights are
+not bundled; they download to `~/.cache/huggingface/` on first launch.
+
+The app icon is drawn by `scripts/make_icon.mjs` (`node scripts/make_icon.mjs
+--icns` rewrites `assets/AppIcon.icns`; it needs Playwright).
+
+Optional environment variables:
+
+- `TYPELESS_LOCAL_LOG_LEVEL`: Python logging level, default `INFO`.
+- `TYPELESS_LOCAL_DEBUG_HOTKEY`: `1` also uses right `Option` as a trigger
+  when F5 cannot be captured.
+- `TYPELESS_LOCAL_ASR_LANGUAGE`: a fixed Whisper language code. Empty by
+  default, so mixed Chinese and English is detected.
+- `TYPELESS_LOCAL_MLX_INITIAL_PROMPT`: a Whisper initial prompt. Empty by
+  default.
+- `JARVIS_PROJECT_ROOT`: a Jarvis checkout to reuse in dev mode. Defaults to
+  a sibling `../jarvis` when present.
