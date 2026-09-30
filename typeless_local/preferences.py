@@ -35,7 +35,7 @@ class Preferences:
     show_handle: bool = True
     dismiss_seconds: float = 4.0
     sounds: str = "off"
-    max_minutes: int = 9
+    max_minutes: int = 15
     refine: bool = True
     rewrite_selection: bool = True
     show_ducked: bool = False

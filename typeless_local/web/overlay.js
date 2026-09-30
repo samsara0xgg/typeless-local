@@ -17,7 +17,7 @@ const PROF = [1, .92, .8, .66, .52, .4, .3, .22];
 
 const S = {
   st: 'hidden', d: {}, kind: 'pill', hidden: true, layer: null,
-  mode: 'click', recAt: 0, max: 540, cd: false, quiet: false, lastVoice: 0,
+  mode: 'click', recAt: 0, max: 900, cd: false, quiet: false, lastVoice: 0,
   level: 0, levelAt: 0, tmrText: '', say: '',
   anchor: { mode: 'bottom', x: null, y: null }, last: null,
   handleOn: false, handleHover: false, hover: false, hovBtn: null, native: false, lastGeo: '',

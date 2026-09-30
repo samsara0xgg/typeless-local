@@ -52,5 +52,5 @@ def test_a_hand_edited_bad_value_falls_back_to_its_default(monkeypatch, tmp_path
 
     prefs = load_preferences(paths)
 
-    assert prefs.max_minutes == 9
+    assert prefs.max_minutes == 15
     assert prefs.sounds == "start_end"
