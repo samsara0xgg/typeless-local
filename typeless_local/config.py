@@ -181,6 +181,12 @@ def _update_user_config(user_paths: UserPaths, section: str, key: str, value: An
     path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
 
 
+def save_user_setting(user_paths: UserPaths, section: str, key: str, value: Any) -> None:
+    """Persist one setting from the Settings window in the user config."""
+
+    _update_user_config(user_paths, section, key, value)
+
+
 def save_default_preset(user_paths: UserPaths, preset_name: str) -> None:
     """Persist the chosen preset, seeding the user config from the bundled one."""
 

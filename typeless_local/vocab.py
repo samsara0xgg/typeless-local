@@ -151,6 +151,25 @@ def save_auto_terms(path: Path, terms: list[str]) -> None:
     _atomic_write_sections(path, sections)
 
 
+def save_user_terms(path: Path, terms: list[str]) -> None:
+    """Atomically rewrite `user:` (the Settings window's word list).
+
+    Preserves `auto:` and `rejected:`; blanks and repeats are dropped.
+    """
+
+    path = Path(path)
+    sections = _load_sections(path)
+    seen: set[str] = set()
+    kept: list[str] = []
+    for term in terms:
+        cleaned = str(term).strip()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            kept.append(cleaned)
+    sections["user"] = kept
+    _atomic_write_sections(path, sections)
+
+
 def reject_term(path: Path, term: str) -> None:
     """Move ``term`` out of ``auto:`` and into ``rejected:`` (case-insensitive).
 

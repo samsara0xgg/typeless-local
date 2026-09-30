@@ -84,6 +84,17 @@ class JarvisASR:
             model = str(self._asr_config.get(f"{provider}_model") or self._asr_config.get("model") or "")
         return f"{provider}:{model}" if model else provider
 
+    def set_language(self, language: str) -> None:
+        """Recognise ``language`` ("" detects it) from the next chunk on.
+
+        Taken under the prompt lock so a transcription already running keeps
+        the language it started with.
+        """
+
+        with self._prompt_lock:
+            self._recognizer.language = language or None
+            self._asr_config["language"] = language or ""
+
     def _detect_per_call_prompt(self) -> bool:
         try:
             sig = inspect.signature(self._recognizer.transcribe)

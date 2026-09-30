@@ -137,3 +137,14 @@ def test_load_user_terms_leaves_out_auto_terms(tmp_path) -> None:
     path.write_text("user:\n- Jarvis\n- StarTrial\nauto:\n- mishear\n", encoding="utf-8")
 
     assert load_user_terms(path) == ["Jarvis", "StarTrial"]
+
+
+def test_save_user_terms_keeps_auto_and_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "vocab.yaml"
+    path.write_text("user: [Old]\nauto: [Auto]\nrejected: [Nope]\n", encoding="utf-8")
+
+    vocab.save_user_terms(path, ["Typlus", " PyObjC ", "", "Typlus"])
+
+    assert vocab.load_user_terms(path) == ["Typlus", "PyObjC"]
+    assert vocab.load_vocab(path) == ["Typlus", "PyObjC", "Auto"]
+    assert vocab.load_rejected(path) == ["Nope"]

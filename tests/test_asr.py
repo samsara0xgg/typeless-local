@@ -139,3 +139,16 @@ def test_transcribe_strips_prompt_echo(monkeypatch, tmp_path: Path) -> None:
         result = j.transcribe(np.ones(16000, dtype=np.float32) * 0.1, initial_prompt="Common terms: Jarvis, Typeless.")
 
         assert result.text == expected
+
+
+def test_set_language_applies_from_the_next_chunk(monkeypatch, tmp_path: Path) -> None:
+    calls = _fake_mlx_whisper(monkeypatch)
+    j = asr_module.JarvisASR(tmp_path, _mlx_config())
+
+    j.set_language("zh")
+    j.transcribe(np.ones(16000, dtype=np.float32) * 0.1)
+    j.set_language("")
+    j.transcribe(np.ones(16000, dtype=np.float32) * 0.1)
+
+    assert calls[0]["language"] == "zh"
+    assert calls[1]["language"] is None
