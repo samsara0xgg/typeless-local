@@ -97,19 +97,30 @@ class SentTextWatcher:
             if self._front() != pid:
                 # Moved on to another app: the field holds what was kept, if
                 # it was changed at all.
-                return last if last is not None and _squash(last) != needle else None
+                if last is not None and _squash(last) != needle:
+                    return last
+                LOGGER.info("Sent text: moved to another app %s", "unchanged" if last is not None else "before the field was read")
+                return None
             value = self._read(pid)
             if last is None:
                 if value is not None and needle in _squash(value) and len(value) <= MAX_CHARS:
                     last = value
                 elif self._clock() - start > FIND_S:
-                    return None  # a field that cannot be read, or not where it went
+                    # This app's field cannot be read (no AX value), or it is a document.
+                    LOGGER.info(
+                        "Sent text: field not readable here (%s)",
+                        "no value" if value is None else f"{len(value)} characters, pasted text not found or too long",
+                    )
+                    return None
                 continue
             if value is None:
                 continue  # focus is briefly elsewhere in the same app
             if len(value) > MAX_CHARS:
+                LOGGER.info("Sent text: the field grew past %d characters; not a message", MAX_CHARS)
                 return None
             if len(_squash(value)) < len(_squash(last)) * SENT_RATIO:
                 return last
             last = value
+        if self._live(token):
+            LOGGER.info("Sent text: not sent within %d minutes", int(WATCH_S // 60))
         return None
