@@ -314,6 +314,40 @@ def test_refresh_only_touches_open_windows(ui) -> None:
     assert window.sent == []
 
 
+def test_reopening_a_closed_window_shows_what_changed_meanwhile(ui) -> None:
+    # The menu bar switched the model while Settings was closed.
+    window = _open_settings(ui)
+    window.close()
+    ui.app.config.refine = refine_config_for(ui.app.config.jarvis_config, "deep")
+    ui.windows.refresh()
+    window.sent.clear()
+    ui.windows.show_settings("model")
+    assert window.last("state")["active"] == "deep"
+    assert [m["t"] for m in window.sent] == ["state", "pane"]
+
+
+def test_reopening_history_and_the_guide_resends_them(ui) -> None:
+    ui.windows.show_history()
+    ui.windows._history_message({"t": "ready"})
+    ui.windows.history.close()
+    _log(ui.paths.trace_db_path, raw_asr_text="新的一条", refined_text="新的一条")
+    ui.windows.show_history()
+    assert ui.windows.history.last("items")["items"][0]["text"] == "新的一条"
+
+    ui.windows.show_onboarding()
+    ui.windows._onboarding_message({"t": "ready"})
+    guide = ui.windows.onboarding
+    guide.close()
+    guide.sent.clear()
+    ui.windows.show_onboarding()
+    assert [m["t"] for m in guide.sent] == ["state"]
+
+
+def test_the_first_open_waits_for_the_page_instead(ui) -> None:
+    ui.windows.show_settings()
+    assert ui.windows.settings.sent == []
+
+
 # --------------------------------------------------------------- history
 
 

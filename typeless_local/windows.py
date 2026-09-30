@@ -117,25 +117,43 @@ class Windows:
         return window
 
     def show_settings(self, pane: str | None = None) -> None:
+        reopening = self._hidden("settings")
         window = self._window(
             "settings", page="settings.html", title="设置", size=(780, 580), min_size=(600, 420),
-            on_message=self._settings_message,
+            toolbar=True, on_message=self._settings_message,
         )
         window.show()
+        if reopening:
+            self._f5_conflict = None
+            window.send(self.settings_state())
         if pane in SETTINGS_PANES:
             window.send({"t": "pane", "id": pane})
 
     def show_history(self) -> None:
-        self._window(
+        reopening = self._hidden("history")
+        window = self._window(
             "history", page="history.html", title="历史记录", size=(860, 580), min_size=(620, 400),
-            on_message=self._history_message,
-        ).show()
+            toolbar=True, on_message=self._history_message,
+        )
+        window.show()
+        if reopening:
+            window.send({"t": "items", **self.history_payload()})
 
     def show_onboarding(self) -> None:
-        self._window(
+        reopening = self._hidden("onboarding")
+        window = self._window(
             "onboarding", page="onboarding.html", title=brand.join("欢迎使用", brand.DISPLAY_NAME), size=(620, 560),
             resizable=False, on_message=self._onboarding_message,
-        ).show()
+        )
+        window.show()
+        if reopening:
+            window.send(self.onboarding_state())
+
+    def _hidden(self, name: str) -> bool:
+        """Built and closed since: the page stayed loaded but missed every refresh."""
+
+        window = getattr(self, name)
+        return window is not None and not window.visible()
 
     def _visible(self, name: str) -> bool:
         window = getattr(self, name)
@@ -578,7 +596,13 @@ _WINDOW_RESIZABLE = 1 << 3
 _WINDOW_FULL_SIZE_CONTENT = 1 << 15
 _BACKING_BUFFERED = 2
 _TITLE_HIDDEN = 1
+_TOOLBAR_UNIFIED = 3
+_SEPARATOR_NONE = 1
 DRAG_STRIP_H = 32.0
+# An empty unified toolbar makes the title bar this tall and moves the traffic
+# lights in from the corner, so they sit inside the sidebar card with even
+# margins, and the window takes the rounder corners a card nests inside.
+TOOLBAR_BAND_H = 52.0
 
 
 class WebWindow:
@@ -592,12 +616,14 @@ class WebWindow:
         on_message: Callable[[dict], None],
         min_size: tuple[float, float] | None = None,
         resizable: bool = True,
+        toolbar: bool = False,
     ) -> None:
         self.page_name = page
         self.title = title
         self.size = size
         self.min_size = min_size
         self.resizable = resizable
+        self.toolbar = toolbar
         self.on_message = on_message
         self.window = None
         self.page = None
@@ -628,6 +654,8 @@ class WebWindow:
         window.setBackgroundColor_(NSColor.windowBackgroundColor())
         if self.min_size:
             window.setContentMinSize_(NSMakeSize(*self.min_size))
+        if self.toolbar:
+            self._add_toolbar(window)
         content = window.contentView()
         bounds = content.bounds()
         self.glass = GlassLayer(content)
@@ -636,8 +664,9 @@ class WebWindow:
         self.page.view.setAutoresizingMask_(18)  # width + height sizable
         content.addSubview_(self.page.view)
         # The page covers the title bar; this strip above it moves the window.
+        strip_h = TOOLBAR_BAND_H if self.toolbar else DRAG_STRIP_H
         strip = _drag_view_class().alloc().initWithFrame_(
-            NSMakeRect(0, bounds.size.height - DRAG_STRIP_H, bounds.size.width, DRAG_STRIP_H)
+            NSMakeRect(0, bounds.size.height - strip_h, bounds.size.width, strip_h)
         )
         strip.setAutoresizingMask_(2 | 8)  # width sizable + flexible bottom margin
         content.addSubview_(strip)
@@ -648,6 +677,17 @@ class WebWindow:
         window.setFrameAutosaveName_(f"{brand.BUNDLE_ID}.{self.page_name}")
         self.window = window
         self.page.load(self.page_name)
+
+    def _add_toolbar(self, window) -> None:
+        try:
+            from AppKit import NSToolbar  # noqa: PLC0415
+
+            toolbar = NSToolbar.alloc().initWithIdentifier_(f"{brand.BUNDLE_ID}.{self.page_name}.toolbar")
+            window.setToolbar_(toolbar)
+            window.setToolbarStyle_(_TOOLBAR_UNIFIED)
+            window.setTitlebarSeparatorStyle_(_SEPARATOR_NONE)
+        except Exception:
+            LOGGER.debug("No unified toolbar; the traffic lights stay in the corner", exc_info=True)
 
     def show(self) -> None:
         from AppKit import NSApplication  # noqa: PLC0415

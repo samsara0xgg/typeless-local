@@ -190,7 +190,7 @@ function reportGlass() {
   const s = [];
   if (list) {
     const r = list.getBoundingClientRect();
-    s.push({ id: 'list', x: r.left, y: r.top, w: r.width, h: r.height, r: 16, a: 1, glass: true, hit: false });
+    s.push({ id: 'list', x: r.left, y: r.top, w: r.width, h: r.height, r: parseFloat(getComputedStyle(list).borderTopLeftRadius) || 18, a: 1, glass: true, hit: false });
   }
   const key = JSON.stringify(s);
   if (key !== lastGeo) { lastGeo = key; post({ t: 'geo', s }); }
