@@ -187,3 +187,17 @@ def test_the_menu_shows_todays_usage_and_opens_the_usage_pane() -> None:
     assert titles.index("今天 23 次 · 约 $0.04") == titles.index("历史记录…") + 1
     assert _find(items, "今天 23 次 · 约 $0.04").key == "settings:usage"
     assert "今天" not in " ".join(_titles(build_menu(Snapshot())))
+
+
+def test_the_menu_speaks_english_when_asked() -> None:
+    from typeless_local import i18n
+
+    i18n.use("en")
+    items = build_menu(Snapshot(issues=("key",), presets=(Preset("mini", needs_key=True),), active_preset="mini"))
+    titles = [item.title for item in items]
+    assert titles[0] == brand.ENGLISH_NAME
+    assert items[0].subtitle == "No API key: raw transcripts only"
+    assert "Start Dictation" in titles and "Settings…" in titles and f"Quit {brand.ENGLISH_NAME}" in titles
+    model = next(item for item in items if item.title == "Refinement Model")
+    assert model.children[0].badge == "Needs key"
+    assert ago(125) == "2 min ago" and ago(200000) == "2 days ago"

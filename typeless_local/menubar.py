@@ -21,6 +21,7 @@ import time
 from typing import Callable, Literal
 
 from typeless_local import brand
+from typeless_local.i18n import t
 
 LOGGER = logging.getLogger(__name__)
 
@@ -28,21 +29,28 @@ State = Literal["idle", "starting", "recording", "processing"]
 
 # How the icon looks in each app state.
 LOOK: dict[str, str] = {"idle": "idle", "starting": "rec", "recording": "rec", "processing": "busy"}
-STATE_LABEL: dict[str, str] = {
-    "idle": "就绪",
-    "starting": "正在打开麦克风…",
-    "recording": "正在听写",
-    "processing": "正在转写和润色…",
+# Each string is a (Chinese, English) pair, read through t() when shown.
+STATE_LABEL: dict[str, tuple[str, str]] = {
+    "idle": ("就绪", "Ready"),
+    "starting": ("正在打开麦克风…", "Opening the microphone…"),
+    "recording": ("正在听写", "Dictating"),
+    "processing": ("正在转写和润色…", "Transcribing and refining…"),
 }
-HINT = "按 F5 或右 ⌘ 开始 · 连按两下锁定"
+HINT = ("按 F5 或右 ⌘ 开始 · 连按两下锁定", "Press F5 or right ⌘ to start · twice to lock")
 
 # What needs the user, most blocking first: (what is wrong, the menu item that fixes it).
-ISSUES: dict[str, tuple[str, str]] = {
-    "perm": ("没有辅助功能权限，快捷键不起作用", "授予辅助功能权限…"),
-    "mic": ("不能使用麦克风", "允许使用麦克风…"),
-    "key": ("缺少 API Key，只能贴原文", "填写 API Key…"),
+ISSUES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
+    "perm": (
+        ("没有辅助功能权限，快捷键不起作用", "No Accessibility permission: the shortcut does nothing"),
+        ("授予辅助功能权限…", "Grant Accessibility Permission…"),
+    ),
+    "mic": (("不能使用麦克风", "Can't use the microphone"), ("允许使用麦克风…", "Allow the Microphone…")),
+    "key": (
+        ("缺少 API Key，只能贴原文", "No API key: raw transcripts only"),
+        ("填写 API Key…", "Enter API Key…"),
+    ),
 }
-SYSTEM_DEFAULT = "系统默认"
+SYSTEM_DEFAULT = ("系统默认", "System Default")
 RECENT_CHARS = 40
 
 # ---------------------------------------------------------------- the glyph
@@ -129,12 +137,15 @@ class Snapshot:
 def ago(seconds: float) -> str:
     seconds = max(0.0, seconds)
     if seconds < 60:
-        return "刚刚"
+        return t("刚刚", "just now")
     if seconds < 3600:
-        return f"{int(seconds // 60)} 分钟前"
+        n = int(seconds // 60)
+        return t(f"{n} 分钟前", f"{n} min ago")
     if seconds < 86400:
-        return f"{int(seconds // 3600)} 小时前"
-    return f"{int(seconds // 86400)} 天前"
+        n = int(seconds // 3600)
+        return t(f"{n} 小时前", f"{n} hr ago")
+    n = int(seconds // 86400)
+    return t(f"{n} 天前", f"{n} day{'s' if n != 1 else ''} ago")
 
 
 def clip(text: str, limit: int = RECENT_CHARS) -> str:
@@ -149,28 +160,31 @@ def ordered_issues(issues) -> tuple[str, ...]:
 def build_menu(snap: Snapshot, now: float | None = None) -> list[Item]:
     now = time.time() if now is None else now
     issues = ordered_issues(snap.issues)
-    status = ISSUES[issues[0]][0] if issues and snap.state == "idle" else STATE_LABEL.get(snap.state, "")
-    items = [Item(brand.DISPLAY_NAME, kind="header", subtitle=status), Item(HINT, kind="hint"), SEPARATOR]
+    status = t(*ISSUES[issues[0]][0]) if issues and snap.state == "idle" else t(*STATE_LABEL.get(snap.state, ("", "")))
+    items = [Item(brand.display_name(), kind="header", subtitle=status), Item(t(*HINT), kind="hint"), SEPARATOR]
     if issues:
-        items += [Item(ISSUES[name][1], key=f"fix:{name}", symbol="exclamationmark.triangle") for name in issues]
+        items += [Item(t(*ISSUES[name][1]), key=f"fix:{name}", symbol="exclamationmark.triangle") for name in issues]
         items.append(SEPARATOR)
 
     idle = snap.state == "idle"
     if snap.state in ("starting", "recording"):
-        items.append(Item("结束听写", key="toggle", shortcut="F5", symbol="stop.circle"))
+        items.append(Item(t("结束听写", "Stop Dictation"), key="toggle", shortcut="F5", symbol="stop.circle"))
     else:
-        items.append(Item("开始听写", key="toggle", shortcut="F5", enabled=idle, symbol="mic"))
-    items += [Item("锁定听写", key="latch", badge="右⌘ Space", enabled=idle, symbol="lock"), SEPARATOR]
+        items.append(Item(t("开始听写", "Start Dictation"), key="toggle", shortcut="F5", enabled=idle, symbol="mic"))
+    items += [
+        Item(t("锁定听写", "Locked Dictation"), key="latch", badge=t("右⌘ Space", "Right ⌘ Space"), enabled=idle, symbol="lock"),
+        SEPARATOR,
+    ]
 
-    items.append(Item("最近一次", kind="section"))
+    items.append(Item(t("最近一次", "Last Dictation"), kind="section"))
     if snap.recent and snap.recent.text.strip():
         meta = [ago(now - snap.recent.at)] if snap.recent.at else []
         if snap.recent.app:
             meta.append(snap.recent.app)
-        meta.append("点按复制")
+        meta.append(t("点按复制", "click to copy"))
         items.append(Item(clip(snap.recent.text), key="copy", subtitle=" · ".join(meta)))
     else:
-        items.append(Item("还没有听写", enabled=False))
+        items.append(Item(t("还没有听写", "Nothing dictated yet"), enabled=False))
     items.append(SEPARATOR)
 
     if snap.presets:
@@ -179,33 +193,33 @@ def build_menu(snap: Snapshot, now: float | None = None) -> list[Item]:
                 preset.name,
                 key=f"preset:{preset.name}",
                 checked=preset.name == snap.active_preset,
-                badge="需要 Key" if preset.needs_key else _seconds(preset.median_ms),
+                badge=t("需要 Key", "Needs key") if preset.needs_key else _seconds(preset.median_ms),
             )
             for preset in snap.presets
-        ) + (SEPARATOR, Item("管理模型与 Key…", key="settings:model"))
-        active = snap.active_preset if snap.refine else "关闭"
-        items.append(Item("润色模型", badge=active, children=models, symbol="sparkles"))
+        ) + (SEPARATOR, Item(t("管理模型与 Key…", "Manage Models and Keys…"), key="settings:model"))
+        active = snap.active_preset if snap.refine else t("关闭", "Off")
+        items.append(Item(t("润色模型", "Refinement Model"), badge=active, children=models, symbol="sparkles"))
     active_input = snap.active_input if snap.active_input in snap.inputs else ""
-    inputs = (Item(SYSTEM_DEFAULT, key="input:", checked=not active_input),) + tuple(
+    inputs = (Item(t(*SYSTEM_DEFAULT), key="input:", checked=not active_input),) + tuple(
         Item(name, key=f"input:{name}", checked=name == active_input) for name in snap.inputs
     )
     items += [
-        Item("输入设备", badge=active_input or SYSTEM_DEFAULT, children=inputs, symbol="waveform"),
-        Item("词库…", key="settings:vocab", symbol="book"),
-        Item("历史记录…", key="history", shortcut="⌘Y", symbol="clock"),
+        Item(t("输入设备", "Input Device"), badge=active_input or t(*SYSTEM_DEFAULT), children=inputs, symbol="waveform"),
+        Item(t("词库…", "Vocabulary…"), key="settings:vocab", symbol="book"),
+        Item(t("历史记录…", "History…"), key="history", shortcut="⌘Y", symbol="clock"),
     ]
     if snap.usage:
         items.append(Item(snap.usage, key="settings:usage", symbol="chart.bar"))
     items += [
         SEPARATOR,
-        Item("设置…", key="settings:", shortcut="⌘,", symbol="gearshape"),
+        Item(t("设置…", "Settings…"), key="settings:", shortcut="⌘,", symbol="gearshape"),
         Item(brand.quit_label(), key="quit", shortcut="⌘Q", symbol="power"),
     ]
     return items
 
 
 def _seconds(ms: int | None) -> str:
-    return f"{ms / 1000:.1f} 秒" if ms else ""
+    return t(f"{ms / 1000:.1f} 秒", f"{ms / 1000:.1f} s") if ms else ""
 
 
 # --------------------------------------------------------------- the item
@@ -276,7 +290,7 @@ class MenuBarIcon:
         # AppKit restores that on every launch; this is the only way back.
         item.setVisible_(True)
         self._target = _target(self)
-        menu = NSMenu.alloc().initWithTitle_(brand.DISPLAY_NAME)
+        menu = NSMenu.alloc().initWithTitle_(brand.display_name())
         menu.setAutoenablesItems_(False)
         menu.setDelegate_(self._target)
         item.setMenu_(menu)
@@ -300,10 +314,10 @@ class MenuBarIcon:
             return
         button = self._status_item.button()
         look = LOOK.get(self.current_state, "idle")
-        label = STATE_LABEL.get(self.current_state, "")
+        label = t(*STATE_LABEL.get(self.current_state, ("", "")))
         issues = self.issues
         if issues and self.current_state == "idle":
-            label = ISSUES[issues[0]][0]
+            label = t(*ISSUES[issues[0]][0])
         if look != self._look:
             self._look = look
             self._look_since = time.monotonic()
@@ -311,8 +325,8 @@ class MenuBarIcon:
             self._restart_timer(look)
         self._draw_frame()
         try:
-            button.setToolTip_(f"{brand.DISPLAY_NAME} · {label}")
-            button.setAccessibilityLabel_(f"{brand.DISPLAY_NAME}，{label}")
+            button.setToolTip_(f"{brand.display_name()} · {label}")
+            button.setAccessibilityLabel_(t(f"{brand.DISPLAY_NAME}，{label}", f"{brand.ENGLISH_NAME}, {label}"))
         except Exception:
             pass
         if self._badge is not None:
@@ -417,7 +431,7 @@ def _glyph_image(dot: bool):
             _draw_shapes(shapes)
             image.unlockFocus()
         image.setTemplate_(True)
-        image.setAccessibilityDescription_(brand.DISPLAY_NAME)
+        image.setAccessibilityDescription_(brand.display_name())
         return image
     except Exception:
         LOGGER.warning("Could not draw the menu-bar glyph; showing 言 as text", exc_info=True)

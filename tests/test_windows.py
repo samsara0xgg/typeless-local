@@ -37,6 +37,9 @@ class FakeWindow:
     def show(self) -> None:
         self.shown = True
 
+    def set_title(self, title: str) -> None:
+        self.kwargs["title"] = title
+
     def visible(self) -> bool:
         return self.shown
 
@@ -168,6 +171,24 @@ def test_settings_opens_once_and_answers_ready_with_env_and_state(ui) -> None:
     assert window.last("env")["native"] is True
     assert window.suppressed is False
     assert window.last("pane") == {"t": "pane", "id": "model"}
+
+
+def test_switching_to_english_redraws_every_window_already_built(ui) -> None:
+    from typeless_local import i18n
+
+    settings = _open_settings(ui)
+    ui.windows.show_history()
+    ui.windows._history_message({"t": "ready"})
+    history = ui.windows.history
+    assert settings.last("env")["lang"] == "zh"
+
+    i18n.use("en")
+    ui.windows.relocalize()
+
+    assert settings.kwargs["title"] == "Settings" and history.kwargs["title"] == "History"
+    assert settings.last("env")["lang"] == "en" and history.last("env")["lang"] == "en"
+    assert settings.last("state")["name"] == "Yana"
+    assert ui.windows.onboarding is None  # never built, nothing to redraw
 
 
 def test_reduce_transparency_hides_the_glass(ui, monkeypatch) -> None:
@@ -406,7 +427,9 @@ def test_guide_state_reports_permissions_key_and_model(ui, monkeypatch) -> None:
     state = ui.windows.onboarding_state()
     assert state["mic"] == "authorized" and state["ax"] is True
     assert state["key"] == {"env": "TEST_KEY_A", "service": "OpenAI", "preset": "mini", "has": False}
-    assert state["model"] == {"name": "whisper-large-v3-turbo", "ready": False, "p": 0.25}
+    assert state["model"] == {"name": "whisper-large-v3-turbo", "ready": False, "downloading": True, "p": 0.25}
+    ui.app._download = None  # the download at launch failed before the guide opened
+    assert ui.windows.onboarding_state()["model"]["downloading"] is False
 
 
 def test_guide_saves_and_tests_the_key(ui, monkeypatch) -> None:
@@ -463,13 +486,19 @@ def test_finishing_the_guide_remembers_it_and_closes(ui) -> None:
     assert window.closed
 
 
+def test_the_guide_switches_the_interface_language(ui) -> None:
+    ui.windows.show_onboarding()
+    ui.windows._onboarding_message({"t": "lang", "v": "en"})
+    assert ("pref", "ui_language", "en") in ui.app.calls
+
+
 # ----------------------------------------------------------------- pages
 
 
 PAGES = {
     "settings": ({"ready", "set", "key", "migrate", "test", "vocab", "open", "count", "clear", "geo"}, "_settings_message"),
     "history": ({"ready", "geo", "copy", "delete", "vocab", "open"}, "_history_message"),
-    "onboarding": ({"ready", "mic", "a11y", "key", "download", "done"}, "_onboarding_message"),
+    "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang"}, "_onboarding_message"),
 }
 
 
@@ -496,5 +525,5 @@ def test_each_page_posts_only_what_its_controller_handles(page) -> None:
 
 def test_settings_page_opens_the_panes_python_can_ask_for() -> None:
     source = (web_root() / "settings.js").read_text(encoding="utf-8")
-    drawn = set(re.findall(r"\['([a-z]+)', '[^']+', '[a-z]+', '#", source))
+    drawn = set(re.findall(r"\['([a-z]+)', \['[^']+', '[^']+'\], '[a-z]+', '#", source))
     assert drawn == set(windows.SETTINGS_PANES)

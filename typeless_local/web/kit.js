@@ -77,12 +77,24 @@
     if (fn) fn(msg);
   }
 
-  /* ---------- environment: accessibility classes pushed by Python ---------- */
+  /* ---------- language: Python sends it with the environment ---------- */
+  let LANG = 'zh';
+  // Every string a page shows is written as a pair where it is used: L('设置', 'Settings').
+  const L = (zh, en) => LANG === 'en' ? en : zh;
+  const lang = () => LANG;
+
+  /* ---------- environment: accessibility classes and the language, pushed by Python ---------- */
+  // True when the language changed, so the page redraws its words.
   function env(e) {
     const h = document.documentElement;
     h.classList.toggle('rm', !!e.rm);
     h.classList.toggle('rt', !!e.rt);
     h.classList.toggle('hc', !!e.hc);
+    const next = e.lang === 'en' ? 'en' : e.lang === 'zh' ? 'zh' : LANG;
+    const changed = next !== LANG;
+    LANG = next;
+    h.lang = LANG === 'en' ? 'en' : 'zh-Hans';
+    return changed;
   }
   const reduceMotion = () => document.documentElement.classList.contains('rm')
     || (root.matchMedia && root.matchMedia('(prefers-reduced-motion: reduce)').matches);
@@ -148,7 +160,7 @@
   function setup() { sprite(); }
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setup); else setup();
 
-  root.kit = { I, esc, $, $$, post, on, receive, env, reduceMotion, SPRINGS, Value, sprite };
+  root.kit = { I, esc, $, $$, post, on, receive, env, L, lang, reduceMotion, SPRINGS, Value, sprite };
   root.app = root.app || {};
   root.app.receive = receive;
 })(window);

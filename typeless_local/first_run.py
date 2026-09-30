@@ -45,16 +45,22 @@ def prompt_for_api_key(env_name: str, model: str, *, existing: bool = False) -> 
         NSSecureTextField,
     )
 
-    from typeless_local.brand import DISPLAY_NAME, join
+    from typeless_local.brand import display_name, join
+    from typeless_local.i18n import t
 
     alert = NSAlert.alloc().init()
-    alert.setMessageText_("更换 API Key" if existing else join(DISPLAY_NAME, "需要一个 API Key"))
-    alert.setInformativeText_(
-        f"润色用的是 {model}，它读取 {env_name}。\n\n"
-        "Key 存在这台 Mac 的钥匙串里，只会发给模型服务商。"
+    alert.setMessageText_(
+        t("更换 API Key", "Change API Key") if existing else join(display_name(), t("需要一个 API Key", "needs an API key"))
     )
-    alert.addButtonWithTitle_("保存")
-    alert.addButtonWithTitle_("取消")
+    alert.setInformativeText_(
+        t(
+            f"润色用的是 {model}，它读取 {env_name}。\n\nKey 存在这台 Mac 的钥匙串里，只会发给模型服务商。",
+            f"Refinement uses {model}, which reads {env_name}.\n\n"
+            "The key is kept in this Mac's keychain and only sent to the model's provider.",
+        )
+    )
+    alert.addButtonWithTitle_(t("保存", "Save"))
+    alert.addButtonWithTitle_(t("取消", "Cancel"))
     field = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(0, 0, 320, 24))
     field.setPlaceholderString_(env_name)
     alert.setAccessoryView_(field)

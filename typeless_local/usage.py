@@ -13,6 +13,8 @@ import logging
 from pathlib import Path
 import sqlite3
 
+from typeless_local.i18n import t
+
 LOGGER = logging.getLogger(__name__)
 
 # US dollars per million tokens: (input, cached input, output). Cached input is
@@ -169,8 +171,10 @@ def today_line(db_path: Path | None, overrides: dict | None = None, now: datetim
     """The menu's one line: "今天 23 次 · 约 $0.04"."""
 
     total = summary(db_path, overrides, now=now, days=1)["today"]
-    if not total["n"]:
-        return "今天还没有听写"
+    n = total["n"]
+    if not n:
+        return t("今天还没有听写", "No dictations today")
     spent = money(total["cost"])
-    return f"今天 {total['n']} 次" + (f" · 约 {spent}" if spent and total["refined"] > total["untracked"] else "")
+    cost = t(f" · 约 {spent}", f" · about {spent}") if spent and total["refined"] > total["untracked"] else ""
+    return t(f"今天 {n} 次", f"Today: {n} dictation{'s' if n != 1 else ''}") + cost
 

@@ -1,6 +1,7 @@
 # Minimal config shipped inside the .app bundle.
-# Override by writing ~/.typeless-local/config.yaml (the Model menu writes
-# llm.default_preset there). API keys: ~/.typeless-local/env (KEY=value lines).
+# The first setting changed in the app copies this file to ~/.typlus/config.yaml,
+# which is read instead from then on. API keys live in the login keychain
+# (older installs: ~/.typlus/env, KEY=value lines).
 
 asr:
   provider: mlx_whisper
@@ -12,7 +13,7 @@ asr:
 audio:
   vad_model_path: ""         # unused but speech_recognizer may read it
   min_duration: 0.15
-  low_volume_threshold: 0.02
+  low_volume_threshold: 0.003  # a dead or muted mic only; quiet speech must pass
   keep_recordings: 0         # >0 keeps the last N dictations as WAV in ~/.typlus/recordings
 
 llm:

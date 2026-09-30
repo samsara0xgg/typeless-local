@@ -125,6 +125,18 @@ def test_load_config_reads_own_config_not_jarvis(monkeypatch, tmp_path):
     assert cfg_mod.load_config().refine.model == "user-override"
 
 
+def test_bundled_config_keeps_the_silence_gate_at_the_code_default(monkeypatch, tmp_path):
+    """A fresh install reads assets/config.yaml, so a stale value there overrides the fix in code."""
+    import dataclasses
+    from typeless_local import config as cfg_mod
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / "jarvis").mkdir()
+    monkeypatch.setenv("JARVIS_PROJECT_ROOT", str(tmp_path / "jarvis"))
+
+    default = {f.name: f.default for f in dataclasses.fields(cfg_mod.AppConfig)}["low_volume_threshold"]
+    assert cfg_mod.load_config().low_volume_threshold == default
+
+
 def test_refine_config_for_preset_and_names() -> None:
     from typeless_local.config import preset_names, refine_config_for
     cfg = {"llm": {"default_preset": "a", "presets": {

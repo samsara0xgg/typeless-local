@@ -10,18 +10,11 @@ import time
 from typing import Callable
 
 import ApplicationServices
-from AppKit import NSEvent, NSPasteboard, NSPasteboardItem, NSPasteboardTypeString, NSWorkspace
-from Foundation import NSData
+from AppKit import NSEvent, NSPasteboard, NSPasteboardTypeString, NSWorkspace
 import Quartz
 
 LOGGER = logging.getLogger(__name__)
 
-# nspasteboard.org convention: a pasteboard carrying this type is a means to an
-# end, not something the user copied, so clipboard managers skip it. Without it
-# every dictation leaves an entry in the clipboard history even though the real
-# clipboard is restored a moment later. Raycast, the manager running here,
-# advertises the type in its binary.
-TRANSIENT_TYPE = "org.nspasteboard.TransientType"
 
 
 class _MachTimebase(ctypes.Structure):
@@ -72,6 +65,11 @@ OPTION_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskAlternate", 1 << 19)
 SHIFT_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskShift", 1 << 17)
 # Right Command arrives as a FlagsChanged event with keycode 54 (kVK_RightCommand).
 RIGHT_COMMAND_KEYCODE = 54
+# Held longer than this, right Command was a modifier the user changed their
+# mind about (or held through a Cmd-click), not a tap.
+RIGHT_COMMAND_TAP_S = 0.6
+# Mouse down in any button, and the scroll wheel: Cmd-click and Cmd-scroll.
+_MOUSE_WITH_MODIFIER_MASK = (1 << 1) | (1 << 3) | (1 << 25) | (1 << 22)
 COMMAND_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskCommand", 1 << 20)
 HOTKEY_EVENT_TAP_LOCATION = getattr(Quartz, "kCGHIDEventTap", Quartz.kCGSessionEventTap)
 # The Cmd+V and Cmd+Z this app posts itself carry this in the event's user-data
@@ -389,19 +387,20 @@ def set_clipboard_text(text: str) -> None:
 
 
 def paste_text(text: str) -> None:
-    """Paste text into the currently focused app via the system pasteboard."""
+    """Paste text into the currently focused app via the system pasteboard.
+
+    The text stays on the clipboard afterwards. The old clipboard used to be
+    put back 0.12 s after the Cmd+V, and the text set again right after that:
+    an app slower than that to read the pasteboard pasted the old clipboard,
+    or nothing, in place of the dictation.
+    """
 
     if not text:
         return
     pasteboard = NSPasteboard.generalPasteboard()
-    snapshot = _snapshot_pasteboard(pasteboard)
     pasteboard.clearContents()
     pasteboard.setString_forType_(text, NSPasteboardTypeString)
-    pasteboard.setData_forType_(NSData.data(), TRANSIENT_TYPE)
-
     _post_command_key(V_KEYCODE)
-    time.sleep(0.12)
-    _restore_pasteboard(pasteboard, snapshot)
 
 
 def undo_last_edit() -> None:
@@ -432,43 +431,6 @@ def press_play_pause() -> None:
             14, (0, 0), flags, 0, 0, None, 8, (16 << 16) | (state << 8), -1  # NSSystemDefined, NX_KEYTYPE_PLAY
         )
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event.CGEvent())
-
-
-def _snapshot_pasteboard(pasteboard) -> list[list[tuple[object, object]]]:
-    """Capture pasteboard items so dictation paste does not destroy the clipboard."""
-
-    snapshot: list[list[tuple[object, object]]] = []
-    try:
-        for item in pasteboard.pasteboardItems() or []:
-            values = []
-            for item_type in item.types() or []:
-                data = item.dataForType_(item_type)
-                if data is not None:
-                    values.append((item_type, data))
-            if values:
-                snapshot.append(values)
-    except Exception as exc:
-        LOGGER.debug("Unable to snapshot pasteboard: %s", exc)
-    return snapshot
-
-
-def _restore_pasteboard(pasteboard, snapshot: list[list[tuple[object, object]]]) -> None:
-    """Restore a pasteboard snapshot captured before dictation insertion."""
-
-    try:
-        pasteboard.clearContents()
-        if not snapshot:
-            return
-        restored_items = []
-        for values in snapshot:
-            item = NSPasteboardItem.alloc().init()
-            for item_type, data in values:
-                item.setData_forType_(data, item_type)
-            item.setData_forType_(NSData.data(), TRANSIENT_TYPE)
-            restored_items.append(item)
-        pasteboard.writeObjects_(restored_items)
-    except Exception as exc:
-        LOGGER.debug("Unable to restore pasteboard: %s", exc)
 
 
 def has_accessibility_trust() -> bool:
@@ -518,9 +480,12 @@ class GlobalHotkeyMonitor:
         self._source = None
         self._primary_down: set[int] = set()
         self._debug_down = False
-        # Right Cmd is also a modifier (Cmd+C, Cmd+Tab), so a tap only counts
-        # if no other key went down while it was held.
+        # Right Cmd is also a modifier (Cmd+C, Cmd+Tab, Cmd-click), so a tap
+        # only counts if nothing else happened while it was held, and it was
+        # not held for long.
         self._rcmd_armed = False
+        self._rcmd_down_at = 0.0
+        self._mouse_monitor = None
         # Event-time of the most recent primary down/up, in seconds. Captured
         # from NSEvent.timestamp so the value reflects when macOS generated the
         # event, not when our handler picked it up — handler time is unreliable
@@ -551,7 +516,28 @@ class GlobalHotkeyMonitor:
             Quartz.kCFRunLoopCommonModes,
         )
         Quartz.CGEventTapEnable(self._tap, True)
+        self._watch_mouse()
         LOGGER.info("Global hotkey monitor started")
+
+    def _watch_mouse(self) -> None:
+        """A click or scroll while right Cmd is down makes it a modifier, not a tap.
+
+        A passive monitor rather than the event tap: the tap runs on the main
+        thread, and routing every click through it would stall the mouse
+        whenever the main thread is busy.
+        """
+
+        if self._mouse_monitor is not None:
+            return
+        try:
+            self._mouse_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                _MOUSE_WITH_MODIFIER_MASK, lambda event: self._disarm_right_command()
+            )
+        except Exception:
+            LOGGER.debug("No mouse monitor; a right-Cmd-click may start dictation", exc_info=True)
+
+    def _disarm_right_command(self) -> None:
+        self._rcmd_armed = False
 
     def _create_event_tap(self, location: int, mask: int):
         return Quartz.CGEventTapCreate(
@@ -590,16 +576,20 @@ class GlobalHotkeyMonitor:
             if keycode == RIGHT_COMMAND_KEYCODE:
                 if Quartz.CGEventGetFlags(event) & COMMAND_FLAG_MASK:
                     self._rcmd_armed = True
+                    self._rcmd_down_at = self._event_time(event)
                 elif self._rcmd_armed:
                     self._rcmd_armed = False
-                    # A tap toggles: same timestamp for down/up so the app never
-                    # reads a long hold as hold-to-talk.
                     now = self._event_time(event)
-                    self.last_primary_down_at = now
-                    self.callback("primary_down")
-                    self.last_primary_up_at = now
-                    self.callback("primary_up")
+                    if now - self._rcmd_down_at <= RIGHT_COMMAND_TAP_S:
+                        # A tap toggles: same timestamp for down/up so the app
+                        # never reads a long hold as hold-to-talk.
+                        self.last_primary_down_at = now
+                        self.callback("primary_down")
+                        self.last_primary_up_at = now
+                        self.callback("primary_up")
                 return event  # never swallow a modifier change
+            # Shift, Option or Control joined in: a chord, not a tap.
+            self._rcmd_armed = False
             if self.debug_hotkey and keycode == RIGHT_OPTION_KEYCODE:
                 flags = Quartz.CGEventGetFlags(event)
                 now_down = bool(flags & OPTION_FLAG_MASK)

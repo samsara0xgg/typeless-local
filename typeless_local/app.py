@@ -22,7 +22,8 @@ from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 import numpy as np
 from PyObjCTools import AppHelper
 
-from typeless_local import app_version, brand, keychain, permissions, usage
+from typeless_local import app_version, brand, i18n, keychain, permissions, usage
+from typeless_local.i18n import t
 from typeless_local.asr import JarvisASR, Transcript, mlx_whisper_repo
 from typeless_local.audio import MicrophoneRecorder, keep_recording, peak_level
 from typeless_local import devices
@@ -91,7 +92,11 @@ EXTEND_RECORDING_S = 15 * 60.0
 UNDO_SETTLE_S = 0.15
 _DEFAULT_PREFERENCES = Preferences()
 # What the capsule says went wrong, by the step that failed.
-_FAILED_STEP = {"asr": "转写失败", "refine": "润色失败", "paste": "粘贴失败"}
+_FAILED_STEP = {
+    "asr": ("转写失败", "Transcription failed"),
+    "refine": ("润色失败", "Refinement failed"),
+    "paste": ("粘贴失败", "Paste failed"),
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -130,6 +135,10 @@ class TypelessLocalApp:
         self.prefs = load_preferences(user_paths)
         if dataclasses.is_dataclass(config):
             self.config = dataclasses.replace(config, max_recording_seconds=self.prefs.max_minutes * 60.0)
+
+        if not headless:
+            # Before anything with words in it is built.
+            i18n.use(self.prefs.ui_language)
 
         components = self._build_components()
         self.asr = components.asr
@@ -374,6 +383,23 @@ class TypelessLocalApp:
             self._refresh_issues()
         if changed == "save_history":
             self._windows_changed(history=True)
+        if changed == "ui_language":
+            i18n.use(prefs.ui_language)
+            self._relocalize()
+
+    def _relocalize(self) -> None:
+        """Redraw everything that has words in it, in the language just chosen."""
+
+        def run() -> None:
+            install_main_menu()
+            if getattr(self, "menubar", None) is not None:
+                self.menubar.set_state(self.state)
+            if getattr(self, "overlay", None) is not None:
+                self.overlay.relocalize()
+            if getattr(self, "windows", None) is not None:
+                self.windows.relocalize()
+
+        self._call_ui(run)
 
     def _purge_history(self) -> None:
         """Drop dictations older than the limit the user picked; none by default."""
@@ -838,6 +864,11 @@ class TypelessLocalApp:
     def _on_user_undo(self) -> None:
         """The user pressed Cmd+Z themselves right after a paste; the capsule confirms it."""
 
+        insertion = self._insertion
+        if insertion is not None and frontmost_pid() != insertion.pid:
+            # Pressed in another app: it took back nothing of the paste.
+            self._on_typed()
+            return
         self._keys_wanted = False
         self._insertion = None
         if self.capsule.state in INSERTED_STATES:
@@ -911,7 +942,7 @@ class TypelessLocalApp:
             self.capsule.hide()
             return
         if frontmost_pid() != insertion.pid:
-            self.capsule.show("notice", msg="目标 App 已切换，没法撤销")
+            self.capsule.show("notice", msg=t("目标 App 已切换，没法撤销", "You switched apps, so it can't be undone"))
             return
         undo_last_edit()
         self.capsule.show("undone")
@@ -936,7 +967,9 @@ class TypelessLocalApp:
         if insertion is None:
             # Something was typed after the paste; undoing now would take that back.
             set_clipboard_text(corrected)
-            self.capsule.show("notice", msg="原文已经改动过，修改后的文字已复制")
+            self.capsule.show(
+                "notice", msg=t("原文已经改动过，修改后的文字已复制", "The text changed since; your edit is copied")
+            )
             return
         self._keys_wanted = False
         threading.Thread(
@@ -992,13 +1025,16 @@ class TypelessLocalApp:
             current = self._insertion is insertion and self.state == "idle"
         if not current or frontmost_pid() != insertion.pid:
             set_clipboard_text(new_text)
-            message = "目标 App 已切换，新文字已复制" if current else "原文已经改动过，新文字已复制"
+            message = (
+                t("目标 App 已切换，新文字已复制", "You switched apps; the new text is copied")
+                if current
+                else t("原文已经改动过，新文字已复制", "The text changed since; the new text is copied")
+            )
             self.capsule.show("notice", msg=message)
             return
         undo_last_edit()
         time.sleep(UNDO_SETTLE_S)
         paste_text(new_text)
-        set_clipboard_text(new_text)
         with self._lock:
             self._insertion = dataclasses.replace(insertion, text=new_text)
             self._keys_wanted = True
@@ -1199,7 +1235,7 @@ class TypelessLocalApp:
             self._restore_audio_ducking()
             self.state = "idle"
             self._set_menubar("idle")
-            self.capsule.show("error", msg="麦克风出错")
+            self.capsule.show("error", msg=t("麦克风出错", "Microphone error"))
             return
         self._restore_audio_ducking()
         self._play_sound("Pop")
@@ -1488,7 +1524,7 @@ class TypelessLocalApp:
                 if self._is_current_processing_session(session_id):
                     self.state = "idle"
                     self._set_menubar("idle")
-                    self.capsule.show("error", msg=_FAILED_STEP.get(step, "处理失败"))
+                    self.capsule.show("error", msg=t(*_FAILED_STEP.get(step, ("处理失败", "Something failed"))))
                 return
             raise
         finally:
@@ -1509,13 +1545,10 @@ class TypelessLocalApp:
 
         if context.can_insert_text:
             LOGGER.info("Pasting refined text into focused app: %s", context.app_name or "unknown")
+            # The text stays on the clipboard, so a Cmd+V the target app
+            # swallowed is recovered with one manual paste.
             paste_text(text)
             record.was_pasted = True
-            # paste_text puts the old clipboard back when it is done, so
-            # without this a Cmd+V the target app swallowed would leave the
-            # text nowhere at all. Keeping it here means one manual paste
-            # always recovers it.
-            set_clipboard_text(text)
             LOGGER.info("Dictation inserted %d characters", len(text))
             self.state = "idle"
             self._set_menubar("idle")
@@ -1675,8 +1708,10 @@ def _eta_text(fraction: float, elapsed: float) -> str:
         return ""
     remaining = elapsed * (1.0 - fraction) / fraction
     if remaining < 60:
-        return f"约 {max(5, int(round(remaining / 5.0)) * 5)} 秒"
-    return f"约 {int(round(remaining / 60.0))} 分钟"
+        seconds = max(5, int(round(remaining / 5.0)) * 5)
+        return t(f"约 {seconds} 秒", f"about {seconds} s")
+    minutes = int(round(remaining / 60.0))
+    return t(f"约 {minutes} 分钟", f"about {minutes} min")
 
 
 def api_key_names(config: AppConfig) -> list[str]:
@@ -1718,13 +1753,61 @@ def configure_logging() -> None:
     )
 
 
+def claim_single_instance(config_dir: Path):
+    """Hold a lock on ~/.typlus/app.lock for the life of the process.
+
+    Returns the open lock file, or None when another copy already holds it:
+    two copies (the installed app and one run from source) would both answer
+    F5 and paste every dictation twice.
+    """
+
+    import fcntl  # noqa: PLC0415
+
+    config_dir.mkdir(parents=True, exist_ok=True)
+    handle = open(config_dir / "app.lock", "a+")  # noqa: SIM115 - held until exit
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
+def _say_already_running(app) -> None:
+    try:
+        from AppKit import NSAlert  # noqa: PLC0415
+
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(t(f"{brand.DISPLAY_NAME}已经在运行", f"{brand.ENGLISH_NAME} is already running"))
+        alert.setInformativeText_(
+            t(
+                "另一个言字（可能是从源码运行的那个）已经在响应 F5。先退出它，再打开这个。",
+                "Another copy, perhaps one run from source, is already answering F5. Quit it first, then open this one.",
+            )
+        )
+        app.activateIgnoringOtherApps_(True)
+        alert.runModal()
+    except Exception:
+        LOGGER.debug("Could not show the already-running alert", exc_info=True)
+
+
+_INSTANCE_LOCK = None
+
+
 def main() -> None:
     """Run the macOS app."""
 
+    global _INSTANCE_LOCK
     configure_logging()
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
     config = load_config()
+    _INSTANCE_LOCK = claim_single_instance(config.user_paths.config_dir)
+    if _INSTANCE_LOCK is None:
+        LOGGER.error("Another copy of %s is already running; quitting", brand.ENGLISH_NAME)
+        i18n.use(load_preferences(config.user_paths).ui_language)
+        _say_already_running(app)
+        return
     # Keys saved from Settings live in the login keychain; one still in
     # ~/.typlus/env (or the environment) is used as it is.
     keychain.fill_environ(api_key_names(config))

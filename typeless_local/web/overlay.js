@@ -4,13 +4,13 @@
    regions of the panel follow exactly. */
 (() => {
 'use strict';
-const { I, esc, $, post, on, env, reduceMotion, Value } = kit;
+const { I, esc, $, post, on, env, L, reduceMotion, Value } = kit;
 
 const stage = $('#stage'), capEl = $('#cap'), budsEl = $('#buds'), handleEl = $('#handle'), hbEl = $('#hb');
 const MARGIN = 14;          // gap between the capsule and the bottom of the visible frame
 const GAP = 8;
 const PILL_H = 40, BUD_H = 36;
-const QUIET_MS = 3000;      // "没有检测到声音" after this long with no voice yet
+const QUIET_MS = 3000;      // "no sound detected" after this long with no voice yet
 const VOICE = 0.08;         // analyzer level that counts as voice
 const NB = 13;
 const PROF = [1, .92, .8, .66, .52, .4, .3, .22];
@@ -67,83 +67,93 @@ const tail = s => { const t = Array.from(String(s || '')); return t.length > 24 
 const fmt = (sec, up) => { const s = Math.max(0, up ? Math.ceil(sec - 1e-4) : Math.floor(sec)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 const waveHTML = idle => `<span class="wave${idle ? ' idle' : ''}">${'<i></i>'.repeat(NB)}</span>`;
 const CHECK = `<span class="lead ok"><svg class="i draw" viewBox="0 0 24 24" aria-hidden="true" style="stroke-width:2.4"><path d="M5 12.5l4.3 4.3L19 7.2"/></svg></span>`;
+// Built when drawn, in the language of the moment.
 const BUD = {
-  undo: `<button data-act="undo">${I('undo')}<span>撤销</span></button>`,
-  edit: `<button data-act="edit">${I('pencil')}<span>修改</span></button>`,
-  rerefine: `<button class="pri" data-act="rerefine">${I('refresh')}<span>重新润色</span></button>`,
-  setkey: `<button class="pri" data-act="setkey">${I('key')}<span>设置 API Key…</span></button>`,
-  input: `<button data-act="input">${I('mic')}<span>选择输入…</span></button>`,
-  micperm: `<button class="pri" data-act="micperm">${I('mic')}<span>打开设置…</span></button>`,
-  perm: `<button class="pri" data-act="perm">${I('a11y')}<span>打开设置…</span></button>`,
-  log: `<button data-act="log">${I('doc')}<span>显示日志</span></button>`,
+  undo: () => `<button data-act="undo">${I('undo')}<span>${L('撤销', 'Undo')}</span></button>`,
+  edit: () => `<button data-act="edit">${I('pencil')}<span>${L('修改', 'Edit')}</span></button>`,
+  rerefine: () => `<button class="pri" data-act="rerefine">${I('refresh')}<span>${L('重新润色', 'Refine Again')}</span></button>`,
+  setkey: () => `<button class="pri" data-act="setkey">${I('key')}<span>${L('设置 API Key…', 'Set API Key…')}</span></button>`,
+  input: () => `<button data-act="input">${I('mic')}<span>${L('选择输入…', 'Choose Input…')}</span></button>`,
+  micperm: () => `<button class="pri" data-act="micperm">${I('mic')}<span>${L('打开设置…', 'Open Settings…')}</span></button>`,
+  perm: () => `<button class="pri" data-act="perm">${I('a11y')}<span>${L('打开设置…', 'Open Settings…')}</span></button>`,
+  log: () => `<button data-act="log">${I('doc')}<span>${L('显示日志', 'Show Log')}</span></button>`,
 };
-const extendBud = min => `<button data-act="extend">${I('plus')}<span>延长 ${min | 0} 分钟</span></button>`;
-const WHY = { timeout: '润色超时', error: '润色失败', truncated: '润色被截断', empty: '润色没有返回' };
+const extendBud = min => `<button data-act="extend">${I('plus')}<span>${L(`延长 ${min | 0} 分钟`, `${min | 0} More Minutes`)}</span></button>`;
+const why = k => ({
+  timeout: L('润色超时', 'refinement timed out'), error: L('润色失败', 'refinement failed'),
+  truncated: L('润色被截断', 'refinement was cut off'), empty: L('润色没有返回', 'refinement came back empty'),
+})[k] || L('润色失败', 'refinement failed');
 const etaText = eta => eta ? ` · ${esc(eta)}` : '';
 // Announced in steps of ten, not on every progress report.
-const downloadSay = p => `语音模型下载中，${Math.floor(p * 10) * 10}%`;
-const btnCancel = `<button class="ib" data-act="cancel" aria-label="取消">${I('xmark')}</button>`;
-const btnFinish = `<button class="ib pri" data-act="finish" aria-label="完成">${I('check')}</button>`;
+const downloadSay = p => L(`语音模型下载中，${Math.floor(p * 10) * 10}%`, `Downloading the speech model, ${Math.floor(p * 10) * 10}%`);
+const btnCancel = () => `<button class="ib" data-act="cancel" aria-label="${L('取消', 'Cancel')}">${I('xmark')}</button>`;
+const btnFinish = () => `<button class="ib pri" data-act="finish" aria-label="${L('完成', 'Done')}">${I('check')}</button>`;
+const units = n => L(`${n | 0} 字`, `${n | 0} word${(n | 0) === 1 ? '' : 's'}`);
 
 function cardHTML(title, sub, text, btns) {
-  return `<div class="card-in"><div class="card-h">${I('doc')}<span class="t">${esc(title)}<small>${esc(sub)}</small></span><button class="ib sm" data-act="close" aria-label="关闭">${I('xmark')}</button></div>`
-    + `<textarea class="card-field" id="cardField" rows="3" spellcheck="false" aria-label="听写文字">${esc(text || '')}</textarea>`
-    + `<div class="card-f"><span class="kh">⏎ ${btns.length > 1 ? '替换' : '完成'} · ⇧⏎ 换行 · esc 取消</span><span class="sp"></span>`
+  return `<div class="card-in"><div class="card-h">${I('doc')}<span class="t">${esc(title)}<small>${esc(sub)}</small></span><button class="ib sm" data-act="close" aria-label="${L('关闭', 'Close')}">${I('xmark')}</button></div>`
+    + `<textarea class="card-field" id="cardField" rows="3" spellcheck="false" aria-label="${L('听写文字', 'Dictated text')}">${esc(text || '')}</textarea>`
+    + `<div class="card-f"><span class="kh">${btns.length > 1 ? L('⏎ 替换 · ⇧⏎ 换行 · esc 取消', '⏎ replace · ⇧⏎ new line') : L('⏎ 完成 · ⇧⏎ 换行 · esc 取消', '⏎ done · ⇧⏎ new line · esc close')}</span><span class="sp"></span>`
     + btns.map(([a, l, p]) => `<button class="pbtn${p ? ' pri' : ''}" data-act="${a}">${esc(l)}</button>`).join('') + `</div></div>`;
 }
 
 function recHTML() {
   const o = S.d;
-  const sel = o.sel ? `<span class="chip">${I('cursor')}改写所选</span>` : '';
-  const duck = o.ducked ? `<span class="lockg" aria-label="已静音其他声音">${I('speaker-slash')}</span>` : '';
+  const sel = o.sel ? `<span class="chip">${I('cursor')}${L('改写所选', 'Rewrite selection')}</span>` : '';
+  const duck = o.ducked ? `<span class="lockg" aria-label="${L('已静音其他声音', 'Other sound muted')}">${I('speaker-slash')}</span>` : '';
   const lock = `<span class="lockg">${I('lock')}</span>`;
   const t = (performance.now() - S.recAt) / 1000;
   if (S.cd) {
     const rem = S.max - t, p = Math.max(0, Math.min(1, rem / 60));
     S.tmrText = fmt(rem, true);
-    return [`${btnCancel}${waveHTML()}<span class="tmr warn">${S.tmrText}</span><span class="ringwrap"><svg class="ring" viewBox="0 0 36 36" aria-hidden="true"><circle class="bg" cx="18" cy="18" r="16.5"/><circle class="fg" cx="18" cy="18" r="16.5" stroke-dasharray="103.7" stroke-dashoffset="${(103.7 * (1 - p)).toFixed(1)}"/></svg>${btnFinish}</span>`,
-      `还剩 ${Math.ceil(rem)} 秒，到点会自动结束${o.ext > 0 ? `，可以延长 ${o.ext | 0} 分钟` : ''}`];
+    return [`${btnCancel()}${waveHTML()}<span class="tmr warn">${S.tmrText}</span><span class="ringwrap"><svg class="ring" viewBox="0 0 36 36" aria-hidden="true"><circle class="bg" cx="18" cy="18" r="16.5"/><circle class="fg" cx="18" cy="18" r="16.5" stroke-dasharray="103.7" stroke-dashoffset="${(103.7 * (1 - p)).toFixed(1)}"/></svg>${btnFinish()}</span>`,
+      L(`还剩 ${Math.ceil(rem)} 秒，到点会自动结束${o.ext > 0 ? `，可以延长 ${o.ext | 0} 分钟` : ''}`,
+        `${Math.ceil(rem)} seconds left; it will finish by itself${o.ext > 0 ? `, or add ${o.ext | 0} minutes` : ''}`)];
   }
   S.tmrText = fmt(t);
   if (S.quiet && S.mode !== 'hold') {
-    return [`${btnCancel}${S.mode === 'latch' ? lock : ''}${waveHTML(true)}<span class="hint warn">没有检测到声音</span>${btnFinish}`, '没有检测到声音，检查一下麦克风'];
+    return [`${btnCancel()}${S.mode === 'latch' ? lock : ''}${waveHTML(true)}<span class="hint warn">${L('没有检测到声音', 'No sound detected')}</span>${btnFinish()}`,
+      L('没有检测到声音，检查一下麦克风', 'No sound detected. Check the microphone.')];
   }
-  const selSay = o.sel ? '，将改写所选文字' : '';
+  const selSay = o.sel ? L('，将改写所选文字', ', rewriting the selection') : '';
   switch (S.mode) {
-    case 'hold': return [`<span class="recdot"></span>${sel}${waveHTML()}<span class="hint">松开完成</span>`, '录音中，松开按键完成' + selSay];
-    case 'latch': return [`${btnCancel}${lock}${sel}${duck}${waveHTML()}<span class="tmr">${S.tmrText}</span>${btnFinish}`, '已锁定录音，再按一次 F5 完成' + selSay];
-    default: return [`${btnCancel}${sel}${duck}${waveHTML()}<span class="tmr">${S.tmrText}</span>${btnFinish}`, '录音中，再按一次 F5 完成' + selSay];
+    case 'hold': return [`<span class="recdot"></span>${sel}${waveHTML()}<span class="hint">${L('松开完成', 'Release to finish')}</span>`, L('录音中，松开按键完成', 'Recording. Release the key to finish') + selSay];
+    case 'latch': return [`${btnCancel()}${lock}${sel}${duck}${waveHTML()}<span class="tmr">${S.tmrText}</span>${btnFinish()}`, L('已锁定录音，再按一次 F5 完成', 'Recording locked. Press F5 again to finish') + selSay];
+    default: return [`${btnCancel()}${sel}${duck}${waveHTML()}<span class="tmr">${S.tmrText}</span>${btnFinish()}`, L('录音中，再按一次 F5 完成', 'Recording. Press F5 again to finish') + selSay];
   }
 }
 
 // [html, kind, buds, what VoiceOver says]
 function view(st, o) {
   switch (st) {
-    case 'starting': return [`<span class="solo">${I('mic', 'breathe')}</span>`, 'circle', [], '正在打开麦克风'];
+    case 'starting': return [`<span class="solo">${I('mic', 'breathe')}</span>`, 'circle', [], L('正在打开麦克风', 'Opening the microphone')];
     // The last minute buds a 延长 button off the capsule.
     case 'rec': { const [h, say] = recHTML(); return [h, 'pill', S.cd && o.ext > 0 ? [extendBud(o.ext)] : [], say]; }
-    case 'transcribing': return [`<span class="dots"><i></i><i></i><i></i></span><span class="lbl">转写中</span>`, 'pill', [], '转写中'];
-    case 'refining': return [`<span class="spark">${I('sparkles')}</span><span class="raw shimmer">${esc(tail(o.raw))}</span>`, 'pill', [], '润色中'];
-    case 'inserted': return [`${CHECK}<span class="lbl">${o.replaced ? '已替换所选' : '已插入'} · ${o.n | 0} 字</span>`, 'pill', [BUD.undo, BUD.edit], `${o.replaced ? '已替换所选' : '已插入'} ${o.n | 0} 字`];
-    case 'inserted-raw-net': return [`<span class="lead warn wiggle">${I('warn')}</span><span class="lbl">已插入原始转写 <span class="sub">· ${WHY[o.why] || WHY.error}</span></span>`, 'pill', [BUD.rerefine, BUD.undo], `已插入原始转写，${WHY[o.why] || WHY.error}`];
-    case 'inserted-raw-key': return [`<span class="lead warn">${I('key')}</span><span class="lbl">已插入原始转写 <span class="sub">· 缺少 API Key</span></span>`, 'pill', [BUD.setkey], '已插入原始转写，还没有设置 API Key'];
-    case 'edit-notarget': return [cardHTML('没有可插入的位置', '已复制到剪贴板。改完按 ⏎ 再复制一次。', o.text, [['done', '完成', true]]), 'card', [], '没有可插入的位置，结果已复制到剪贴板，可以直接修改'];
-    case 'edit-modify': return [cardHTML('修改刚插入的文字', '替换 = 在原 App 里撤销那次粘贴，再粘贴新文字', o.text, [['close', '取消'], ['replace', '替换', true]]), 'card', [], '修改刚插入的文字，回车替换，esc 取消'];
-    case 'empty': return [`<span class="lead">${I('mic-slash')}</span><span class="lbl">没有听到声音${o.device ? ` <span class="sub">· ${esc(o.device)}</span>` : ''}</span>`, 'pill', [], '没有听到声音'];
+    case 'transcribing': return [`<span class="dots"><i></i><i></i><i></i></span><span class="lbl">${L('转写中', 'Transcribing')}</span>`, 'pill', [], L('转写中', 'Transcribing')];
+    case 'refining': return [`<span class="spark">${I('sparkles')}</span><span class="raw shimmer">${esc(tail(o.raw))}</span>`, 'pill', [], L('润色中', 'Refining')];
+    case 'inserted': {
+      const done = o.replaced ? L('已替换所选', 'Replaced selection') : L('已插入', 'Inserted');
+      return [`${CHECK}<span class="lbl">${done} · ${units(o.n)}</span>`, 'pill', [BUD.undo(), BUD.edit()], `${done} ${units(o.n)}`];
+    }
+    case 'inserted-raw-net': return [`<span class="lead warn wiggle">${I('warn')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${why(o.why)}</span></span>`, 'pill', [BUD.rerefine(), BUD.undo()], `${L('已插入原始转写，', 'Inserted the raw transcript: ')}${why(o.why)}`];
+    case 'inserted-raw-key': return [`<span class="lead warn">${I('key')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${L('缺少 API Key', 'no API key')}</span></span>`, 'pill', [BUD.setkey()], L('已插入原始转写，还没有设置 API Key', 'Inserted the raw transcript: no API key is set')];
+    case 'edit-notarget': return [cardHTML(L('没有可插入的位置', 'Nowhere to insert'), L('已复制到剪贴板。改完按 ⏎ 再复制一次。', 'Copied to the clipboard. Press ⏎ after editing to copy again.'), o.text, [['done', L('完成', 'Done'), true]]), 'card', [], L('没有可插入的位置，结果已复制到剪贴板，可以直接修改', 'Nowhere to insert. The text is copied to the clipboard and can be edited here')];
+    case 'edit-modify': return [cardHTML(L('修改刚插入的文字', 'Edit the inserted text'), L('替换 = 在原 App 里撤销那次粘贴，再粘贴新文字', 'Replace undoes the paste in its app, then pastes the new text'), o.text, [['close', L('取消', 'Cancel')], ['replace', L('替换', 'Replace'), true]]), 'card', [], L('修改刚插入的文字，回车替换，esc 取消', 'Edit the inserted text. Return replaces it, Escape cancels')];
+    case 'empty': return [`<span class="lead">${I('mic-slash')}</span><span class="lbl">${L('没有听到声音', 'Heard nothing')}${o.device ? ` <span class="sub">· ${esc(o.device)}</span>` : ''}</span>`, 'pill', [], L('没有听到声音', 'Heard nothing')];
     case 'mic': return o.why === 'denied'
-      ? [`<span class="lead err wiggle">${I('mic-slash')}</span><span class="lbl">没有麦克风权限 <span class="sub">· 在系统设置里打开</span></span>`, 'pill', [BUD.micperm], '没有麦克风权限']
-      : [`<span class="lead err wiggle">${I('warn')}</span><span class="lbl">麦克风不可用 <span class="sub">· 可能被其他 App 占用</span></span>`, 'pill', [BUD.input], '麦克风不可用'];
+      ? [`<span class="lead err wiggle">${I('mic-slash')}</span><span class="lbl">${L('没有麦克风权限', 'No microphone permission')} <span class="sub">· ${L('在系统设置里打开', 'turn it on in System Settings')}</span></span>`, 'pill', [BUD.micperm()], L('没有麦克风权限', 'No microphone permission')]
+      : [`<span class="lead err wiggle">${I('warn')}</span><span class="lbl">${L('麦克风不可用', 'Microphone unavailable')} <span class="sub">· ${L('可能被其他 App 占用', 'another app may be using it')}</span></span>`, 'pill', [BUD.input()], L('麦克风不可用', 'Microphone unavailable')];
     case 'download': {
       const p = Math.max(0, Math.min(1, +o.p || 0));
-      return [`<span class="pring" style="--p:${p.toFixed(3)}"></span><span class="lbl">语音模型下载中 · <span class="pct">${Math.round(p * 100)}%</span><span class="sub eta">${etaText(o.eta)}</span></span>`, 'pill', [], downloadSay(p)];
+      return [`<span class="pring" style="--p:${p.toFixed(3)}"></span><span class="lbl">${L('语音模型下载中', 'Downloading speech model')} · <span class="pct">${Math.round(p * 100)}%</span><span class="sub eta">${etaText(o.eta)}</span></span>`, 'pill', [], downloadSay(p)];
     }
-    case 'cancelled': return [`<span class="lead">${I('xmark')}</span><span class="lbl">已取消</span>`, 'pill', [], '已取消'];
-    case 'undone': return [`<span class="lead">${I('undo')}</span><span class="lbl">已撤销</span>`, 'pill', [], '已撤销'];
-    case 'replaced': return [`${CHECK}<span class="lbl">已替换 · ${o.n | 0} 字</span>`, 'pill', [], `已替换 ${o.n | 0} 字`];
-    case 'copied': return [`${CHECK}<span class="lbl">已复制到剪贴板</span>`, 'pill', [], '已复制到剪贴板'];
-    case 'perm': return [`<span class="lead warn">${I('a11y')}</span><span class="lbl">需要辅助功能权限 <span class="sub">· 否则按键传不到言字</span></span>`, 'pill', [BUD.perm], '需要辅助功能权限'];
+    case 'cancelled': return [`<span class="lead">${I('xmark')}</span><span class="lbl">${L('已取消', 'Cancelled')}</span>`, 'pill', [], L('已取消', 'Cancelled')];
+    case 'undone': return [`<span class="lead">${I('undo')}</span><span class="lbl">${L('已撤销', 'Undone')}</span>`, 'pill', [], L('已撤销', 'Undone')];
+    case 'replaced': return [`${CHECK}<span class="lbl">${L('已替换', 'Replaced')} · ${units(o.n)}</span>`, 'pill', [], `${L('已替换', 'Replaced')} ${units(o.n)}`];
+    case 'copied': return [`${CHECK}<span class="lbl">${L('已复制到剪贴板', 'Copied to the clipboard')}</span>`, 'pill', [], L('已复制到剪贴板', 'Copied to the clipboard')];
+    case 'perm': return [`<span class="lead warn">${I('a11y')}</span><span class="lbl">${L('需要辅助功能权限', 'Needs Accessibility permission')} <span class="sub">· ${L('否则按键传不到言字', 'or Yana never hears the key')}</span></span>`, 'pill', [BUD.perm()], L('需要辅助功能权限', 'Needs Accessibility permission')];
     case 'notice': return [`<span class="lead">${I('info')}</span><span class="lbl">${esc(o.msg || '')}</span>`, 'pill', [], o.msg || ''];
-    case 'error': return [`<span class="lead err wiggle">${I('warn')}</span><span class="lbl">出错了${o.msg ? ` <span class="sub">· ${esc(o.msg)}</span>` : ''}</span>`, 'pill', o.log === false ? [] : [BUD.log], '出错了' + (o.msg ? '，' + o.msg : '')];
+    case 'error': return [`<span class="lead err wiggle">${I('warn')}</span><span class="lbl">${L('出错了', 'Something went wrong')}${o.msg ? ` <span class="sub">· ${esc(o.msg)}</span>` : ''}</span>`, 'pill', o.log === false ? [] : [BUD.log()], L('出错了', 'Something went wrong') + (o.msg ? L('，', ': ') + o.msg : '')];
   }
   return ['', 'pill', [], ''];
 }
@@ -458,7 +468,14 @@ on('level', m => {
   }
 });
 on('pointer', m => pointer(m.x, m.y));
-on('env', m => { env(m); S.native = !!m.native; document.documentElement.classList.toggle('native', S.native); });
+on('env', m => {
+  const relabel = env(m);
+  S.native = !!m.native;
+  document.documentElement.classList.toggle('native', S.native);
+  hbEl.setAttribute('aria-label', L('开始听写', 'Start dictation'));
+  document.title = L('言字', 'Yana');
+  if (relabel && !S.hidden) { S.say = ''; render(S.st, S.d); }
+});
 on('anchor', m => { S.anchor = { mode: m.mode || 'bottom', x: m.x == null ? null : +m.x, y: m.y == null ? null : +m.y }; placeHandle(); relayout(); });
 on('handle', m => setHandle(m.on));
 on('focus', focusField);

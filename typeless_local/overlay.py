@@ -39,6 +39,7 @@ from Foundation import NSObject, NSRunLoop, NSRunLoopCommonModes, NSTimer
 from WebKit import WKWebView
 import objc
 
+from typeless_local import i18n
 from typeless_local.glass import FlippedView, GlassLayer
 from typeless_local.webview import WebPage, accessibility_env, announce
 
@@ -398,7 +399,14 @@ class FloatingOverlay(NSObject):
             if not env["rt"]:
                 self.glass.apply(self._shapes)
         env["native"] = bool(self.glass is not None and self.glass.kind)
+        env["lang"] = i18n.current()
         self._send({"t": "env", **env})
+
+    @objc.python_method
+    def relocalize(self) -> None:
+        """The interface language changed; the page redraws what it shows in it."""
+
+        self._push_env()
 
     def accessibilityChanged_(self, note) -> None:  # noqa: N802 - Cocoa selector
         del note

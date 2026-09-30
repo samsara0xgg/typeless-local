@@ -187,6 +187,13 @@ Glass (`NSGlassEffectView` on macOS 26, a vibrancy view before that). The
 pages only draw and report what the user did; `overlay.py`, `capsule.py` and
 `windows.py` decide what they show and do what they ask.
 
+The interface speaks Chinese or English (Settings › General › Language, or the
+switch on the guide's first page; "Same as the Mac" follows the system
+language). Every string is written where it is used as a pair, `t("设置",
+"Settings")` in Python (`typeless_local/i18n.py`) and `L('设置', 'Settings')`
+in the pages (`kit.js`), so a new string cannot ship in one language only
+without it showing in review.
+
 ## Auto-discover hotwords
 
 ```bash
