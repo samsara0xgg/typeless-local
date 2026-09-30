@@ -25,7 +25,7 @@ llm:
     # for the user's own OpenAI key. The token is random per Mac.
     free-trial:
       model: gpt-5.6-terra
-      base_url: https://yana.YOUR-SUBDOMAIN.workers.dev/v1
+      base_url: https://yana.guardmode-gf1n2.workers.dev/v1
       api_key_env: YANA_TRIAL_TOKEN
       max_tokens: 512
       reasoning_effort: none
