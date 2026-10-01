@@ -118,8 +118,9 @@ class _FakeRefiner:
     def __init__(self) -> None:
         self.calls = []
 
-    def refine(self, text: str, context: FocusContext, vocab=None) -> RefineResult:
+    def refine(self, text: str, context: FocusContext, vocab=None, language="") -> RefineResult:
         self.calls.append((text, context))
+        self.language = language
         return RefineResult(text="Refined text.", raw_text=text, model="gpt-5.4-mini")
 
 
@@ -691,7 +692,7 @@ class _FailingRefiner:
     def __init__(self, exc: Exception) -> None:
         self.exc = exc
 
-    def refine(self, text, context, vocab=None):
+    def refine(self, text, context, vocab=None, language=""):
         raise self.exc
 
 

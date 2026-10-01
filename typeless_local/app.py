@@ -642,11 +642,11 @@ class TypelessLocalApp:
             return "key"
         return _failure_kind(exc)
 
-    def _refine(self, text: str, context, vocab) -> RefineResult:
+    def _refine(self, text: str, context, vocab, language: str = "") -> RefineResult:
         if self.prefs.trial_used_up and getattr(self.config.refine, "preset", "") == trial.PRESET:
             # The trial server already said this Mac's share is spent: don't ask it again.
             raise TrialUnavailable("trial_used_up", "")
-        return self.refiner.refine(text, context, vocab=vocab)
+        return self.refiner.refine(text, context, vocab=vocab, language=language)
 
     def _note_trial(self, fallback: str) -> None:
         """The trial server said no: keep the menu's "enter your own key" up until one is saved."""
@@ -1791,7 +1791,12 @@ class TypelessLocalApp:
                 LOGGER.info("Starting refinement")
                 refine_start = time.monotonic()
                 try:
-                    refined = self._refine(transcript.text, self._refine_context(context), vocab=vocab_terms)
+                    refined = self._refine(
+                        transcript.text,
+                        self._refine_context(context),
+                        vocab=vocab_terms,
+                        language=str(getattr(transcript, "language", "") or ""),
+                    )
                 except Exception as exc:
                     # The transcript is already in hand; losing the whole dictation
                     # because the polish step failed is the worst outcome available.

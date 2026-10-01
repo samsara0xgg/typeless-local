@@ -308,3 +308,36 @@ def test_a_refused_trial_raises_trial_unavailable_with_the_reason() -> None:
         assert isinstance(exc, MissingAPIKey)
     else:
         raise AssertionError("a 402 from the trial server must raise TrialUnavailable")
+
+
+def test_prompt_keeps_the_spoken_language() -> None:
+    """An English speaker must never get Chinese back: the prompt assumes no
+    language, follows the one spoken, and forbids translating."""
+
+    from typeless_local.refine import SYSTEM_PROMPT
+
+    assert SYSTEM_PROMPT.startswith("You are the auto-editing layer of a system-wide dictation app")
+    assert "Write in the language the user spoke" in SYSTEM_PROMPT
+    assert "Never translate" in SYSTEM_PROMPT
+    assert "always write Simplified Chinese" in SYSTEM_PROMPT
+    # No language is assumed for the speaker.
+    assert "speaks Chinese" not in SYSTEM_PROMPT
+    assert "Users speak" not in SYSTEM_PROMPT
+
+
+def test_refiner_passes_the_recognizer_language_guess() -> None:
+    fake = _FakeClient()
+    refiner = TextRefiner(
+        RefineConfig("gpt-5.4-mini", "https://api.openai.com/v1", "OPENAI_API_KEY", 128),
+        client=fake,
+    )
+
+    refiner.refine("um can we meet friday", language="en")
+    user_prompt = fake.completions.kwargs["messages"][1]["content"]
+    assert user_prompt.startswith("Raw transcript:\n<transcript>um can we meet friday</transcript>\n")
+    assert "Recognizer's language guess: en" in user_prompt
+
+    refiner.refine("hello", language="unknown")
+    assert "language guess" not in fake.completions.kwargs["messages"][1]["content"]
+    refiner.refine("hello")
+    assert "language guess" not in fake.completions.kwargs["messages"][1]["content"]
