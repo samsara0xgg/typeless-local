@@ -54,6 +54,7 @@ from typeless_local.mac_integration import (
     has_accessibility_trust,
     in_front,
     is_secure_field,
+    nearest_composer,
     paste_text,
     prepare_paste,
     focused_text_length,
@@ -1950,14 +1951,19 @@ class TypelessLocalApp:
         """
 
         here = in_front(context)
-        if fallback or not context.can_insert_text or is_secure_field(context):
+        if fallback or is_secure_field(context):
             if here:
                 self._send_session = -1
                 self._deliver(text, raw, context, fallback, record)  # pasted as usual, not sent
             else:
                 self._hold_back(text, context, "raw" if fallback else "lost")
             return
-        if here:
+        composer = context.element
+        if composer is None and context.anchor is not None:
+            composer = nearest_composer(context.anchor)
+        terminal = getattr(self, "_send_terminal", None)
+        terminal_id = terminal.result(timeout=90) if terminal is not None else ""
+        if here and (context.element is not None or (composer is None and context.can_insert_text)):
             where = prepare_paste(context)
             if where not in ("ok", "blind"):
                 self._hold_back(text, context, "lost")
@@ -1969,21 +1975,18 @@ class TypelessLocalApp:
                 return
             time.sleep(SEND_SETTLE_S)
             press_return()
-        else:
-            terminal = getattr(self, "_send_terminal", None)
-            terminal_id = terminal.result(timeout=90) if terminal is not None else ""
-            if terminal_id:
-                if not ghostty_send(terminal_id, text):
-                    self._hold_back(text, context, "lost")
-                    return
-            elif context.element is not None:
-                outcome = send_in_background(context.element, text)
-                if outcome != "sent":
-                    self._hold_back(text, context, "nosend" if outcome == "typed" else "lost")
-                    return
-            else:
-                self._hold_back(text, context, "away")
+        elif terminal_id:
+            if not ghostty_send(terminal_id, text):
+                self._hold_back(text, context, "lost")
                 return
+        elif composer is not None:
+            outcome = send_in_background(composer, text)
+            if outcome != "sent":
+                self._hold_back(text, context, "nosend" if outcome == "typed" else "lost")
+                return
+        else:
+            self._hold_back(text, context, "away" if context.can_insert_text else "lost")
+            return
         LOGGER.info("Sent %d characters to %s%s", len(text), context.app_name or "unknown", "" if here else " from behind")
         record.was_pasted = True
         self.state = "idle"
@@ -1994,7 +1997,10 @@ class TypelessLocalApp:
     def _hold_back(self, text: str, context: FocusContext, why: str) -> None:
         """Not sent: the text goes on the clipboard and a pill says why, without taking the keyboard."""
 
-        LOGGER.info("Not sending to %s (%s); the text is on the clipboard", context.app_name or "unknown", why)
+        LOGGER.info(
+            "Not sending to %s (%s; focus was %s); the text is on the clipboard",
+            context.app_name or "unknown", why, context.focused_role or "unknown",
+        )
         set_clipboard_text(text)
         self._remember(text, context.app_name)
         self.state = "idle"

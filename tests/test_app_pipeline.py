@@ -1824,8 +1824,9 @@ def test_an_app_with_no_readable_field_is_still_pasted_into(monkeypatch) -> None
     assert app.overlay.shown()[-1] == "inserted"
 
 
-def _send_into(monkeypatch, *, here, element=None, terminal="", fallback_exc=None, background="sent"):
+def _send_into(monkeypatch, *, here, element=None, terminal="", fallback_exc=None, background="sent", anchor=None, can_insert=True):
     calls = []
+    monkeypatch.setattr(app_module, "nearest_composer", lambda anchor: "composer near " + anchor)
     monkeypatch.setattr(app_module, "paste_text", lambda text: calls.append(("paste", text)))
     monkeypatch.setattr(app_module, "set_clipboard_text", lambda text: calls.append(("copy", text)))
     monkeypatch.setattr(app_module, "press_return", lambda: calls.append(("return",)))
@@ -1833,11 +1834,11 @@ def _send_into(monkeypatch, *, here, element=None, terminal="", fallback_exc=Non
     monkeypatch.setattr(app_module, "is_secure_field", lambda context: False)
     monkeypatch.setattr(app_module, "SEND_SETTLE_S", 0.0)
     monkeypatch.setattr(app_module, "ghostty_send", lambda tid, text: calls.append(("ghostty", tid, text)) or True)
-    monkeypatch.setattr(app_module, "send_in_background", lambda el, text: calls.append(("background", text)) or background)
+    monkeypatch.setattr(app_module, "send_in_background", lambda el, text: calls.append(("background", el, text)) or background)
     app = _make_app("hello there")
     if fallback_exc is not None:
         app.refiner = _FailingRefiner(fallback_exc)
-    context = FocusContext("Claude", "", can_insert_text=True, pid=TARGET_PID, element=element)
+    context = FocusContext("Claude", "", can_insert_text=can_insert, pid=TARGET_PID, element=element, anchor=anchor)
     app.focus_context = context
     app._send_session = app._active_session_id = 7
     if terminal:
@@ -1858,7 +1859,7 @@ def test_a_send_still_in_front_pastes_and_presses_return(monkeypatch) -> None:
 
 def test_a_send_from_behind_never_pastes_into_the_app_in_front(monkeypatch) -> None:
     app, calls = _send_into(monkeypatch, here=False, element="composer")
-    assert calls == [("background", "Refined text.")]
+    assert calls == [("background", "composer", "Refined text.")]
     assert app.overlay.shown()[-1] == "sent"
 
     app, calls = _send_into(monkeypatch, here=False, terminal="T1")
@@ -1872,7 +1873,7 @@ def test_a_send_from_behind_never_pastes_into_the_app_in_front(monkeypatch) -> N
 def test_a_send_whose_send_button_did_not_take_says_so(monkeypatch) -> None:
     app, calls = _send_into(monkeypatch, here=False, element="composer", background="typed")
 
-    assert calls == [("background", "Refined text."), ("copy", "Refined text.")]
+    assert calls == [("background", "composer", "Refined text."), ("copy", "Refined text.")]
     assert app.overlay.last()[2]["why"] == "nosend"
 
 
@@ -1884,3 +1885,11 @@ def test_a_raw_transcript_is_never_sent(monkeypatch) -> None:
     app, calls = _send_into(monkeypatch, here=False, element="composer", fallback_exc=TimeoutError("slow"))
     assert calls == [("copy", "hello there")]
     assert app.overlay.last()[2]["why"] == "raw"
+
+
+def test_focus_on_a_button_sends_to_the_composer_next_to_it(monkeypatch) -> None:
+    # Claude with two conversations side by side, focus on a pane's header button.
+    for here in (True, False):
+        app, calls = _send_into(monkeypatch, here=here, anchor="header button", can_insert=False)
+        assert calls == [("background", "composer near header button", "Refined text.")]
+        assert app.overlay.shown()[-1] == "sent"
