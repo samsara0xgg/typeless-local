@@ -478,7 +478,7 @@ def test_guide_retries_a_failed_download(ui, monkeypatch) -> None:
     ui.windows._onboarding_message({"t": "download"})
     assert ("prefetch",) in ui.app.calls
     ui.windows.download(0.5, "约 30 秒")
-    assert ui.windows.onboarding.last("download") == {"t": "download", "p": 0.5, "eta": "约 30 秒", "done": False, "error": False}
+    assert ui.windows.onboarding.last("download") == {"t": "download", "p": 0.5, "eta": "约 30 秒", "done": False, "error": False, "why": ""}
 
 
 def test_finishing_the_guide_remembers_it_and_closes(ui) -> None:

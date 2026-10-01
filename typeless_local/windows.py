@@ -212,9 +212,9 @@ class Windows:
         if self.onboarding is not None:
             self.onboarding.send(self.onboarding_state())
 
-    def download(self, fraction: float, eta: str = "", done: bool = False, error: bool = False) -> None:
+    def download(self, fraction: float, eta: str = "", done: bool = False, error: bool = False, why: str = "") -> None:
         if self._visible("onboarding"):
-            self.onboarding.send({"t": "download", "p": round(fraction, 3), "eta": eta, "done": done, "error": error})
+            self.onboarding.send({"t": "download", "p": round(fraction, 3), "eta": eta, "done": done, "error": error, "why": why})
 
     def _later(self, window, message: dict) -> None:
         """Send from a worker thread."""

@@ -6,6 +6,8 @@
 
 asr:
   provider: mlx_whisper
+  # No second recognizer to fall back on: the app bundles only MLX Whisper.
+  fallback_to_local: false
   mlx_whisper_model: mlx-community/whisper-large-v3-turbo
   mlx_whisper_initial_prompt: ""
   language: ""

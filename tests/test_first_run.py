@@ -114,3 +114,40 @@ def test_a_saved_key_goes_to_the_keychain_and_leaves_the_env_file(tmp_path, monk
     assert os.environ["OPENAI_API_KEY"] == "sk-typed-new"
     # The env file is read first at launch; the old key must not come back from it.
     assert env.read_text(encoding="utf-8") == "DEEPSEEK_API_KEY=ds-keep\n"
+
+
+def test_a_snapshot_without_weights_is_not_a_cached_model(monkeypatch, tmp_path) -> None:
+    import huggingface_hub
+
+    from typeless_local import first_run
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda repo, local_files_only: str(tmp_path))
+    (tmp_path / "config.json").write_text("{}")
+    assert first_run.model_is_cached("x/y") is False
+    (tmp_path / "weights.safetensors").write_bytes(b"0")
+    assert first_run.model_is_cached("x/y") is True
+
+
+def test_the_download_size_counts_each_file_once(tmp_path) -> None:
+    from typeless_local import first_run
+
+    (tmp_path / "blobs").mkdir()
+    (tmp_path / "snapshots").mkdir()
+    (tmp_path / "blobs" / "abc").write_bytes(b"x" * 100)
+    (tmp_path / "snapshots" / "weights.safetensors").symlink_to(tmp_path / "blobs" / "abc")
+    assert first_run._dir_size(tmp_path) == 100
+
+
+def test_too_little_disk_stops_the_download_before_it_starts(monkeypatch, tmp_path) -> None:
+    import shutil
+    from types import SimpleNamespace
+
+    import pytest
+
+    from typeless_local import first_run
+
+    monkeypatch.setattr(first_run, "_expected_size", lambda repo: 1_600_000_000)
+    monkeypatch.setattr(first_run, "_cache_dir", lambda repo: tmp_path / "models--x--y")
+    monkeypatch.setattr(shutil, "disk_usage", lambda path: SimpleNamespace(free=10_000_000))
+    with pytest.raises(first_run.NotEnoughDisk):
+        first_run.download_model("x/y", lambda p: None)

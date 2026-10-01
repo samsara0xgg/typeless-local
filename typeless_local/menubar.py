@@ -45,6 +45,7 @@ ISSUES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ("授予辅助功能权限…", "Grant Accessibility Permission…"),
     ),
     "mic": (("不能使用麦克风", "Can't use the microphone"), ("允许使用麦克风…", "Allow the Microphone…")),
+    "model": (("语音模型没下载成功", "The speech model didn't download"), ("重新下载语音模型", "Download the Speech Model Again")),
     "key": (
         ("缺少 API Key，只能贴原文", "No API key: raw transcripts only"),
         ("填写 API Key…", "Enter API Key…"),

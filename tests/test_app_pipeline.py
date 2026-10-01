@@ -1355,7 +1355,7 @@ class _FakeWindows:
     def refresh(self, history=False) -> None:
         self.calls.append(("refresh", history))
 
-    def download(self, fraction, eta="", done=False, error=False) -> None:
+    def download(self, fraction, eta="", done=False, error=False, why="") -> None:
         self.calls.append(("download", fraction, done, error))
 
 

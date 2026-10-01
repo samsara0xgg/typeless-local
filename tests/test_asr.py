@@ -189,3 +189,11 @@ def test_a_transcript_that_is_only_a_silence_phrase_is_dropped(monkeypatch, tmp_
     assert j.transcribe(audio).text == ""
     assert j.transcribe(audio).text == ""
     assert j.transcribe(audio).text == "谢谢观看，我们下期再见吧"
+
+
+def test_chinese_clauses_get_full_width_punctuation() -> None:
+    from typeless_local.asr import full_width_punctuation
+
+    assert full_width_punctuation("明天下午3点我们在会议室开会,记得带上项目报告。") == "明天下午3点我们在会议室开会，记得带上项目报告。"
+    assert full_width_punctuation("你好吗? 我很好!") == "你好吗？我很好！"
+    assert full_width_punctuation("It costs 3,000, ok?") == "It costs 3,000, ok?"

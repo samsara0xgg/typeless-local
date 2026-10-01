@@ -173,6 +173,8 @@ function dlLine() {
   if (m.ready && !UI.dl) return '';
   let body;
   if (dl.done || m.ready) body = `<span class="dlok">${I('check')}${L('语音模型已就绪', 'Speech model ready')}</span>`;
+  else if (dl.error && dl.why === 'disk') body = `<span class="st-err">${L('磁盘空间不够，语音模型需要约 1.6 GB', 'Not enough disk space: the speech model needs about 1.6 GB')}</span>`
+    + link(L('腾出空间后重试', 'Free Up Space and Try Again'), 'download');
   else if (dl.error || (!m.downloading && !UI.dl)) body = `<span class="st-err">${L('语音模型下载失败', 'Speech model download failed')}</span>`
     + link(L('重试', 'Try Again'), 'download') + switchSource(m);
   else {

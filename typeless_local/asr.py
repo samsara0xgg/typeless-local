@@ -183,7 +183,7 @@ class JarvisASR:
             LOGGER.info("Dropping Whisper's silence phrase %r", text[:80])
             text = ""
         return Transcript(
-            text=text.strip(),
+            text=full_width_punctuation(text.strip()),
             language=str(getattr(result, "language", "") or "unknown"),
             confidence=float(getattr(result, "confidence", 0.0) or 0.0),
         )
@@ -238,6 +238,20 @@ class JarvisASR:
             return rec.transcribe(audio)
         language = str(out.get("language") or rec.language or "unknown")
         return SimpleNamespace(text=text, language=language, confidence=rec._estimate_confidence(out))
+
+
+_CJK = r"\u3400-\u9fff\uf900-\ufaff"
+_HALF_PUNCT = re.compile(rf"(?<=[{_CJK}])\s*([,?!:;])\s*")
+_FULL = {",": "，", "?": "？", "!": "！", ":": "：", ";": "；"}
+
+
+def full_width_punctuation(text: str) -> str:
+    """Whisper often ends a Chinese clause with "," or "?"; Chinese text wants "，" and "？".
+
+    Only after a Chinese character, so "3,000" and English inside stay as they are.
+    """
+
+    return _HALF_PUNCT.sub(lambda m: _FULL[m.group(1)], text)
 
 
 def _looks_looped(text: str) -> bool:

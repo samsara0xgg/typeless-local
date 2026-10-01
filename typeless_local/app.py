@@ -55,6 +55,7 @@ from typeless_local.mac_integration import (
     undo_last_edit,
 )
 from typeless_local.first_run import (
+    NotEnoughDisk,
     _store_api_key,
     download_model,
     ensure_api_key,
@@ -569,6 +570,8 @@ class TypelessLocalApp:
                 permissions.open_url(permissions.MICROPHONE_SETTINGS)
         elif issue in ("key", "trial"):
             self.open_settings("model")
+        elif issue == "model" and getattr(self, "_download", None) is None:
+            self._start_model_prefetch()
 
     def _current_issues(self) -> tuple[str, ...]:
         """What only the user can fix right now; the menu-bar icon wears a badge for it."""
@@ -578,6 +581,8 @@ class TypelessLocalApp:
             issues.append("perm")
         if permissions.microphone_status() in ("denied", "restricted"):
             issues.append("mic")
+        if getattr(self, "_model_failed", ""):
+            issues.append("model")
         refine = getattr(self.config, "refine", None)
         if self.prefs.refine and refine is not None and not os.environ.get(refine.api_key_env or ""):
             issues.append("key")
@@ -791,6 +796,8 @@ class TypelessLocalApp:
 
         started = time.monotonic()
         self._download = (0.0, started)
+        self._model_failed = ""
+        self._refresh_issues()
 
         def report(fraction: float) -> None:
             self._download = (fraction, started)
@@ -813,12 +820,13 @@ class TypelessLocalApp:
                     if self.state == "idle" and self.capsule.state in ("hidden", "download") and not self._guide_open():
                         # It downloaded while they did something else: say it can be used now.
                         self.capsule.show("ready", name=brand.display_name())
-            except Exception:
-                # The first dictation will download it the slow way; that is a
-                # worse experience, not a broken one, so the app stays up.
+            except Exception as exc:
+                # The menu offers to try again; the app stays up meanwhile.
                 LOGGER.exception("Model prefetch failed for %s", repo_id)
                 self._download = None
-                self._download_progress(0.0, error=True)
+                self._model_failed = "disk" if isinstance(exc, NotEnoughDisk) else "net"
+                self._refresh_issues()
+                self._download_progress(0.0, error=True, why=self._model_failed)
             finally:
                 self._download = None
                 self.capsule.hide_if("download")
@@ -829,12 +837,12 @@ class TypelessLocalApp:
         windows = getattr(self, "windows", None)
         return windows is not None and windows._visible("onboarding")
 
-    def _download_progress(self, fraction: float, eta: str = "", done: bool = False, error: bool = False) -> None:
+    def _download_progress(self, fraction: float, eta: str = "", done: bool = False, error: bool = False, why: str = "") -> None:
         """The guide's progress bar, when it is open."""
 
         windows = getattr(self, "windows", None)
         if windows is not None:
-            self._call_ui(windows.download, fraction, eta, done, error)
+            self._call_ui(windows.download, fraction, eta, done, error, why)
 
     def _show_download(self) -> None:
         download = getattr(self, "_download", None)
