@@ -64,15 +64,15 @@ CARET_ROOM = 280.0
 # What the page can draw (web/overlay.js, view()) and the actions it posts back.
 STATES = frozenset({
     "starting", "rec", "transcribing", "refining",
-    "inserted", "inserted-raw-net", "inserted-raw-key",
+    "inserted", "inserted-raw-net", "inserted-raw-key", "inserted-raw-trial", "inserted-unsure",
     "edit-notarget", "edit-modify",
     "empty", "mic", "download", "cancelled", "undone", "replaced", "copied",
-    "perm", "notice", "error",
+    "perm", "notice", "ready", "error",
 })
 CARD_STATES = frozenset({"edit-notarget", "edit-modify"})
 ACTIONS = frozenset({
     "primary", "cancel", "finish", "extend",                # idle handle, recording
-    "undo", "edit", "rerefine", "setkey", "input", "micperm", "perm", "log",  # buds
+    "undo", "edit", "rerefine", "setkey", "billing", "input", "micperm", "perm", "log", "restart",  # buds
     "close", "done", "replace",                             # cards
 })
 

@@ -67,3 +67,18 @@ def test_use_model_source_repoints_an_already_imported_hub(monkeypatch) -> None:
     assert reach.os.environ["HF_ENDPOINT"] == reach.MIRROR
     assert constants.ENDPOINT == reach.MIRROR
     assert constants.HUGGINGFACE_CO_URL_TEMPLATE.startswith(reach.MIRROR + "/{repo_id}")
+
+
+def test_the_trial_region_is_the_us_and_canada(monkeypatch) -> None:
+    _foundation(monkeypatch, "US", "Asia/Tokyo")
+    assert reach.in_trial_region() is True
+    _foundation(monkeypatch, "CA", "America/Toronto")
+    assert reach.in_trial_region() is True
+    _foundation(monkeypatch, "MX", "America/Mexico_City")
+    assert reach.in_trial_region() is False
+    _foundation(monkeypatch, "GB", "America/New_York")
+    assert reach.in_trial_region() is False
+    _foundation(monkeypatch, None, "America/Indiana/Indianapolis")
+    assert reach.in_trial_region() is True
+    _foundation(monkeypatch, None, "America/Sao_Paulo")
+    assert reach.in_trial_region() is False

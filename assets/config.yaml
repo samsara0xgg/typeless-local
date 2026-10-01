@@ -6,6 +6,8 @@
 
 asr:
   provider: mlx_whisper
+  # No second recognizer to fall back on: the app bundles only MLX Whisper.
+  fallback_to_local: false
   mlx_whisper_model: mlx-community/whisper-large-v3-turbo
   mlx_whisper_initial_prompt: ""
   language: ""
@@ -20,6 +22,15 @@ audio:
 llm:
   default_preset: gpt-5.6-terra
   presets:
+    # New installs in the US and Canada with no key start here: the first
+    # dictations are refined on the owner's key through worker/, then it asks
+    # for the user's own OpenAI key. The token is random per Mac.
+    free-trial:
+      model: gpt-5.6-terra
+      base_url: https://yana.guardmode-gf1n2.workers.dev/v1
+      api_key_env: YANA_TRIAL_TOKEN
+      max_tokens: 512
+      reasoning_effort: none
     gpt-5.4-mini:
       model: gpt-5.4-mini
       base_url: https://api.openai.com/v1
@@ -33,12 +44,6 @@ llm:
       reasoning_effort: none   # default medium burns the budget, empty reply
     gpt-5.6-terra:
       model: gpt-5.6-terra
-      base_url: https://api.openai.com/v1
-      api_key_env: OPENAI_API_KEY
-      max_tokens: 512
-      reasoning_effort: none
-    gpt-5.6-sol:
-      model: gpt-5.6-sol
       base_url: https://api.openai.com/v1
       api_key_env: OPENAI_API_KEY
       max_tokens: 512

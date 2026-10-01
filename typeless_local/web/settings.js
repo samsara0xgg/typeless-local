@@ -10,7 +10,7 @@ const PANES = [
   ['general', ['通用', 'General'], 'gear', '#8E8E93'],
   ['dictation', ['听写', 'Dictation'], 'wave', '#007AFF'],
   ['keys', ['快捷键', 'Shortcuts'], 'keyboard', '#636366'],
-  ['model', ['润色模型', 'Refinement'], 'sparkles', '#AF52DE'],
+  ['model', ['润色', 'Refinement'], 'sparkles', '#AF52DE'],
   ['vocab', ['词库', 'Vocabulary'], 'book', '#FF9500'],
   ['audio', ['音频', 'Audio'], 'speaker', '#FF3B30'],
   ['usage', ['用量', 'Usage'], 'chart', '#34C759'],
@@ -79,7 +79,7 @@ function dictation() {
     + grp([
       row(L('识别语言', 'Spoken language'), select('language', S.language, LANGS(), L('识别语言', 'Spoken language')),
         L('自动能识别中英混说；固定一种语言会快一点。', 'Automatic handles Chinese and English mixed; one fixed language is a little faster.')),
-      row(L('语音模型', 'Speech model'), `<span class="val">${esc(S.asrModel || '—')} · ${L('本地', 'on this Mac')}</span>`),
+      row(L('语音模型', 'Speech model'), `<span class="val">${L('在这台 Mac 上运行', 'Runs on this Mac')}</span>`),
       row(L('模型下载源', 'Model download'), select('model_source', p.model_source, SOURCES(), L('模型下载源', 'Model download')),
         L('自动：在中国大陆用国内镜像，其他地方用 Hugging Face。只管下载，识别始终在这台 Mac 上。',
           'Automatic uses the China mirror in mainland China and Hugging Face elsewhere. Only for the download; recognition always runs on this Mac.')),
@@ -90,52 +90,62 @@ function dictation() {
       row(L('润色', 'Refine'), sw('refine', p.refine, L('润色', 'Refine')), L('去掉口头禅、处理改口、补标点和分段。', 'Removes filler words, applies self-corrections, adds punctuation and paragraphs.')),
       row(L('润色超时或失败时', 'If refinement fails'), `<span class="val">${L('插入原始转写', 'Insert the raw transcript')}</span>`, L('胶囊里可以一键重新润色。', 'The capsule offers to refine it again.')),
       row(L('改写所选文字', 'Rewrite the selection'), sw('rewrite_selection', p.rewrite_selection, L('改写所选文字', 'Rewrite the selection')),
-        L('先选中文字再按 F5，说出要求，例如“改得更正式”“翻成英文”。', 'Select text, press F5 and say what to do, like “make it more formal” or “translate to Chinese”.')),
+        L('先选中文字再轻点右 ⌘，说出要求，例如“改得更正式”“翻成英文”。', 'Select text, tap right ⌘ and say what to do, like “make it more formal” or “translate to Chinese”.')),
       row(L('没有输入框时', 'With no text field'), `<span class="val">${L('显示卡片并复制', 'Show a card and copy')}</span>`,
         L('结果放进可以修改的卡片，同时复制到剪贴板。', 'The text goes into a card you can edit, and onto the clipboard.')),
     ]);
 }
 
 function keys() {
+  const f5 = S.prefs.f5_hotkey, rc = S.prefs.right_command_hotkey !== false;
   const top = ['esc', 'F1', 'F2', 'F3', 'F4', '', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'];
-  const kb = `<div class="kb" aria-hidden="true">${top.map(k => k ? `<i>${k}</i>` : `<i class="hot">${I('mic')}</i>`).join('')}<i class="w2"></i>`
-    + `<i>fn</i><i>⌃</i><i>⌥</i><i class="w2">⌘</i><i class="w6">space</i><i class="w2 hot">⌘</i><i>⌥</i><i>←→</i></div>`;
-  const conflict = S.f5 ? grp([row(L(`系统听写也在用 ${I('mic')} 键`, `System dictation also uses the ${I('mic')} key`),
+  const kb = `<div class="kb" aria-hidden="true">${top.map(k => k ? `<i>${k}</i>` : `<i${f5 ? ' class="hot"' : ''}>${I('mic')}</i>`).join('')}<i class="w2"></i>`
+    + `<i>fn</i><i>⌃</i><i>⌥</i><i class="w2">⌘</i><i class="w6">space</i><i class="w2${rc ? ' hot' : ''}">⌘</i><i>⌥</i><i>←→</i></div>`;
+  const conflict = f5 && S.f5 ? row(L(`系统听写也在用 ${I('mic')} 键`, `System dictation also uses the ${I('mic')} key`),
     `<button class="mbtn" data-act="open" data-what="keyboard">${L('打开键盘设置…', 'Open Keyboard Settings…')}</button>`,
-    L('Apple 芯片键盘上 F5 就是听写键，两个都开会互相抢。在键盘设置里把系统听写的快捷键换掉或关闭。',
-      'On Apple keyboards F5 is the dictation key, and the two fight over it. Change or turn off the system dictation shortcut in Keyboard settings.'), 'warnrow')]) : '';
-  const rcmd = L('右 ⌘', 'Right ⌘');
+    L('两个都开会互相抢。在键盘设置里把系统听写的快捷键换掉或关闭，或者关掉上面这个开关。',
+      'The two fight over it. Change or turn off the system dictation shortcut in Keyboard settings, or turn this switch off.'), 'warnrow') : '';
+  const key = [rc && `<kbd>${L('右 ⌘', 'Right ⌘')}</kbd>`, f5 && '<kbd>F5</kbd>'].filter(Boolean).join(`<span class="arrow">${L('或', 'or')}</span>`);
+  // Right ⌘ + Space only locks a recording already running (from idle it stays Spotlight), so it is a note, not a shortcut here.
+  const lock = rc ? '' : `<span class="arrow">·</span><kbd>F5</kbd><kbd>Space</kbd>`;
   return head(paneTitle('keys')) + kb
     + grp([
-      row(L('开始 / 结束', 'Start / finish'), `<span class="kbd2"><kbd>F5</kbd><span class="arrow">${L('或', 'or')}</span><kbd>${rcmd}</kbd><span class="arrow">${L('轻点', 'tap')}</span></span>`),
-      row(L('按住说话', 'Hold to talk'), `<span class="kbd2"><span class="arrow">${L('按住', 'hold')}</span><kbd>F5</kbd></span>`, L('按住超过 0.6 秒，松开就完成。', 'Hold for more than 0.6 s; letting go finishes.')),
-      row(L('锁定（免手持）', 'Lock (hands-free)'), `<span class="kbd2"><span class="arrow">${L('连按两下', 'double-press')}</span><kbd>F5</kbd><span class="arrow">·</span><kbd>F5</kbd><kbd>Space</kbd><span class="arrow">·</span><kbd>${rcmd}</kbd><kbd>Space</kbd></span>`),
+      row(L('开始 / 结束', 'Start / finish'), `<span class="kbd2"><span class="arrow">${L('轻点', 'tap')}</span>${key}</span>`),
+      row(L('按住说话', 'Hold to talk'), `<span class="kbd2"><span class="arrow">${L('按住', 'hold')}</span>${key}</span>`, L('按住一会儿就开始录，松开就完成。', 'Recording starts after a moment; letting go finishes.')),
+      row(L('锁定（免手持）', 'Lock (hands-free)'), `<span class="kbd2"><span class="arrow">${L('连点两下', 'double-tap')}</span>${key}${lock}</span>`,
+        rc ? L('录音时按右 ⌘ + 空格也能锁定。', 'While recording, right ⌘ + Space also locks it.') : ''),
       row(L('取消', 'Cancel'), '<span class="kbd2"><kbd>esc</kbd></span>'),
     ])
-    + conflict;
+    + grp([
+      row(L('用右 ⌘ 听写', 'Dictate with right ⌘'), sw('right_command_hotkey', rc, L('用右 ⌘ 听写', 'Dictate with right ⌘'), rc && !f5),
+        L('如果你的右 ⌘ 已经用来切换输入法，关掉它，改用 F5。', 'If right ⌘ already switches your input source, turn this off and use F5.')),
+      row(L(`也用 F5（${I('mic')} 键）`, `Also use F5 (the ${I('mic')} key)`), sw('f5_hotkey', f5, L('也用 F5', 'Also use F5'), f5 && !rc),
+        L(`MacBook 上 F5 是系统听写键。打开后${esc(S.name)}会接管它，系统听写就不能用这个键了。`, 'On a MacBook F5 is the system dictation key. When this is on, the app takes it over and system dictation can no longer use it.')),
+    ], conflict);
 }
 
 function model() {
-  const rows = S.presets.map(m => `<tr data-preset="${esc(m.name)}" aria-selected="${m.name === S.active}">
-    <td><span class="rad${m.name === S.active ? ' on' : ''}"></span></td><td>${esc(m.name)}<br><small class="arrow">${esc(m.model)}</small></td>
-    <td>${esc(m.service)}</td><td class="${m.hasKey ? 'st-ok' : 'st-no'}">${m.hasKey ? L('已设置', 'Set') : L('需要 Key', 'Needs key')}</td>
-    <td class="num">${m.median ? secs((m.median / 1000).toFixed(1)) : '—'}</td></tr>`).join('');
+  // One model for everyone, never named: show whose key pays and how fast it is. Nothing to pick.
+  const m = S.presets.find(p => p.name === S.active) || {};
+  const how = !S.prefs.refine ? L('关闭', 'Off') : S.trial.on ? L('免费试用', 'Free trial') : L(`你的 ${m.service || 'OpenAI'} Key`, `Your ${m.service || 'OpenAI'} key`);
+  const modelRow = row(L('润色', 'Refinement'), `<span class="val">${esc(how)}</span>`,
+    m.median ? L(`中位延迟 ${(m.median / 1000).toFixed(1)} 秒`, `Median time ${(m.median / 1000).toFixed(1)} s`) : '');
   const t = UI.test;
   const testLine = !t ? '' : t.busy ? `<span class="val"><span class="spin"></span> ${L('正在发送一次测试请求…', 'Sending a test request…')}</span>`
-    : t.ok ? `<span class="st-ok">${L('已连接', 'Connected')} · ${esc(t.preset)} · ${L(`往返 ${(t.ms / 1000).toFixed(1)} 秒`, `${(t.ms / 1000).toFixed(1)} s round trip`)}</span>`
+    : t.ok ? `<span class="st-ok">${L('已连接', 'Connected')} · ${L(`往返 ${(t.ms / 1000).toFixed(1)} 秒`, `${(t.ms / 1000).toFixed(1)} s round trip`)}</span>`
     : `<span class="st-err">${esc(t.msg || L('连接失败', 'Connection failed'))}</span>`;
-  const table = S.presets.length
-    ? `<table class="lst"><thead><tr><th></th><th>${L('模型', 'Model')}</th><th>${L('服务', 'Service')}</th><th>Key</th><th class="num">${L('中位延迟', 'Median time')}</th></tr></thead><tbody>${rows}</tbody></table>`
-    : `<div class="row"><span class="empty">${L('配置里没有润色模型。', 'The config has no refinement models.')}</span></div>`;
   const keyRows = S.keys.map(keyRow);
   const envKeys = S.keys.filter(k => k.where === 'env');
   const migrate = envKeys.length
-    ? `<p class="note">${envKeys.map(k => esc(k.env)).join(L('、', ', '))} ${L('还以明文存在 ~/.typlus/env 里。', 'is still in plain text in ~/.typlus/env.')}<button class="mbtn" data-act="migrate">${L('移到钥匙串', 'Move to Keychain')}</button></p>` : '';
-  return head(paneTitle('model'))
+    ? `<p class="note">${envKeys.map(k => esc(k.env)).join(L('、', ', '))} ${L('还以明文存在旧版的配置文件里。', 'is still in plain text in an old settings file.')}<button class="mbtn" data-act="migrate">${L('移到钥匙串', 'Move to Keychain')}</button></p>` : '';
+  const trialNote = !S.trial.on ? '' : `<p class="note">${S.trial.over
+      ? L('免费试用已经用完，现在只插入原始转写。填上你自己的 OpenAI API Key 就能继续润色。', 'The free trial is used up, so dictation inserts the raw transcript. Add your own OpenAI API key to keep refining.')
+      : L('正在用免费试用：前大约 300 次润色免费。想长期用，填上你自己的 OpenAI API Key，会自动切换过去。', 'You are on the free trial: about the first 300 refinements are free. For the long run, add your own OpenAI API key and it switches over by itself.')}
+    <button class="mbtn" data-act="open" data-what="openai-keys">${L('去 OpenAI 申请 Key', 'Get a Key from OpenAI')}</button></p>`;
+  return head(paneTitle('model')) + trialNote
     + (S.prefs.refine ? '' : `<p class="note">${L('润色已关闭，听写会直接插入原始转写。可以在「听写」里打开。', 'Refinement is off, so dictation inserts the raw transcript. Turn it on under Dictation.')}</p>`)
-    + `<div class="grp">${table}<div class="btnrow">${testLine}<button class="mbtn" data-act="test"${t && t.busy ? ' disabled' : ''}>${L('测试连接', 'Test Connection')}</button></div></div>`
-    + `<div class="grp-l">${L('API Key · 保存在钥匙串', 'API keys · kept in the keychain')}</div>` + grp(keyRows) + migrate
-    + `<p class="note">${L('中位延迟来自最近 50 次润色；关掉历史记录后不再统计。', 'Median time is over the last 50 refinements; it stops updating while history is off.')}</p>`;
+    + `<div class="grp">${modelRow}<div class="btnrow">${testLine}<button class="mbtn" data-act="test"${t && t.busy ? ' disabled' : ''}>${L('测试连接', 'Test Connection')}</button></div></div>`
+    + `<div class="grp-l">${L('API Key · 保存在钥匙串', 'API key · kept in the keychain')}</div>` + grp(keyRows) + migrate;
 }
 
 function keyRow(k) {
@@ -180,7 +190,9 @@ function audio() {
       L('每次录音都会重新读取设备；选中的设备不在时用系统默认。', 'Read again for every recording; when the chosen device is missing, the system default is used.'))])
     + grp([
       row(L('录音时静音其他声音', 'Mute other sound while recording'), sw('duck', S.duck, L('录音时静音其他声音', 'Mute other sound while recording')),
-        L('使用带回声消除的耳机时自动跳过。录音结束或意外退出后都会恢复。', 'Skipped with an echo-cancelling headset. Sound comes back when recording ends, even after a crash.')),
+        S.duckUnsupported
+          ? L('现在的音箱不让系统调音量，所以没法静音它；正在放的音乐仍会暂停。', 'The current speaker has no volume the system can lower, so it cannot be muted; playing music is still paused.')
+          : L('使用带回声消除的耳机时自动跳过。录音结束或意外退出后都会恢复。', 'Skipped with an echo-cancelling headset. Sound comes back when recording ends, even after a crash.')),
       row(L('静音时在胶囊里提示', 'Show when muted'), sw('show_ducked', S.prefs.show_ducked, L('静音时在胶囊里提示', 'Show when muted')),
         L('显示一个小喇叭斜杠，让你知道音乐停了是谁干的。', 'A small crossed-out speaker, so you know why the music stopped.')),
     ]);
@@ -210,8 +222,12 @@ function usage() {
   const peak = L('最高 ', 'Peak ') + (by === 'cost' ? money(max) : times(max));
   const m = u.month;
   const cacheRate = m.prompt ? Math.round(m.cached / m.prompt * 100) : null;
-  const models = u.models.length ? u.models.map(x => row(esc(x.model),
-    `<span class="val">${L(`${x.refined} 次`, `${x.refined} refinement${x.refined === 1 ? '' : 's'}`)} · ${x.cost == null ? L('没有价格', 'no price') : about(x.cost)}</span>`,
+  // Every model's refinements as one row: the model is not named in the UI.
+  const sum = k => u.models.reduce((a, x) => a + (x[k] || 0), 0);
+  const all = { refined: sum('refined'), prompt: sum('prompt'), cached: sum('cached'), completion: sum('completion'),
+    cost: u.models.some(x => x.cost == null) && !sum('cost') ? null : sum('cost') };
+  const models = all.refined ? [all].map(x => row(L('润色', 'Refinement'),
+    `<span class="val">${L(`${x.refined} 次`, `${x.refined} refinement${x.refined === 1 ? '' : 's'}`)} · ${x.cost == null ? L('没有价格', 'no price') : about(x.cost)}${S.trial && S.trial.on ? L('，免费试用承担', ', covered by the free trial') : ''}</span>`,
     x.prompt ? L(`输入 ${kilo(x.prompt)} token（缓存 ${kilo(x.cached)}）· 输出 ${kilo(x.completion)}`, `In ${kilo(x.prompt)} tokens (${kilo(x.cached)} cached) · out ${kilo(x.completion)}`)
       : L('这段时间没有记下 token 数', 'No token counts recorded for this period')))
     : [row(`<span class="empty">${L('最近 30 天没有润色。', 'No refinements in the last 30 days.')}</span>`, '')];
@@ -225,7 +241,7 @@ function usage() {
     + `<div class="grp uchart"><div class="uhead"><b>${L(`每天${what}`, by === 'cost' ? 'Daily spend' : 'Daily dictations')}</b>${seg('usageBy', by, [['cost', L('花费', 'Spend')], ['n', L('次数', 'Count')]])}</div>`
     + `<div class="ubars" role="img" aria-label="${esc(L(`最近 ${u.days} 天每天的${what}`, `Daily ${what}, last ${u.days} days`))}">${bars}</div>`
     + `<div class="uaxis"><span>${dayLabel(u.daily[0].day)}</span><span class="utip" data-rest="${esc(peak)}">${esc(peak)}</span><span>${L('今天', 'Today')}</span></div></div>`
-    + `<div class="grp-l">${L('按模型', 'By model')} · ${lastDays}</div>` + grp(models)
+    + `<div class="grp-l">${L('润色', 'Refinement')} · ${lastDays}</div>` + grp(models)
     + `<p class="note">${esc(note)}</p>`;
 }
 
@@ -256,6 +272,11 @@ function privacy() {
           'Up to about 300 characters, to get names, terms and homophones right from context. Costs a little more time and money, so it is off by default; password fields are never read.')),
       row(L('所选文字', 'The selected text'), sw('rewrite_selection', p.rewrite_selection, L('发送所选文字', 'Send the selected text')), L('只在“改写所选文字”时发送。', 'Only when rewriting the selection.')),
       row(L('音频', 'Audio'), `<span class="val">${L('从不离开这台 Mac', 'Never leaves this Mac')}</span>`),
+    ])
+    + grp([
+      row(L('发送匿名使用统计', 'Send anonymous usage stats'), sw('send_usage_stats', p.send_usage_stats, L('发送匿名使用统计', 'Send anonymous usage stats')),
+        L('每天一次：当天听写了几次、共多少字、免费试用花了多少，加一个随机编号和版本号。只用来了解产品怎么被使用，从不包含听写内容、App 名称或任何个人信息。',
+          'Once a day: how many dictations, how many characters, and what the free trial spent, with a random ID and the version. Only to learn how the app is used; never any dictated text, app names or anything personal.')),
     ])
     + `<div class="grp" style="background:transparent; box-shadow:none">${c && c.kind === 'clear' ? `<div class="grp">${confirmBox}</div>` : ''}<div class="btnrow left"><button class="mbtn" data-act="open" data-what="data">${I('folder')} ${L('在访达中显示数据', 'Show Data in Finder')}</button><button class="mbtn danger" data-act="clear">${I('trash')} ${L('清除历史…', 'Clear History…')}</button></div></div>`;
 }
@@ -344,8 +365,6 @@ document.addEventListener('click', e => {
   if (tab) { show(tab.dataset.pane); return; }
   const set = e.target.closest('button[data-set]');
   if (set && !set.disabled) { setting(set); return; }
-  const preset = e.target.closest('tr[data-preset]');
-  if (preset && preset.dataset.preset !== S.active) { S.active = preset.dataset.preset; post({ t: 'set', key: 'preset', value: S.active }); draw(); return; }
   const act = e.target.closest('[data-act]');
   if (!act || act.disabled) return;
   const a = act.dataset.act;

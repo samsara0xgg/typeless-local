@@ -229,20 +229,25 @@ class _KeyEvent:
         self.at = at
 
 
-def _rcmd_monitor(monkeypatch, events):
-    monitor = mac_integration.GlobalHotkeyMonitor(events.append)
+def _rcmd_monitor(monkeypatch, events, **kwargs):
+    monitor = mac_integration.GlobalHotkeyMonitor(events.append, **kwargs)
+    # The hold timer only fires when a test says the time has passed.
+    monitor.pending = []
+    monkeypatch.setattr(monitor, "_after", lambda delay, fn: monitor.pending.append(fn))
     monkeypatch.setattr(
         mac_integration.Quartz, "CGEventGetIntegerValueField", lambda event, field: event.keycode
     )
     monkeypatch.setattr(mac_integration.Quartz, "CGEventGetFlags", lambda event: event.flags)
     monkeypatch.setattr(monitor, "_event_time", lambda event: event.at)
+    monkeypatch.setattr(mac_integration, "secure_input_enabled", lambda: False)
     return monitor
 
 
-def _rcmd(monitor, down: bool, at: float = 0.0):
-    event = _KeyEvent(
-        mac_integration.RIGHT_COMMAND_KEYCODE, mac_integration.COMMAND_FLAG_MASK if down else 0, at
-    )
+RCMD_DOWN = mac_integration.COMMAND_FLAG_MASK | mac_integration.RIGHT_COMMAND_DEVICE_MASK
+
+
+def _rcmd(monitor, down: bool, at: float = 0.0, extra: int = 0):
+    event = _KeyEvent(mac_integration.RIGHT_COMMAND_KEYCODE, (RCMD_DOWN if down else 0) | extra, at)
     return monitor._handle_event(None, mac_integration.Quartz.kCGEventFlagsChanged, event, None), event
 
 
@@ -271,14 +276,66 @@ def test_right_cmd_used_as_modifier_does_not_fire(monkeypatch) -> None:
     assert events == []
 
 
-def test_right_cmd_held_longer_than_a_tap_does_not_fire(monkeypatch) -> None:
+def _hold_time_passes(monitor) -> None:
+    for fn in monitor.pending:
+        fn()
+    monitor.pending.clear()
+
+
+def test_right_cmd_held_alone_is_hold_to_talk(monkeypatch) -> None:
     events = []
     monitor = _rcmd_monitor(monkeypatch, events)
 
     _rcmd(monitor, True, at=10.0)
-    _rcmd(monitor, False, at=10.0 + mac_integration.RIGHT_COMMAND_TAP_S + 0.3)
+    _hold_time_passes(monitor)
+    assert events == ["hold_start"] and monitor.last_primary_down_at == 10.0
+    _rcmd(monitor, False, at=12.5)
 
+    assert events == ["hold_start", "hold_end"]
+    assert monitor.last_primary_up_at == 12.5
+
+
+def test_a_key_during_a_right_cmd_hold_makes_it_a_modifier(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events)
+    c_key = _KeyEvent(8, mac_integration.COMMAND_FLAG_MASK)  # a slow Cmd+C
+
+    _rcmd(monitor, True, at=10.0)
+    _hold_time_passes(monitor)
+    result = monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, c_key, None)
+    _rcmd(monitor, False, at=11.0)
+
+    assert result is c_key
+    assert events == ["hold_start", "hold_abort"]  # the app drops the recording this hold started
+
+
+def test_a_stale_hold_timer_does_nothing(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events)
+
+    _rcmd(monitor, True, at=10.0)
+    _rcmd(monitor, False, at=10.1)  # a tap
+    _rcmd(monitor, True, at=10.3)
+    stale = monitor.pending.pop(0)
+    stale()  # the first press's timer, firing during the second press
+
+    assert events == ["primary_down", "primary_up"]
+
+
+def test_f5_passes_through_when_turned_off(monkeypatch) -> None:
+    events = []
+    use_f5 = [False]
+    monitor = _rcmd_monitor(monkeypatch, events, use_f5_fn=lambda: use_f5[0])
+
+    for keycode in mac_integration.PRIMARY_KEYCODES:
+        down, up = _KeyEvent(keycode), _KeyEvent(keycode)
+        assert monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, down, None) is down
+        assert monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyUp, up, None) is up
     assert events == []
+
+    use_f5[0] = True
+    assert monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, _KeyEvent(96), None) is None
+    assert events == ["primary_down"]
 
 
 def test_right_cmd_with_another_modifier_or_a_click_does_not_fire(monkeypatch) -> None:
@@ -296,9 +353,9 @@ def test_right_cmd_with_another_modifier_or_a_click_does_not_fire(monkeypatch) -
     assert events == []
 
 
-def test_right_cmd_space_enters_hands_free(monkeypatch) -> None:
+def test_right_cmd_space_locks_a_recording(monkeypatch) -> None:
     events = []
-    monitor = _rcmd_monitor(monkeypatch, events)
+    monitor = _rcmd_monitor(monkeypatch, events, is_active_fn=lambda: True)
     space = _KeyEvent(mac_integration.SPACE_KEYCODE, mac_integration.COMMAND_FLAG_MASK)
 
     _rcmd(monitor, True)
@@ -307,6 +364,78 @@ def test_right_cmd_space_enters_hands_free(monkeypatch) -> None:
 
     assert result is None
     assert events == ["hands_free"]
+
+
+def test_right_cmd_space_from_idle_stays_cmd_space(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events, is_active_fn=lambda: False)
+    space = _KeyEvent(mac_integration.SPACE_KEYCODE, mac_integration.COMMAND_FLAG_MASK)
+
+    _rcmd(monitor, True)
+    assert monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, space, None) is space  # Spotlight
+    _rcmd(monitor, False)
+
+    assert events == []
+
+
+def test_releasing_after_the_hold_time_but_before_its_timer_is_still_a_tap(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events)
+
+    _rcmd(monitor, True, at=10.0)
+    _rcmd(monitor, False, at=10.5)  # the main thread was busy; the timer has not run
+
+    assert events == ["primary_down", "primary_up"]
+
+
+def test_right_cmd_is_not_armed_with_left_cmd_down_or_under_secure_input(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events)
+
+    _rcmd(monitor, True, extra=0x08)  # left Cmd already down
+    _rcmd(monitor, False, extra=mac_integration.COMMAND_FLAG_MASK | 0x08)
+    monkeypatch.setattr(mac_integration, "secure_input_enabled", lambda: True)
+    _rcmd(monitor, True)
+    _rcmd(monitor, False)
+
+    assert events == []
+
+
+def test_right_cmd_released_while_left_cmd_stays_down_is_not_a_new_press(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events)
+
+    _rcmd(monitor, True)
+    _rcmd(monitor, False)  # a tap
+    # Left Cmd still down: the Command bit stays set, the right-Cmd bit does not.
+    _rcmd(monitor, False, extra=mac_integration.COMMAND_FLAG_MASK | 0x08)
+
+    assert events == ["primary_down", "primary_up"]
+
+
+def test_right_cmd_can_be_turned_off(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events, use_right_command_fn=lambda: False)
+
+    _rcmd(monitor, True)
+    _hold_time_passes(monitor)
+    _rcmd(monitor, False)
+
+    assert events == []
+
+
+def test_f5_turned_off_mid_press_still_releases_it(monkeypatch) -> None:
+    events = []
+    use_f5 = [True]
+    monitor = _rcmd_monitor(monkeypatch, events, use_f5_fn=lambda: use_f5[0])
+    space = _KeyEvent(mac_integration.SPACE_KEYCODE)
+
+    monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, _KeyEvent(96), None)
+    use_f5[0] = False
+    monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyUp, _KeyEvent(96), None)
+
+    assert events == ["primary_down", "primary_up"]
+    assert monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, space, None) is space
 
 
 def test_focus_context_pastes_when_the_app_exposes_no_focused_element(monkeypatch) -> None:
@@ -608,3 +737,34 @@ def test_capture_focus_context_leaves_the_field_unread_unless_asked(monkeypatch)
     assert read == []
     assert mac_integration.capture_focus_context(read_before_text=True).before_text == "上文"
     assert read == ["AXTextArea"]
+
+
+def _paste_target(monkeypatch, *, front, focused_is_text, refocus_works=False):
+    """prepare_paste against a fake app whose composer may have lost focus."""
+
+    focused = {"text": focused_is_text}
+    monkeypatch.setattr(mac_integration, "_limit_ax_messaging_timeout", lambda: None)
+    monkeypatch.setattr(mac_integration, "frontmost_pid", lambda: front)
+    monkeypatch.setattr(mac_integration, "_focused_element", lambda pid: "field" if focused["text"] else "web")
+    monkeypatch.setattr(mac_integration, "_is_text_field", lambda element: element == "field")
+
+    def set_value(element, attribute, value):
+        focused["text"] = refocus_works
+
+    monkeypatch.setattr(mac_integration.ApplicationServices, "AXUIElementSetAttributeValue", set_value)
+
+
+def test_prepare_paste_puts_the_caret_back_or_refuses_to_paste_blind(monkeypatch) -> None:
+    composer = mac_integration.FocusContext("Claude", "", can_insert_text=True, pid=7, element="field")
+
+    _paste_target(monkeypatch, front=7, focused_is_text=True)
+    assert mac_integration.prepare_paste(composer) == "ok"
+    _paste_target(monkeypatch, front=7, focused_is_text=False, refocus_works=True)
+    assert mac_integration.prepare_paste(composer) == "ok"
+    _paste_target(monkeypatch, front=7, focused_is_text=False)
+    assert mac_integration.prepare_paste(composer) == "lost"
+    _paste_target(monkeypatch, front=8, focused_is_text=True)
+    assert mac_integration.prepare_paste(composer) == "elsewhere"
+    _paste_target(monkeypatch, front=7, focused_is_text=False)
+    no_field = mac_integration.FocusContext("ChatGPT", "", can_insert_text=True, pid=7)
+    assert mac_integration.prepare_paste(no_field) == "blind"

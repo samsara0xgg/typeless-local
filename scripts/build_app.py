@@ -48,7 +48,8 @@ def short_hash() -> str:
         ).strip()
         dirty = (
             subprocess.run(
-                ["git", "diff-index", "--quiet", "HEAD"], cwd=ROOT
+                # _version.py is rewritten by every build; it alone is not a change.
+                ["git", "diff-index", "--quiet", "HEAD", "--", ".", ":!typeless_local/_version.py"], cwd=ROOT
             ).returncode
             != 0
         )
@@ -232,23 +233,32 @@ def notarize(target: Path) -> None:
 
 
 def make_dmg(app: Path) -> Path:
-    """A disk image with an Applications shortcut, the usual way to install."""
+    """A disk image that opens on the app, an arrow and Applications, saying to drag one onto the other."""
+
+    import dmgbuild
+
+    from dmg_background import APP_AT, APPLICATIONS_AT, HEIGHT, WIDTH, make_background
 
     dmg = DIST / f"{APP_NAME}-{VERSION}.dmg"
     with tempfile.TemporaryDirectory() as tmp:
-        staging = Path(tmp) / APP_NAME
-        staging.mkdir()
-        shutil.copytree(app, staging / app.name, symlinks=True)
-        (staging / "Applications").symlink_to("/Applications")
-        subprocess.check_call(
-            [
-                "hdiutil", "create",
-                "-volname", APP_NAME,
-                "-srcfolder", str(staging),
-                "-ov", "-format", "UDZO",
-                str(dmg),
-            ]
-        )
+        settings = {
+            "files": [str(app)],
+            "symlinks": {"Applications": "/Applications"},
+            "icon": str(ROOT / "assets" / "AppIcon.icns"),
+            "background": str(make_background(Path(tmp) / "background.tiff")),
+            "window_rect": ((200, 160), (WIDTH, HEIGHT)),
+            "icon_locations": {app.name: APP_AT, "Applications": APPLICATIONS_AT},
+            "icon_size": 128,
+            "text_size": 13,
+            "show_status_bar": False,
+            "show_tab_view": False,
+            "show_toolbar": False,
+            "show_pathbar": False,
+            "show_sidebar": False,
+            "default_view": "icon-view",
+            "format": "ULMO",  # LZMA: the smallest, and readable since macOS 10.15
+        }
+        dmgbuild.build_dmg(str(dmg), APP_NAME, settings=settings)
     return dmg
 
 
@@ -256,7 +266,10 @@ def verify_gatekeeper(target: Path) -> None:
     """What a downloader's Mac will decide. Advisory: prints, never fails."""
 
     result = subprocess.run(
-        ["spctl", "-a", "-vv", "-t", "install" if target.suffix == ".dmg" else "exec", str(target)],
+        # A disk image is judged as a downloaded file being opened, by its own signature.
+        ["spctl", "-a", "-vv", "-t", "open", "--context", "context:primary-signature", str(target)]
+        if target.suffix == ".dmg"
+        else ["spctl", "-a", "-vv", "-t", "exec", str(target)],
         capture_output=True,
         text=True,
     )
@@ -376,41 +389,57 @@ def smoke_test(app: Path) -> None:
     """
 
     python = app / "Contents" / "MacOS" / "python"
-    env = {**os.environ, "PYTHONHOME": str(app / "Contents" / "Resources")}
+    # Only the bundle: run from elsewhere, with nothing on the path, so the
+    # checkout's own typeless_local can't stand in for a missing bundled one.
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV")}
+    env["PYTHONHOME"] = str(app / "Contents" / "Resources")
     code = (
-        "import mlx.core as mx, mlx_whisper, sounddevice, llvmlite.binding\n"
+        "import sys\n"
+        "import typeless_local, typeless_local.asr\n"  # asr stands in for word timestamps before mlx_whisper loads
+        "assert '/Contents/Resources/' in typeless_local.__file__, typeless_local.__file__\n"
+        "import mlx.core as mx, mlx_whisper.transcribe, sounddevice, certifi\n"
         "assert (mx.array([1.0, 2.0]) * 2).tolist() == [2.0, 4.0]\n"
-        "import typeless_local.windows\n"
+        "from mlx_whisper.tokenizer import get_tokenizer\n"
+        "from mlx_whisper.audio import mel_filters\n"
+        "assert get_tokenizer(True, language='zh').encode(' 你好')\n"
+        "assert mel_filters(128).shape[0] == 128\n"
+        "assert open(certifi.where()).read(64)\n"
+        "import typeless_local.app, typeless_local.windows, typeless_local.stats, typeless_local.trial, typeless_local.refine\n"
         "from typeless_local.webview import web_root\n"
         f"missing = [n for n in {BUNDLED_PAGES!r} if not (web_root() / n).is_file()]\n"
         "assert not missing, f'pages missing from the bundle: {missing}'\n"
+        "import importlib.util as u\n"
+        "heavy = [m for m in ('numba', 'torch', 'scipy', 'llvmlite') if u.find_spec(m)]\n"
+        "assert not heavy, f'left out on purpose but bundled: {heavy}'\n"
     )
-    result = subprocess.run(
-        [str(python), "-c", code], env=env, capture_output=True, text=True
-    )
+    with tempfile.TemporaryDirectory() as elsewhere:
+        result = subprocess.run(
+            [str(python), "-c", code], env=env, cwd=elsewhere, capture_output=True, text=True
+        )
     if result.returncode != 0:
         raise SystemExit("bundle smoke test failed:\n" + result.stderr.strip())
     strings = app / "Contents" / "Resources" / "zh-Hans.lproj" / "InfoPlist.strings"
     if not strings.is_file():
         raise SystemExit(f"bundle smoke test failed: {strings.relative_to(app)} is missing, so the app is not called 言字")
-    print("smoke test: mlx computes, mlx_whisper/sounddevice/llvmlite import, the pages and the 言字 name are in")
+    print("smoke test: the bundle's own code imports, mlx computes, the tokenizer and mel filters load, the pages and the 言字 name are in")
 
 
 def prune_bundle(app: Path) -> None:
-    """Drop test payloads that nothing imports and notarization chokes on.
+    """Drop the second copy of mlx's libraries, about 200 MB nothing loads.
 
-    Apple opens every archive it finds in the bundle. scipy ships .npz test
-    fixtures its unpacker cannot read, and the submission comes back Invalid
-    over a file the app never touches.
+    The mlx package moved out of the bundle zip brings its own lib/, but
+    core.so sits in lib-dynload and loads the copy patch_native_dylibs put
+    next to it.
     """
 
-    lib = app / "Contents" / "Resources" / "lib" / "python3.13"
-    removed = 0
-    for tests_dir in sorted(lib.glob("scipy/**/tests")):
-        if tests_dir.is_dir():
-            shutil.rmtree(tests_dir)
-            removed += 1
-    print(f"pruned {removed} scipy test directories")
+    lib_root = app / "Contents" / "Resources" / "lib" / "python3.13"
+    core = next(iter(sorted(lib_root.rglob("mlx/core*.so"))), None)
+    if core is None:
+        return
+    for libs in sorted(lib_root.rglob("mlx/lib")):
+        if libs.is_dir() and libs != core.parent / "lib":
+            shutil.rmtree(libs)
+            print(f"removed unused {libs.relative_to(app)}")
 
 
 def patch_native_dylibs(app: Path) -> None:

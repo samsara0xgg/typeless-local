@@ -54,3 +54,14 @@ def test_a_hand_edited_bad_value_falls_back_to_its_default(monkeypatch, tmp_path
 
     assert prefs.max_minutes == 15
     assert prefs.sounds == "start_end"
+
+
+def test_f5_is_off_for_new_installs_and_kept_for_earlier_ones(monkeypatch, tmp_path) -> None:
+    paths = _paths(monkeypatch, tmp_path)
+    assert load_preferences(paths).f5_hotkey is False  # the system dictation key stays the system's
+
+    prefs = save_preference(paths, load_preferences(paths), "onboarding_done", True)
+    assert load_preferences(paths).f5_hotkey is True  # set up before 0.4.0: F5 is what they use
+
+    save_preference(paths, prefs, "f5_hotkey", False)
+    assert load_preferences(paths).f5_hotkey is False  # and turning it off sticks

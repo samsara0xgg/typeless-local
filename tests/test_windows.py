@@ -213,7 +213,7 @@ def test_settings_state_describes_models_keys_and_the_engine(ui, monkeypatch) ->
     assert state["presets"][1]["service"] == "DeepSeek" and state["presets"][1]["hasKey"] is False
     keys = {k["env"]: k for k in state["keys"]}
     assert keys["TEST_KEY_A"]["where"] == "keychain" and keys["TEST_KEY_A"]["hint"] == "sk-…234"
-    assert keys["TEST_KEY_B"]["where"] == "env"
+    assert "TEST_KEY_B" not in keys  # only the key the model in use reads
     assert state["active"] == "mini"
     assert state["language"] == "zh"
     assert state["asrModel"] == "whisper-large-v3-turbo"
@@ -429,7 +429,7 @@ def test_guide_state_reports_permissions_key_and_model(ui, monkeypatch) -> None:
     ui.app._download = (0.25, 0.0)
     state = ui.windows.onboarding_state()
     assert state["mic"] == "authorized" and state["ax"] is True
-    assert state["key"] == {"env": "TEST_KEY_A", "service": "OpenAI", "preset": "mini", "has": False}
+    assert state["key"] == {"env": "TEST_KEY_A", "service": "OpenAI", "preset": "mini", "has": False, "trial": False}
     assert state["model"] == {"name": "whisper-large-v3-turbo", "ready": False, "downloading": True, "p": 0.25, "mirror": False}
     ui.app._download = None  # the download at launch failed before the guide opened
     assert ui.windows.onboarding_state()["model"]["downloading"] is False
@@ -478,7 +478,7 @@ def test_guide_retries_a_failed_download(ui, monkeypatch) -> None:
     ui.windows._onboarding_message({"t": "download"})
     assert ("prefetch",) in ui.app.calls
     ui.windows.download(0.5, "约 30 秒")
-    assert ui.windows.onboarding.last("download") == {"t": "download", "p": 0.5, "eta": "约 30 秒", "done": False, "error": False}
+    assert ui.windows.onboarding.last("download") == {"t": "download", "p": 0.5, "eta": "约 30 秒", "done": False, "error": False, "why": ""}
 
 
 def test_finishing_the_guide_remembers_it_and_closes(ui) -> None:
@@ -486,6 +486,7 @@ def test_finishing_the_guide_remembers_it_and_closes(ui) -> None:
     window = ui.windows.onboarding
     ui.windows._onboarding_message({"t": "done"})
     assert ("pref", "onboarding_done", True) in ui.app.calls
+    assert ("pref", "f5_hotkey", False) in ui.app.calls  # a new install is never read as one from before 0.4.0
     assert window.closed
 
 
@@ -519,7 +520,7 @@ def test_settings_exports_diagnostics(ui) -> None:
 PAGES = {
     "settings": ({"ready", "set", "key", "migrate", "test", "vocab", "open", "count", "clear", "geo"}, "_settings_message"),
     "history": ({"ready", "geo", "copy", "delete", "vocab", "open"}, "_history_message"),
-    "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang", "source"}, "_onboarding_message"),
+    "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang", "source", "open", "meter"}, "_onboarding_message"),
 }
 
 
@@ -548,3 +549,56 @@ def test_settings_page_opens_the_panes_python_can_ask_for() -> None:
     source = (web_root() / "settings.js").read_text(encoding="utf-8")
     drawn = set(re.findall(r"\['([a-z]+)', \['[^']+', '[^']+'\], '[a-z]+', '#", source))
     assert drawn == set(windows.SETTINGS_PANES)
+
+
+def test_the_guide_hears_keys_and_results_only_while_open(ui) -> None:
+    ui.windows.guide({"t": "hotkey", "a": "primary_down"})  # never opened: nothing to tell
+    ui.windows.show_onboarding()
+    window = ui.windows.onboarding
+    ui.windows.guide({"t": "result", "raw": "嗯明天开会", "text": "明天开会。"})
+    assert window.last("result") == {"t": "result", "raw": "嗯明天开会", "text": "明天开会。"}
+    window.close()
+    window.sent.clear()
+    ui.windows.guide({"t": "hotkey", "a": "primary_down"})
+    assert window.sent == []
+
+
+def test_the_level_meter_opens_the_microphone_only_while_asked(ui, monkeypatch) -> None:
+    import sys
+
+    streams = []
+
+    class Stream:
+        def __init__(self, callback, **kwargs) -> None:
+            self.callback, self.open = callback, False
+            streams.append(self)
+
+        def start(self) -> None:
+            self.open = True
+
+        def stop(self) -> None:
+            self.open = False
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setitem(sys.modules, "sounddevice", SimpleNamespace(InputStream=Stream))
+    monkeypatch.setattr(permissions, "microphone_status", lambda: "authorized")
+    ui.windows.show_onboarding()
+    window = ui.windows.onboarding
+
+    ui.windows._onboarding_message({"t": "meter", "on": True})
+    ui.windows._onboarding_message({"t": "meter", "on": True})  # every redraw asks again
+    assert len(streams) == 1
+    import numpy as np
+
+    streams[0].callback(np.array([[0.0], [0.25], [-0.5]]), 3, None, None)
+    assert window.last("level") == {"t": "level", "v": 0.5}
+
+    ui.windows._onboarding_message({"t": "meter", "on": False})
+    assert not streams[0].open
+
+    ui.windows._onboarding_message({"t": "meter", "on": True})
+    window.close()  # the red button: the page never says stop
+    streams[1].callback(np.array([[0.1]]), 1, None, None)
+    assert not streams[1].open  # the next level finds the window gone and lets the microphone go

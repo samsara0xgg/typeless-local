@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib.util
 import inspect
 import logging
 import re
@@ -10,11 +11,33 @@ import sys
 import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _without_word_timestamps() -> None:
+    """Let mlx_whisper import without numba and scipy.
+
+    The app bundle leaves both out (with llvmlite, about 200 MB): mlx_whisper
+    imports them only for word timestamps, which are never asked for. A stand-in
+    for its timing module takes their place when they are missing.
+    """
+
+    if importlib.util.find_spec("numba") and importlib.util.find_spec("scipy"):
+        return
+
+    def add_word_timestamps(*_args, **_kwargs):
+        raise RuntimeError("word timestamps are not part of this build")
+
+    timing = ModuleType("mlx_whisper.timing")
+    timing.add_word_timestamps = add_word_timestamps
+    sys.modules.setdefault("mlx_whisper.timing", timing)
+
+
+_without_word_timestamps()
 
 _PROMPT_ECHO_RE = re.compile(r"^\s*Common terms:[^\n]*\n", re.IGNORECASE)
 _LOOP_RE = re.compile(r"(.{2,16})\1{2,}")
@@ -160,7 +183,7 @@ class JarvisASR:
             LOGGER.info("Dropping Whisper's silence phrase %r", text[:80])
             text = ""
         return Transcript(
-            text=text.strip(),
+            text=full_width_punctuation(text.strip()),
             language=str(getattr(result, "language", "") or "unknown"),
             confidence=float(getattr(result, "confidence", 0.0) or 0.0),
         )
@@ -215,6 +238,20 @@ class JarvisASR:
             return rec.transcribe(audio)
         language = str(out.get("language") or rec.language or "unknown")
         return SimpleNamespace(text=text, language=language, confidence=rec._estimate_confidence(out))
+
+
+_CJK = r"\u3400-\u9fff\uf900-\ufaff"
+_HALF_PUNCT = re.compile(rf"(?<=[{_CJK}])\s*([,?!:;])\s*")
+_FULL = {",": "，", "?": "？", "!": "！", ":": "：", ";": "；"}
+
+
+def full_width_punctuation(text: str) -> str:
+    """Whisper often ends a Chinese clause with "," or "?"; Chinese text wants "，" and "？".
+
+    Only after a Chinese character, so "3,000" and English inside stay as they are.
+    """
+
+    return _HALF_PUNCT.sub(lambda m: _FULL[m.group(1)], text)
 
 
 def _looks_looped(text: str) -> bool:

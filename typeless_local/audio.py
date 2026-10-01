@@ -21,6 +21,12 @@ StretchCallback = Callable[[np.ndarray], None]
 QUIET_RMS = 10 ** (-45 / 20)
 PAUSE_SECONDS = 0.5
 MIN_STRETCH_SECONDS = 5.0
+# CoreAudio can deadlock stopping a stream (its IO thread and the stopping
+# thread each wait on the other's lock, seen when the audio device changes).
+# The stop gets this long, then the dictation carries on without it.
+STOP_WAIT_S = 2.0
+# Opening the stream can hang in CoreAudio the same way; past this the start counts as failed.
+START_WAIT_S = 4.0
 
 
 def peak_level(audio: np.ndarray, sample_rate: int, window_seconds: float = 0.2) -> float:
@@ -147,6 +153,10 @@ class MicrophoneRecorder:
         self._chunks: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._stream = None
+        # Set once CoreAudio has hung opening or closing a stream. Touching
+        # PortAudio again (another open, a device refresh) can hang the caller
+        # for good, so nothing more is tried until the app restarts.
+        self.wedged = False
         self._started_at = 0.0
         self._analyzer = VoiceActivityAnalyzer(sample_rate)
         # Called on the audio thread with each stretch cut at a pause; keep it quick.
@@ -246,6 +256,8 @@ class MicrophoneRecorder:
 
         if self._stream is not None:
             return
+        if self.wedged:
+            raise MicrophoneWedged("the microphone hung earlier; restart the app")
 
         try:
             import sounddevice as sd
@@ -274,22 +286,48 @@ class MicrophoneRecorder:
             if self.on_level is not None and chunk.size:
                 self.on_level(self._analyzer.analyze(chunk))
 
-        stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=channels,
-            dtype="float32",
-            blocksize=blocksize,
-            callback=callback,
-            device=self.device,
-        )
-        try:
-            stream.start()
-        except Exception:
-            # Left assigned, a stream that never started would make the next
-            # start() return early and "record" nothing.
-            stream.close()
-            raise
-        self._stream = stream
+        opened: dict = {}
+        done = threading.Event()
+        handoff = threading.Lock()  # so a stream is either taken here or released there, never neither
+
+        def open_stream() -> None:
+            try:
+                stream = sd.InputStream(
+                    samplerate=self.sample_rate,
+                    channels=channels,
+                    dtype="float32",
+                    blocksize=blocksize,
+                    callback=callback,
+                    device=self.device,
+                )
+                try:
+                    stream.start()
+                except Exception:
+                    # Left assigned, a stream that never started would make the next
+                    # start() return early and "record" nothing.
+                    stream.close()
+                    raise
+                opened["stream"] = stream
+            except Exception as exc:
+                opened["error"] = exc
+            finally:
+                with handoff:
+                    done.set()
+                    late = opened.get("abandoned")
+                if late and "stream" in opened:
+                    _release(opened["stream"], threading.Event())  # it came up after all, too late
+
+        # Opened off the calling thread (the hotkey's): CoreAudio has hung here before.
+        threading.Thread(target=open_stream, name="mic-start", daemon=True).start()
+        done.wait(START_WAIT_S)
+        with handoff:
+            if not done.is_set():
+                opened["abandoned"] = True
+                self.wedged = True
+                raise MicrophoneWedged(f"the microphone did not open within {START_WAIT_S:.0f}s")
+        if "error" in opened:
+            raise opened["error"]
+        self._stream = opened["stream"]
         LOGGER.info("Microphone recording started")
 
     def stop(self) -> np.ndarray:
@@ -298,21 +336,12 @@ class MicrophoneRecorder:
         stream = self._stream
         self._stream = None
         if stream is not None:
-            try:
-                stream.stop()
-            except Exception:
-                LOGGER.warning("Failed to stop microphone stream cleanly", exc_info=True)
-                abort = getattr(stream, "abort", None)
-                if abort is not None:
-                    try:
-                        abort()
-                    except Exception:
-                        LOGGER.debug("Failed to abort microphone stream", exc_info=True)
-            finally:
-                try:
-                    stream.close()
-                except Exception:
-                    LOGGER.warning("Failed to close microphone stream", exc_info=True)
+            released = threading.Event()
+            threading.Thread(target=_release, args=(stream, released), name="mic-stop", daemon=True).start()
+            if not released.wait(STOP_WAIT_S):
+                # ponytail: the stuck stream and its thread are abandoned until the app quits.
+                self.wedged = True
+                LOGGER.warning("Microphone stream did not stop within %.1fs; keeping the audio and moving on", STOP_WAIT_S)
         with self._lock:
             chunks = list(self._chunks)
             self._chunks = []
@@ -322,3 +351,28 @@ class MicrophoneRecorder:
         audio = np.concatenate(chunks, axis=0).astype(np.float32, copy=False)
         LOGGER.info("Microphone recording stopped with %.2fs audio", audio.size / self.sample_rate)
         return audio
+
+
+class MicrophoneWedged(RuntimeError):
+    """CoreAudio hung on this process's microphone; only a restart clears it."""
+
+
+def _release(stream, released: threading.Event) -> None:
+    """Stop and close a stream; on its own thread, because CoreAudio may never return."""
+
+    try:
+        stream.stop()
+    except Exception:
+        LOGGER.warning("Failed to stop microphone stream cleanly", exc_info=True)
+        abort = getattr(stream, "abort", None)
+        if abort is not None:
+            try:
+                abort()
+            except Exception:
+                LOGGER.debug("Failed to abort microphone stream", exc_info=True)
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            LOGGER.warning("Failed to close microphone stream", exc_info=True)
+        released.set()

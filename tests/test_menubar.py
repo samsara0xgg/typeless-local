@@ -8,7 +8,6 @@ from typeless_local.menubar import (
     GLYPH_SIZE,
     LOOK,
     MenuBarIcon,
-    Preset,
     Recent,
     Snapshot,
     ago,
@@ -91,7 +90,6 @@ def test_idle_menu_follows_the_design() -> None:
     items = build_menu(
         Snapshot(
             recent=Recent("明天下午四点开会", app="备忘录", at=1000.0),
-            presets=(Preset("gpt-5.6-terra", median_ms=1240), Preset("deepseek", needs_key=True)),
             active_preset="gpt-5.6-terra",
             inputs=("MacBook Pro 麦克风", "AirPods"),
             active_input="AirPods",
@@ -100,12 +98,12 @@ def test_idle_menu_follows_the_design() -> None:
     )
     assert _titles(items) == [
         brand.DISPLAY_NAME,
-        "按 F5 或右 ⌘ 开始 · 连按两下锁定",
+        "轻点右 ⌘ 开始 · 连点两下锁定",
         "开始听写",
         "锁定听写",
         "最近一次",
         "明天下午四点开会",
-        "润色模型",
+        "润色与 API Key…",
         "输入设备",
         "词库…",
         "历史记录…",
@@ -115,12 +113,9 @@ def test_idle_menu_follows_the_design() -> None:
     assert items[0].subtitle == "就绪"
     recent = _find(items, "明天下午四点开会")
     assert recent.key == "copy" and recent.subtitle == "2 分钟前 · 备忘录 · 点按复制"
-    models = _find(items, "润色模型")
-    assert models.badge == "gpt-5.6-terra"
-    terra, deepseek = models.children[:2]
-    assert terra.checked and terra.badge == "1.2 秒" and terra.key == "preset:gpt-5.6-terra"
-    assert not deepseek.checked and deepseek.badge == "需要 Key"
-    assert models.children[-1].key == "settings:model"
+    # One model for everyone, never named: the row says whose key pays and opens its settings.
+    models = _find(items, "润色与 API Key…")
+    assert models.badge == "你的 Key" and models.key == "settings:model" and not models.children
     inputs = _find(items, "输入设备")
     assert inputs.badge == "AirPods"
     assert [(i.title, i.key, i.checked) for i in inputs.children] == [
@@ -128,7 +123,7 @@ def test_idle_menu_follows_the_design() -> None:
         ("MacBook Pro 麦克风", "input:MacBook Pro 麦克风", False),
         ("AirPods", "input:AirPods", True),
     ]
-    assert _find(items, "开始听写").shortcut == "F5"
+    assert _find(items, "开始听写").shortcut == ""  # right ⌘ has no menu key equivalent
     assert _find(items, "历史记录…").shortcut == "⌘Y"
     assert _find(items, brand.quit_label()).key == "quit"
 
@@ -162,8 +157,9 @@ def test_an_unplugged_device_falls_back_to_the_system_default() -> None:
 
 
 def test_refine_off_shows_in_the_model_row() -> None:
-    items = build_menu(Snapshot(presets=(Preset("a"),), active_preset="a", refine=False))
-    assert _find(items, "润色模型").badge == "关闭"
+    items = build_menu(Snapshot(active_preset="a", refine=False))
+    assert _find(items, "润色与 API Key…").badge == "关闭"
+    assert _find(build_menu(Snapshot(active_preset="free-trial")), "润色与 API Key…").badge == "免费试用"
 
 
 def test_perform_passes_the_key_and_swallows_errors() -> None:
@@ -193,11 +189,11 @@ def test_the_menu_speaks_english_when_asked() -> None:
     from typeless_local import i18n
 
     i18n.use("en")
-    items = build_menu(Snapshot(issues=("key",), presets=(Preset("mini", needs_key=True),), active_preset="mini"))
+    items = build_menu(Snapshot(issues=("key",), active_preset="mini"))
     titles = [item.title for item in items]
     assert titles[0] == brand.ENGLISH_NAME
     assert items[0].subtitle == "No API key: raw transcripts only"
     assert "Start Dictation" in titles and "Settings…" in titles and f"Quit {brand.ENGLISH_NAME}" in titles
-    model = next(item for item in items if item.title == "Refinement Model")
-    assert model.children[0].badge == "Needs key"
+    model = next(item for item in items if item.title == "Refinement and API Key…")
+    assert model.key == "settings:model"
     assert ago(125) == "2 min ago" and ago(200000) == "2 days ago"

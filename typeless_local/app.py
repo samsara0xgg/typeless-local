@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -22,7 +23,7 @@ from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 import numpy as np
 from PyObjCTools import AppHelper
 
-from typeless_local import app_version, brand, diagnostics, i18n, keyboard_layout, keychain, permissions, reach, usage
+from typeless_local import app_version, brand, diagnostics, i18n, keyboard_layout, keychain, permissions, reach, trial, usage
 from typeless_local.i18n import t
 from typeless_local.asr import JarvisASR, Transcript, mlx_whisper_repo
 from typeless_local.audio import MicrophoneRecorder, keep_recording, peak_level
@@ -48,24 +49,28 @@ from typeless_local.mac_integration import (
     frontmost_pid,
     has_accessibility_trust,
     paste_text,
+    prepare_paste,
+    focused_text_length,
     press_play_pause,
     request_accessibility_trust,
     set_clipboard_text,
     undo_last_edit,
 )
 from typeless_local.first_run import (
+    NotEnoughDisk,
     _store_api_key,
     download_model,
     ensure_api_key,
     model_is_cached,
     set_api_key,
 )
-from typeless_local.history import median_refine_ms, purge_older_than, set_sent_text
+from typeless_local.history import purge_older_than, set_sent_text
 from typeless_local.sent_text import SentTextWatcher
-from typeless_local.menubar import MenuBarIcon, Preset, Recent, Snapshot
+from typeless_local.menubar import MenuBarIcon, Recent, Snapshot
 from typeless_local.overlay import FloatingOverlay
 from typeless_local.preferences import Preferences, load_preferences, save_preference
-from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner
+from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner, TrialUnavailable
+from typeless_local.stats import DailyStats
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
 from typeless_local.vocab import as_initial_prompt, load_user_terms, load_vocab, write_starter_file
 from typeless_local.windows import Windows, install_main_menu, prices
@@ -73,7 +78,15 @@ from typeless_local.windows import Windows, install_main_menu, prices
 LOGGER = logging.getLogger(__name__)
 Mode = Literal["tap", "hands_free"]
 DOUBLE_CLICK_SECONDS = 0.4
+# After pressing play/pause, how long to watch for media that started instead of stopping.
+MEDIA_CHECK_S = 0.8
+MEDIA_POLL_S = 0.05
 LONG_PRESS_SECONDS = 0.6
+# A right-Cmd hold this long into its recording is talking, not a slow chord:
+# only then are the speakers muted and the music paused.
+HOLD_CONFIRM_S = 0.6
+# How long a pasted dictation gets to show up in the field before it counts as lost.
+PASTE_CHECK_S = 0.5
 MIN_MIC_STARTUP_SECONDS = 0.75
 # A non-Chinese transcript this short is usually Whisper inventing a word over
 # noise ("you", "Bye."), but it is also how "OK" and "Yes" come out. Whisper's
@@ -87,6 +100,8 @@ MIN_SHORT_ENGLISH_CONFIDENCE = 0.4
 KEY_HANDBACK_S = 0.25
 # How often to look again for the Accessibility permission while it is missing.
 HOTKEY_RETRY_S = 2.0
+STATS_FIRST_S = 60.0
+STATS_EVERY_S = 6 * 3600.0
 # What the capsule's 延长 button adds to a recording nearing its limit.
 EXTEND_RECORDING_S = 15 * 60.0
 # Between taking the old text back and pasting the new one.
@@ -129,11 +144,14 @@ class TypelessLocalApp:
             self.vocab = load_vocab(user_paths.vocab_path)
             self.whisper_prompt = as_initial_prompt(load_user_terms(user_paths.vocab_path))
             self.trace = DictationTrace(user_paths.trace_db_path)
+            self.daily_stats = DailyStats(user_paths.config_dir / "stats.json", app_version())
         else:
+            self.daily_stats = None
             self.vocab = []
             self.whisper_prompt = ""
             self.trace = None
         self.prefs = load_preferences(user_paths)
+        self._trial_over = self.prefs.trial_used_up
         if dataclasses.is_dataclass(config):
             self.config = dataclasses.replace(config, max_recording_seconds=self.prefs.max_minutes * 60.0)
 
@@ -162,6 +180,8 @@ class TypelessLocalApp:
                 debug_hotkey=config.debug_hotkey,
                 is_active_fn=lambda: self.state != "idle",
                 watch_keys_fn=lambda: self._keys_wanted,
+                use_f5_fn=lambda: self.prefs.f5_hotkey,
+                use_right_command_fn=lambda: self.prefs.right_command_hotkey,
             )
 
             self.menubar = MenuBarIcon(on_action=self._on_menu_action, snapshot=self._menu_snapshot)
@@ -248,7 +268,8 @@ class TypelessLocalApp:
         what decides whether the speakers still need ducking.
         """
 
-        devices.refresh_if_changed()
+        if not getattr(getattr(self, "recorder", None), "wedged", False):
+            devices.refresh_if_changed()  # a refresh while a stream is stuck hangs too
         return self._resolve_capture_device()
 
     def _resolve_capture_device(self) -> str:
@@ -345,11 +366,26 @@ class TypelessLocalApp:
         user_paths = getattr(self.config, "user_paths", None)
         env_path = user_paths.env_path if user_paths is not None else Path(os.devnull)
         _store_api_key(env_name, key, env_path)
-        if env_name == self.config.refine.api_key_env:
+        if env_name == trial.OWN_KEY_ENV and self.config.refine.preset == trial.PRESET:
+            # Their own key replaces the free trial rather than sitting unused beside it.
+            self._trial_over = False
+            refine = refine_config_for(self.config.jarvis_config, trial.OWN_KEY_PRESET)
+            self.config = dataclasses.replace(self.config, refine=refine)
+            self.refiner = TextRefiner(refine)
+            if user_paths is not None:
+                save_default_preset(user_paths, trial.OWN_KEY_PRESET)
+            self._windows_changed()
+            LOGGER.info("Own OpenAI key saved; switched from the free trial to %s", trial.OWN_KEY_PRESET)
+        elif env_name == self.config.refine.api_key_env:
             # The client holds the key it was made with.
             self.refiner = TextRefiner(self.config.refine)
         self._call_ui(self._refresh_issues)
         LOGGER.info("%s saved", env_name)
+
+    def _tell_guide(self, message: dict) -> None:
+        windows = getattr(self, "windows", None)
+        if windows is not None:
+            self._call_ui(windows.guide, message)
 
     def _windows_changed(self, history: bool = False) -> None:
         windows = getattr(self, "windows", None)
@@ -389,6 +425,11 @@ class TypelessLocalApp:
             self._relocalize()
         if changed in (None, "model_source"):
             reach.use_model_source(prefs.model_source)
+        if changed == "send_usage_stats" and getattr(self, "daily_stats", None):
+            if prefs.send_usage_stats:
+                self.daily_stats.enabled = True
+            else:
+                self.daily_stats.forget()
 
     def _relocalize(self) -> None:
         """Redraw everything that has words in it, in the language just chosen."""
@@ -425,8 +466,9 @@ class TypelessLocalApp:
         if self.prefs.onboarding_done:
             return
         if self._set_up_already():
-            # Someone who used the app before the guide existed.
+            # Someone who used the app before the guide existed: F5 is what they know.
             self.set_preference("onboarding_done", True)
+            self.set_preference("f5_hotkey", True)
             return
         windows.show_onboarding()
 
@@ -511,6 +553,16 @@ class TypelessLocalApp:
         elif kind == "quit":
             NSApplication.sharedApplication().terminate_(None)
 
+    def _restart(self) -> None:
+        """Quit and open again: the one cure for a microphone CoreAudio hung on."""
+
+        self._run_audio_io(getattr(self.audio_ducker, "restore_all", lambda: None))
+        if getattr(sys, "frozen", False):
+            bundle = Path(sys.executable).resolve().parents[2]
+            # Opened once this process is gone, or the single-instance check refuses it.
+            subprocess.Popen(["/bin/sh", "-c", f'sleep 1.5; /usr/bin/open "{bundle}"'], start_new_session=True)
+        NSApplication.sharedApplication().terminate_(None)
+
     def _fix_issue(self, issue: str) -> None:
         if issue == "perm":
             request_accessibility_trust()
@@ -520,8 +572,10 @@ class TypelessLocalApp:
                 permissions.request_microphone()
             else:
                 permissions.open_url(permissions.MICROPHONE_SETTINGS)
-        elif issue == "key":
+        elif issue in ("key", "trial"):
             self.open_settings("model")
+        elif issue == "model" and getattr(self, "_download", None) is None:
+            self._start_model_prefetch()
 
     def _current_issues(self) -> tuple[str, ...]:
         """What only the user can fix right now; the menu-bar icon wears a badge for it."""
@@ -531,10 +585,83 @@ class TypelessLocalApp:
             issues.append("perm")
         if permissions.microphone_status() in ("denied", "restricted"):
             issues.append("mic")
+        if getattr(self, "_model_failed", ""):
+            issues.append("model")
         refine = getattr(self.config, "refine", None)
         if self.prefs.refine and refine is not None and not os.environ.get(refine.api_key_env or ""):
             issues.append("key")
+        elif self.prefs.refine and getattr(self, "_trial_over", False) and getattr(refine, "preset", "") == trial.PRESET:
+            issues.append("trial")
         return tuple(issues)
+
+    def _count_dictation(self, record) -> None:
+        """Today's anonymous counts: one dictation, its length, and what the trial spent on it."""
+
+        stats = getattr(self, "daily_stats", None)
+        text = getattr(record, "refined_text", "") or ""
+        if stats is None or not text or not self.prefs.send_usage_stats:
+            return
+        spend = 0.0
+        refine = getattr(self.config, "refine", None)
+        if getattr(refine, "preset", "") == trial.PRESET:
+            spend = usage.cost(
+                refine.model, record.prompt_tokens or 0, record.cached_tokens or 0, record.completion_tokens or 0
+            ) or 0.0
+        stats.record(dictations=1, chars=len(text), trial_spend=spend)
+
+    def _stats_url(self) -> str:
+        try:
+            base = refine_config_for(self.config.jarvis_config, trial.PRESET).base_url
+        except Exception:
+            return ""
+        server = trial.server(base)
+        return f"{server}/stats" if server.startswith("https://") and "YOUR-SUBDOMAIN" not in server else ""
+
+    def _send_stats(self) -> None:
+        """Once a day: the finished days' counts, from a background thread. Reschedules itself."""
+
+        AppHelper.callLater(STATS_EVERY_S, self._send_stats)
+        stats, url = getattr(self, "daily_stats", None), self._stats_url()
+        # Nothing goes out before the guide, which is where the user is told about it.
+        if stats is None or not url or not self.prefs.send_usage_stats or not self.prefs.onboarding_done:
+            return
+
+        def run() -> None:
+            stats.record()  # the app ran today, even with no dictation
+            stats.send(url)
+
+        threading.Thread(target=run, daemon=True, name="usage-stats").start()
+
+    def _fallback_for(self, exc: BaseException) -> str:
+        """Why the raw transcript went in: "trial", "key", "timeout" or "error"."""
+
+        if isinstance(exc, TrialUnavailable):
+            self._trial_code = exc.code
+            return "trial"
+        if isinstance(exc, MissingAPIKey):
+            return "key"
+        return _failure_kind(exc)
+
+    def _refine(self, text: str, context, vocab) -> RefineResult:
+        if self.prefs.trial_used_up and getattr(self.config.refine, "preset", "") == trial.PRESET:
+            # The trial server already said this Mac's share is spent: don't ask it again.
+            raise TrialUnavailable("trial_used_up", "")
+        return self.refiner.refine(text, context, vocab=vocab)
+
+    def _note_trial(self, fallback: str) -> None:
+        """The trial server said no: keep the menu's "enter your own key" up until one is saved."""
+
+        if fallback == "trial":
+            self._trial_over = True
+            if getattr(self, "_trial_code", "") == "trial_used_up" and not self.prefs.trial_used_up:
+                self.set_preference("trial_used_up", True)
+
+    def _show_raw_key(self, fallback: str) -> None:
+        self._note_trial(fallback)
+        if fallback == "trial":
+            self.capsule.show("inserted-raw-trial", why=getattr(self, "_trial_code", ""))
+        else:
+            self.capsule.show("inserted-raw-key")
 
     def _refresh_issues(self) -> tuple[str, ...]:
         menubar = getattr(self, "menubar", None)
@@ -551,21 +678,13 @@ class TypelessLocalApp:
         jarvis = getattr(config, "jarvis_config", {}) or {}
         user_paths = getattr(config, "user_paths", None)
         history = user_paths.trace_db_path if user_paths is not None and self.prefs.save_history else None
-        presets = []
-        for name in preset_names(jarvis):
-            try:
-                refine = refine_config_for(jarvis, name)
-            except Exception:
-                continue
-            median = median_refine_ms(history, refine.model) if history is not None else None
-            presets.append(Preset(name, needs_key=not os.environ.get(refine.api_key_env or ""), median_ms=median))
-        devices.refresh_if_changed()
+        if not getattr(getattr(self, "recorder", None), "wedged", False):
+            devices.refresh_if_changed()
         recent = getattr(self, "_recent", None)
         return Snapshot(
             state=self.state,
             issues=self._refresh_issues(),
             recent=recent,
-            presets=tuple(presets),
             active_preset=config.refine.preset,
             inputs=tuple(devices.list_input_devices()),
             active_input=getattr(config, "input_device", "") or "",
@@ -681,14 +800,16 @@ class TypelessLocalApp:
 
         started = time.monotonic()
         self._download = (0.0, started)
+        self._model_failed = ""
+        self._refresh_issues()
 
         def report(fraction: float) -> None:
             self._download = (fraction, started)
             self._download_progress(fraction, _eta_text(fraction, time.monotonic() - started))
             with self._lock:
                 # Only while nothing else is on screen: the progress used to
-                # replace a dictation in the middle of it.
-                if self.state == "idle" and self.capsule.state in ("hidden", "download"):
+                # replace a dictation in the middle of it. The guide shows its own.
+                if self.state == "idle" and self.capsule.state in ("hidden", "download") and not self._guide_open():
                     self._show_download()
 
         def run() -> None:
@@ -699,24 +820,33 @@ class TypelessLocalApp:
                 self._download = None
                 self._download_progress(1.0, done=True)
                 self._warm_up_asr()
-            except Exception:
-                # The first dictation will download it the slow way; that is a
-                # worse experience, not a broken one, so the app stays up.
+                with self._lock:
+                    if self.state == "idle" and self.capsule.state in ("hidden", "download") and not self._guide_open():
+                        # It downloaded while they did something else: say it can be used now.
+                        self.capsule.show("ready", name=brand.display_name())
+            except Exception as exc:
+                # The menu offers to try again; the app stays up meanwhile.
                 LOGGER.exception("Model prefetch failed for %s", repo_id)
                 self._download = None
-                self._download_progress(0.0, error=True)
+                self._model_failed = "disk" if isinstance(exc, NotEnoughDisk) else "net"
+                self._refresh_issues()
+                self._download_progress(0.0, error=True, why=self._model_failed)
             finally:
                 self._download = None
                 self.capsule.hide_if("download")
 
         threading.Thread(target=run, daemon=True, name="model-prefetch").start()
 
-    def _download_progress(self, fraction: float, eta: str = "", done: bool = False, error: bool = False) -> None:
+    def _guide_open(self) -> bool:
+        windows = getattr(self, "windows", None)
+        return windows is not None and windows._visible("onboarding")
+
+    def _download_progress(self, fraction: float, eta: str = "", done: bool = False, error: bool = False, why: str = "") -> None:
         """The guide's progress bar, when it is open."""
 
         windows = getattr(self, "windows", None)
         if windows is not None:
-            self._call_ui(windows.download, fraction, eta, done, error)
+            self._call_ui(windows.download, fraction, eta, done, error, why)
 
     def _show_download(self) -> None:
         download = getattr(self, "_download", None)
@@ -793,11 +923,12 @@ class TypelessLocalApp:
         self._refresh_issues()
         self._prime_microphone()
         self._start_model_prefetch()
+        AppHelper.callLater(STATS_FIRST_S, self._send_stats)
         # Deferred onto the run loop: this app is LSUIElement, and before
         # -[NSApplication run] it is not active yet, so a window can open
         # behind whatever the user is looking at or not come up at all.
         AppHelper.callLater(0.3, self._first_run)
-        LOGGER.info("%s ready. Press F5 to start/stop dictation.", brand.ENGLISH_NAME)
+        LOGGER.info("%s ready. Tap right Cmd to start/stop dictation.", brand.ENGLISH_NAME)
 
     def _start_hotkeys(self) -> bool:
         try:
@@ -832,9 +963,25 @@ class TypelessLocalApp:
         if action == "undo":
             self._on_user_undo()
             return
+        guide = {"hold_start": "primary_down", "hold_abort": "cancel"}.get(action, action)
+        if guide in ("primary_down", "hands_free", "cancel"):
+            self._tell_guide({"t": "hotkey", "a": guide})
         with self._lock:
             if action == "cancel":
                 self._cancel()
+                return
+            if action == "hold_start":
+                self._on_hold_start()
+                return
+            if action == "hold_end":
+                if self._hold_is_current():
+                    self._finish_recording()
+                return
+            if action == "hold_abort":
+                # Right Cmd became a chord: drop the recording only if this
+                # hold started it, never one already running or processing.
+                if self._hold_is_current():
+                    self._cancel()
                 return
             if action == "hands_free":
                 if self.state == "idle":
@@ -866,7 +1013,7 @@ class TypelessLocalApp:
         now = self.hotkeys.last_primary_down_at
         self._primary_down_at = now
         gap = now - getattr(self, "_last_short_tap_at", 0.0)
-        LOGGER.info("HOTKEY-DEBUG primary_down now=%.3f last_short_tap=%.3f gap=%.3f state=%s mode=%s", now, getattr(self, "_last_short_tap_at", 0.0), gap, self.state, self.mode)
+        LOGGER.debug("HOTKEY-DEBUG primary_down now=%.3f last_short_tap=%.3f gap=%.3f state=%s mode=%s", now, getattr(self, "_last_short_tap_at", 0.0), gap, self.state, self.mode)
         # A tap cannot land before the one it follows, so a negative gap means
         # the two timestamps came from different clocks rather than that this
         # was a double tap. Treating it as one wedges every later press into
@@ -890,13 +1037,42 @@ class TypelessLocalApp:
         elif self.state == "recording" and self.mode == "hands_free":
             self._finish_recording()
 
+    def _on_hold_start(self) -> None:
+        """Right Cmd held alone: record until it is let go. Only ever starts a recording."""
+
+        if self.state != "idle":
+            return
+        self._start_recording("tap", hold=True)
+        if self.state != "recording":
+            return
+        self._hold_session_id = self._active_session_id
+        self._primary_down_at = self.hotkeys.last_primary_down_at
+        self._holding = True
+        self._show_recording_ui()
+        # Ducking and pausing music wait until the hold has outlasted a quick
+        # chord (Cmd-click, Cmd+C), which would otherwise blip the music.
+        timer = threading.Timer(HOLD_CONFIRM_S, partial(self._on_hold_confirmed, self._active_session_id))
+        timer.daemon = True
+        timer.start()
+
+    def _on_hold_confirmed(self, session_id: int) -> None:
+        with self._lock:
+            if self.state == "recording" and session_id == getattr(self, "_active_session_id", 0):
+                self._duck_for(getattr(self, "_capture_device", "") or "")
+                if getattr(self, "_ducked", False):
+                    self._show_recording_ui()
+
+    def _hold_is_current(self) -> bool:
+        session = getattr(self, "_active_session_id", 0)
+        return self.state in ("starting", "recording") and session == getattr(self, "_hold_session_id", -1)
+
     def _on_primary_up(self) -> None:
         if self.state != "recording" or self.mode != "tap":
             return
 
         up_at = self.hotkeys.last_primary_up_at
         held_for = up_at - getattr(self, "_primary_down_at", 0.0)
-        LOGGER.info("HOTKEY-DEBUG primary_up up_at=%.3f down_at=%.3f held_for=%.3f", up_at, getattr(self, "_primary_down_at", 0.0), held_for)
+        LOGGER.debug("HOTKEY-DEBUG primary_up up_at=%.3f down_at=%.3f held_for=%.3f", up_at, getattr(self, "_primary_down_at", 0.0), held_for)
         if held_for < LONG_PRESS_SECONDS:
             self._last_short_tap_at = up_at
             if getattr(self, "_holding", False):
@@ -995,10 +1171,14 @@ class TypelessLocalApp:
                 self._commit_edit(text)
             elif action == "close":
                 self._end_edit()
-            elif action in ("setkey", "input", "micperm", "perm", "log"):
+            elif action in ("setkey", "billing", "input", "micperm", "perm", "log", "restart"):
                 self.capsule.hide()
-                if action == "setkey":
+                if action == "restart":
+                    self._restart()
+                elif action == "setkey":
                     self.open_settings("model")
+                elif action == "billing":
+                    permissions.open_url(OPENAI_BILLING_URL)
                 elif action == "input":
                     self.open_settings("audio")
                 elif action == "micperm":
@@ -1075,14 +1255,14 @@ class TypelessLocalApp:
     def _rerefine(self, insertion: Insertion, session_id: int) -> None:
         fallback = ""
         try:
-            result = self.refiner.refine(
+            result = self._refine(
                 insertion.raw, self._refine_context(insertion.context), vocab=getattr(self, "vocab", []) or []
             )
             fallback = getattr(result, "fallback", "") or ""
         except Exception as exc:
             LOGGER.warning("Refinement failed again", exc_info=True)
             result = None
-            fallback = "key" if isinstance(exc, MissingAPIKey) else _failure_kind(exc)
+            fallback = self._fallback_for(exc)
         with self._lock:
             if session_id != getattr(self, "_active_session_id", 0) or self.state != "idle":
                 return  # a new dictation has the capsule now
@@ -1090,8 +1270,8 @@ class TypelessLocalApp:
         if result is None or fallback:
             if not current:
                 self.capsule.hide()
-            elif fallback == "key":
-                self.capsule.show("inserted-raw-key")
+            elif fallback in ("key", "trial"):
+                self._show_raw_key(fallback)
             else:
                 self.capsule.show("inserted-raw-net", why=fallback)
             return
@@ -1166,7 +1346,7 @@ class TypelessLocalApp:
             if set_sent_text(user_paths.trace_db_path, session_id, text):
                 self._windows_changed(history=True)
 
-    def _start_recording(self, mode: Mode) -> None:
+    def _start_recording(self, mode: Mode, hold: bool = False) -> None:
         if getattr(self, "_download", None) is not None:
             # Nothing to transcribe with until the model is here; say so
             # instead of recording into a wait of several minutes.
@@ -1208,17 +1388,16 @@ class TypelessLocalApp:
             self._set_menubar("idle")
             self._refresh_issues()
             denied = permissions.microphone_status() in ("denied", "restricted")
-            self.capsule.show("mic", why="denied" if denied else "busy")
+            stuck = getattr(self.recorder, "wedged", False)
+            self.capsule.show("mic", why="denied" if denied else "stuck" if stuck else "busy")
             return
         self._capture_device = capture
         self.focus_context = capture_focus_context(read_before_text=self.prefs.send_before_text)
         if caret:
             self.capsule.set_anchor("caret", caret_rect())
-        duck = self._speakers_need_ducking(capture)
-        if duck:
-            self._run_audio_io(self.audio_ducker.duck)
-            self._run_audio_io(self._pause_media)
-        self._ducked = duck and bool(getattr(self.audio_ducker, "enabled", True))
+        self._ducked = False
+        if not hold:
+            self._duck_for(capture)
         self.state = "recording"
         self._set_menubar("recording")
         self._show_recording_ui()
@@ -1233,6 +1412,15 @@ class TypelessLocalApp:
         if warmup is not None and executor is not None:
             executor.submit(warmup)
 
+    def _duck_for(self, capture: str) -> None:
+        """Mute the speakers and pause music for this recording, unless a headset makes it pointless."""
+
+        duck = self._speakers_need_ducking(capture)
+        if duck:
+            self._run_audio_io(self.audio_ducker.duck)
+            self._run_audio_io(self._pause_media)
+        self._ducked = duck and bool(getattr(self.audio_ducker, "enabled", True))
+
     def _start_microphone(self, capture: str) -> str:
         """Open the mic; if it fails, re-read the devices once and try again.
 
@@ -1245,6 +1433,8 @@ class TypelessLocalApp:
             self.recorder.start()
             return capture
         except Exception:
+            if getattr(self.recorder, "wedged", False):
+                raise  # retrying would wait on CoreAudio all over again
             LOGGER.warning("Microphone failed to open; re-reading devices and retrying", exc_info=True)
         devices.refresh()
         capture = self._resolve_capture_device()
@@ -1360,12 +1550,41 @@ class TypelessLocalApp:
         self._run_audio_io(self._resume_media)
 
     def _pause_media(self) -> None:
-        """Pause music like Typeless does: a lowered song still reaches a mic without echo cancellation."""
+        """Pause music like Typeless does: a lowered song still reaches a mic without echo cancellation.
 
-        self._media_paused = devices.other_app_is_playing()
-        if self._media_paused:
-            LOGGER.info("Pausing media while recording")
-            press_play_pause()
+        The play/pause key goes to the Now Playing app, and nothing says
+        whether that app is playing: a class on Zoom holds output open while
+        the music sits paused, and some players (NetEase, Spotify) keep output
+        open while paused, so the key could start the music. So the key is
+        pressed and the output watched: only an app that stops sending audio
+        counts as paused, and is resumed afterwards. One that starts, or no
+        visible change at all, gets the key again at once and is left alone.
+        """
+
+        self._media_paused = False
+        if not getattr(self.audio_ducker, "enabled", True):
+            return  # "mute other sound while recording" is off: leave the music alone too
+        before = devices.playing_apps()
+        if not before or all(devices.is_call_app(pid) for pid in before):
+            # Only a call is holding output (a class on Zoom): the key would
+            # go to a paused music app, or launch Music, and start it.
+            return
+        press_play_pause()
+        deadline = time.monotonic() + MEDIA_CHECK_S
+        while time.monotonic() < deadline:
+            now = devices.playing_apps()
+            if now - before:
+                LOGGER.info("Play/pause started paused media (pid %s); pausing it again", sorted(now - before))
+                press_play_pause()
+                return
+            if before - now:
+                LOGGER.info("Pausing media while recording")
+                self._media_paused = True
+                return
+            time.sleep(MEDIA_POLL_S)
+        # ponytail: an ambiguous press is undone (a brief blip at worst); per-process levels would tell for sure.
+        LOGGER.info("Could not tell what play/pause did; pressing it again")
+        press_play_pause()
 
     def _resume_media(self) -> None:
         if getattr(self, "_media_paused", False):
@@ -1572,13 +1791,13 @@ class TypelessLocalApp:
                 LOGGER.info("Starting refinement")
                 refine_start = time.monotonic()
                 try:
-                    refined = self.refiner.refine(transcript.text, self._refine_context(context), vocab=vocab_terms)
+                    refined = self._refine(transcript.text, self._refine_context(context), vocab=vocab_terms)
                 except Exception as exc:
                     # The transcript is already in hand; losing the whole dictation
                     # because the polish step failed is the worst outcome available.
                     LOGGER.exception("Refinement failed; pasting the raw transcript")
                     record.error = f"refine failed, pasted raw transcript: {exc!r}"
-                    fallback = "key" if isinstance(exc, MissingAPIKey) else _failure_kind(exc)
+                    fallback = self._fallback_for(exc)
                     refined = RefineResult(
                         text=transcript.text, raw_text=transcript.text, model=refine_model, fallback=fallback
                     )
@@ -1615,6 +1834,10 @@ class TypelessLocalApp:
         finally:
             record.ended_at = time.time()
             record.latency_total_ms = int((record.ended_at - started) * 1000)
+            self._count_dictation(record)
+            if record.raw_asr_text:
+                # The guide's practice page shows what was heard next to what went in.
+                self._tell_guide({"t": "result", "raw": record.raw_asr_text, "text": record.refined_text or record.raw_asr_text})
             trace = getattr(self, "trace", None)
             if trace is not None and prefs.save_history:
                 self._last_trace_id = trace.log(record)
@@ -1628,11 +1851,26 @@ class TypelessLocalApp:
     def _deliver(self, text: str, raw: str, context: FocusContext, fallback: str, record: SessionRecord) -> None:
         """Paste the text where the caret is, or hand it over in a card when there is nowhere to paste."""
 
-        if context.can_insert_text:
+        where = prepare_paste(context) if context.can_insert_text else "none"
+        if where in ("ok", "blind"):
             LOGGER.info("Pasting refined text into focused app: %s", context.app_name or "unknown")
+            # Measured only where it can mean something: replacing a selection
+            # may leave the length as it was.
+            before = focused_text_length(context.pid) if where == "ok" and not context.selected_text else None
             # The text stays on the clipboard, so a Cmd+V the target app
             # swallowed is recovered with one manual paste.
             paste_text(text)
+            if before is not None and not self._paste_landed(context.pid, before):
+                # Claude and other Electron apps can drop focus from their
+                # composer while the dictation is processed: never say
+                # "inserted" for text that went nowhere.
+                LOGGER.warning("The paste changed nothing in %s; the text is on the clipboard", context.app_name or "unknown")
+                record.was_pasted = False
+                self.state = "idle"
+                self._set_menubar("idle")
+                self._remember(text, context.app_name)
+                self.capsule.show("inserted-unsure")
+                return
             record.was_pasted = True
             LOGGER.info("Dictation inserted %d characters", len(text))
             self.state = "idle"
@@ -1640,9 +1878,9 @@ class TypelessLocalApp:
             self._remember(text, context.app_name)
             self._insertion = Insertion(text=text, raw=raw, pid=frontmost_pid(), context=context)
             self._keys_wanted = True
-            if fallback == "key":
+            if fallback in ("key", "trial"):
+                self._show_raw_key(fallback)
                 self._refresh_issues()
-                self.capsule.show("inserted-raw-key")
             elif fallback:
                 self.capsule.show("inserted-raw-net", why=fallback)
             else:
@@ -1650,15 +1888,28 @@ class TypelessLocalApp:
             return
 
         LOGGER.info(
-            "Focused target is not editable (app=%s role=%s); showing the text to copy",
+            "Nowhere to paste (app=%s role=%s, %s); showing the text to copy",
             context.app_name or "unknown",
             context.focused_role or "unknown",
+            where,
         )
         self._remember(text, context.app_name)
         set_clipboard_text(text)
         self.state = "idle"
         self._set_menubar("idle")
         self.capsule.show("edit-notarget", text=text)
+
+    def _paste_landed(self, pid: int, before: int) -> bool:
+        """Whether the focused field's length changed soon after the Cmd+V."""
+
+        deadline = time.monotonic() + PASTE_CHECK_S
+        while True:
+            now = focused_text_length(pid)
+            if now is None or now != before:
+                return True  # changed, or no longer measurable: not evidence of a lost paste
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
 
     def _keep_recording(self, audio: np.ndarray, sample_rate: int, started: float) -> None:
         """Save this dictation's audio, dropped ones included, when configured to."""
@@ -1777,10 +2028,18 @@ def count_units(text: str) -> int:
     return cjk + len(_LATIN_WORD.findall(text))
 
 
+OPENAI_BILLING_URL = "https://platform.openai.com/settings/organization/billing/overview"
+
+
 def _failure_kind(exc: BaseException) -> str:
-    """How refinement failed, in the capsule's words: "timeout" or "error"."""
+    """How refinement failed, in the capsule's words: "credit", "badkey", "timeout" or "error"."""
 
     name = type(exc).__name__.lower()
+    code = str(getattr(exc, "code", "") or "")
+    if code in {"insufficient_quota", "credit_balance_exhausted"}:
+        return "credit"  # the user's own OpenAI account ran out of money
+    if name == "authenticationerror" or code == "invalid_api_key":
+        return "badkey"
     if "timeout" in name or "timed out" in str(exc).lower():
         return "timeout"
     return "error"
@@ -1878,8 +2137,8 @@ def _say_already_running(app) -> None:
         app,
         t(f"{brand.DISPLAY_NAME}已经在运行", f"{brand.ENGLISH_NAME} is already running"),
         t(
-            "另一个言字（可能是从源码运行的那个）已经在响应 F5。先退出它，再打开这个。",
-            "Another copy, perhaps one run from source, is already answering F5. Quit it first, then open this one.",
+            "另一个言字（可能是从源码运行的那个）已经在响应快捷键。先退出它，再打开这个。",
+            "Another copy, perhaps one run from source, is already answering the shortcut. Quit it first, then open this one.",
         ),
     )
 
@@ -1936,6 +2195,11 @@ def main() -> None:
     # Keys saved from Settings live in the login keychain; one still in
     # ~/.typlus/env (or the environment) is used as it is.
     keychain.fill_environ(api_key_names(config))
+    trial.ensure_token()
+    if not prefs.onboarding_done and reach.in_trial_region() and not os.environ.get(trial.OWN_KEY_ENV):
+        # A new US or Canadian Mac with no key starts on the free trial, so the
+        # first dictations are refined; elsewhere the guide asks for a key.
+        config = adopt_default_preset(config, trial.PRESET)
     coordinator = TypelessLocalApp(config)
     coordinator.start()
     app.run()

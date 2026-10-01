@@ -143,7 +143,6 @@ function detailHTML(it) {
   if (it.fallback) metrics.push(FALLBACK_SHORT(it.fallback));
   else if (it.refine_ms) metrics.push(L(`润色 ${secs(it.refine_ms)} 秒`, `Refine ${secs(it.refine_ms)} s`));
   if (it.total_ms) metrics.push(L(`总共 ${secs(it.total_ms)} 秒`, `Total ${secs(it.total_ms)} s`));
-  if (it.model) metrics.push(it.model);
   if (!it.dropped) metrics.push(it.pasted ? L('已插入', 'Inserted') : L('在剪贴板里', 'On the clipboard'));
 
   let lat = '';
@@ -173,7 +172,7 @@ function emptyHTML() {
   if (!D.enabled) {
     return `<div class="hempty">${I('clock')}<b>${L('历史记录已关闭', 'History is off')}</b><span>${L('打开后，每次听写的原文、润色结果和耗时都会保存在这台 Mac 上。', 'Once on, each dictation’s transcript, refined text and timings are kept on this Mac.')}</span><button class="mbtn pri" data-a="settings">${L('打开设置', 'Open Settings')}</button></div>`;
   }
-  return `<div class="hempty">${I('wave')}<b>${L('还没有听写', 'No dictations yet')}</b><span>${L('按 F5 说一句话，它会出现在这里。', 'Press F5 and say something; it shows up here.')}</span></div>`;
+  return `<div class="hempty">${I('wave')}<b>${L('还没有听写', 'No dictations yet')}</b><span>${L('轻点右 ⌘ 说一句话，它会出现在这里。', 'Tap right ⌘ and say something; it shows up here.')}</span></div>`;
 }
 
 function draw() {

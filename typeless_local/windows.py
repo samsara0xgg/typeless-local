@@ -25,7 +25,7 @@ import time
 from typing import Callable
 from urllib.parse import urlparse
 
-from typeless_local import app_version, brand, history, i18n, keychain, login_item, permissions, preferences, reach, usage, vocab
+from typeless_local import app_version, brand, devices, history, i18n, keychain, login_item, permissions, preferences, reach, trial, usage, vocab
 from typeless_local.asr import mlx_whisper_repo
 from typeless_local.config import preset_names, refine_config_for
 from typeless_local.mac_integration import FocusContext, has_accessibility_trust, request_accessibility_trust, set_clipboard_text
@@ -40,6 +40,7 @@ HISTORY_ROWS = 500
 FIXES = 6
 POLL_S = 1.0
 POLL_TIMEOUT_S = 300.0
+METER_EVERY_S = 0.05  # the guide's level meter: twenty updates a second is smooth enough
 _SERVICES = {
     "openai": "OpenAI",
     "deepseek": "DeepSeek",
@@ -122,6 +123,7 @@ class Windows:
         self.onboarding = None
         self._f5_conflict: bool | None = None
         self._polls: set[str] = set()
+        self._meter = None  # the guide's microphone level stream, open only while its page asks
 
     @staticmethod
     def _titles() -> dict[str, str]:
@@ -210,9 +212,9 @@ class Windows:
         if self.onboarding is not None:
             self.onboarding.send(self.onboarding_state())
 
-    def download(self, fraction: float, eta: str = "", done: bool = False, error: bool = False) -> None:
+    def download(self, fraction: float, eta: str = "", done: bool = False, error: bool = False, why: str = "") -> None:
         if self._visible("onboarding"):
-            self.onboarding.send({"t": "download", "p": round(fraction, 3), "eta": eta, "done": done, "error": error})
+            self.onboarding.send({"t": "download", "p": round(fraction, 3), "eta": eta, "done": done, "error": error, "why": why})
 
     def _later(self, window, message: dict) -> None:
         """Send from a worker thread."""
@@ -251,7 +253,8 @@ class Windows:
                 refine = refine_config_for(jarvis, name)
             except Exception:
                 continue
-            service = service_name(refine.base_url)
+            is_trial = name == trial.PRESET
+            service = t("免费试用", "Free trial") if is_trial else service_name(refine.base_url)
             median = history.median_refine_ms(db, refine.model) if db is not None and prefs.save_history else None
             presets.append(
                 {
@@ -264,11 +267,16 @@ class Windows:
                 }
             )
             env = refine.api_key_env
-            if env and env not in seen:
+            if env and env not in seen and not is_trial:
                 seen.add(env)
                 value = os.environ.get(env, "")
                 where = "env" if env in in_file else ("keychain" if value else "")
                 keys.append({"env": env, "service": service, "hint": keychain.masked(value), "where": where})
+
+        # Only the key the one model in use reads (on the trial, the user's own OpenAI key).
+        active = getattr(config.refine, "preset", "")
+        wanted = trial.OWN_KEY_ENV if active == trial.PRESET else getattr(config.refine, "api_key_env", "")
+        keys = [key for key in keys if key["env"] == wanted]
 
         asr_config = jarvis.get("asr") or {}
         ducker = getattr(app, "audio_ducker", None)
@@ -286,9 +294,11 @@ class Windows:
             "language": str(asr_config.get("language") or ""),
             "asrModel": short_model(mlx_whisper_repo(asr_config)) or str(getattr(app.asr, "model_name", "") or ""),
             "duck": bool(getattr(ducker, "enabled", True)),
+            "duckUnsupported": bool(getattr(ducker, "unsupported", False)),
             "presets": presets,
             "active": getattr(config.refine, "preset", ""),
             "keys": keys,
+            "trial": {"on": getattr(config.refine, "preset", "") == trial.PRESET, "over": bool(getattr(app, "_trial_over", False))},
             "inputs": devices.list_input_devices(),
             "input": getattr(config, "input_device", "") or "",
             "vocab": self._vocab_state(),
@@ -374,6 +384,13 @@ class Windows:
                 app.select_model(str(value))
             elif key == "input":
                 app.select_input_device(str(value or ""))
+            elif key in ("f5_hotkey", "right_command_hotkey") and not value:
+                # Never leave the app with no shortcut at all.
+                other = "right_command_hotkey" if key == "f5_hotkey" else "f5_hotkey"
+                if getattr(app.prefs, other):
+                    app.set_preference(key, False)
+                else:
+                    self.refresh()
             else:
                 app.set_preference(key, value)
         except ValueError:
@@ -437,7 +454,8 @@ class Windows:
     def test_preset(self, preset: str) -> tuple[bool, int, str]:
         """One small real request through ``preset``: (worked, round trip ms, why not)."""
 
-        from typeless_local.refine import MissingAPIKey, TextRefiner  # noqa: PLC0415
+        from typeless_local.app import _failure_kind  # noqa: PLC0415
+        from typeless_local.refine import MissingAPIKey, TextRefiner, TrialUnavailable  # noqa: PLC0415
 
         jarvis = getattr(self.app.config, "jarvis_config", {}) or {}
         try:
@@ -445,16 +463,27 @@ class Windows:
             started = time.monotonic()
             result = refiner.refine("嗯，测试一下连接", FocusContext(app_name="", window_title="", selected_text=""))
             ms = int((time.monotonic() - started) * 1000)
+        except TrialUnavailable as exc:
+            why = {
+                "trial_region": t("免费试用只在美国和加拿大提供。", "The free trial is only offered in the US and Canada."),
+                "trial_paused": t("免费试用本月已暂停。", "The free trial is paused this month."),
+                "trial_ip": t("这个网络今天的免费额度用完了，明天再试。", "This network's free trial is done for today; try again tomorrow."),
+            }
+            return False, 0, why.get(exc.code, t("免费试用已经用完了。", "The free trial is used up."))
         except MissingAPIKey:
-            return False, 0, t("还没有这个模型的 API Key。", "There is no API key for this model yet.")
+            return False, 0, t("还没有填 API Key。", "There is no API key yet.")
         except Exception as exc:
             LOGGER.warning("Connection test for %s failed", preset, exc_info=True)
+            kind = _failure_kind(exc)
+            if kind == "credit":
+                return False, 0, t("OpenAI 账户余额用完了，充值后再试。", "Your OpenAI account is out of credit. Add credit and try again.")
             text = str(exc)
-            if "401" in text or "auth" in text.lower() or "api key" in text.lower():
+            if kind == "badkey" or "401" in text:
                 return False, 0, t("API Key 不对，服务拒绝了请求。", "The service rejected the API key.")
-            if "timeout" in type(exc).__name__.lower() or "timed out" in text.lower():
+            if kind == "timeout":
                 return False, 0, t("请求超时，检查一下网络。", "The request timed out. Check the network.")
-            return False, 0, t("连不上：", "Can't connect: ") + (text[:80] or type(exc).__name__)
+            # The raw error can name the model; say only what kind of failure it was.
+            return False, 0, t("连不上服务，检查一下网络后再试。", "Can't reach the service. Check the network and try again.") + f" ({type(exc).__name__})"
         if getattr(result, "fallback", ""):
             return False, ms, t("连上了，但模型没有正常返回。", "Connected, but the model gave no proper answer.")
         return True, ms, ""
@@ -511,6 +540,8 @@ class Windows:
             permissions.open_url(permissions.ACCESSIBILITY_SETTINGS)
         elif what == "settings":
             self.show_settings("privacy")
+        elif what == "openai-keys":
+            permissions.open_url(trial.KEYS_URL)
 
     # ----------------------------------------------------------- history
 
@@ -558,13 +589,20 @@ class Windows:
             "t": "state",
             "name": brand.display_name(),
             "mic": permissions.microphone_status(),
+            "input": getattr(app.config, "input_device", "") or _current_input(),
             "ax": bool(has_accessibility_trust()),
-            "key": {
-                "env": refine.api_key_env,
-                "service": service_name(refine.base_url),
-                "preset": refine.preset,
-                "has": bool(os.environ.get(refine.api_key_env or "")),
-            },
+            "key": (
+                # On the free trial the guide offers the user's own OpenAI key, not the trial token.
+                {"env": trial.OWN_KEY_ENV, "service": "OpenAI", "preset": refine.preset, "has": False, "trial": True}
+                if refine.preset == trial.PRESET
+                else {
+                    "env": refine.api_key_env,
+                    "service": service_name(refine.base_url),
+                    "preset": refine.preset,
+                    "has": bool(os.environ.get(refine.api_key_env or "")),
+                    "trial": False,
+                }
+            ),
             "model": {
                 "name": short_model(mlx_whisper_repo((app.config.jarvis_config or {}).get("asr") or {})),
                 "ready": model_ready,
@@ -614,12 +652,65 @@ class Windows:
                 self.app._start_model_prefetch()
         elif kind == "done":
             try:
+                # Written out so a later launch never takes this for an install from before 0.4.0.
+                self.app.set_preference("f5_hotkey", self.app.prefs.f5_hotkey)
                 self.app.set_preference("onboarding_done", True)
             except Exception:
                 LOGGER.exception("Could not record that onboarding finished")
             window.close()
         elif kind == "open":
             self._open(str(msg.get("what") or ""))
+        elif kind == "meter":
+            self._set_meter(bool(msg.get("on")))
+
+    def guide(self, message: dict) -> None:
+        """Something the guide reacts to happened elsewhere: a key pressed, a dictation finished."""
+
+        if self._visible("onboarding"):
+            self.onboarding.send(message)
+
+    def _set_meter(self, on: bool) -> None:
+        """The microphone page's live level: the real input, only while that page is up."""
+
+        if on and self._meter is not None:
+            return  # already listening: the guide asks again after every redraw
+        stream, self._meter = self._meter, None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                LOGGER.debug("Could not close the level stream", exc_info=True)
+        if not on or permissions.microphone_status() != "authorized":
+            return
+        last = [0.0]
+
+        def callback(indata, frames, time_info, status) -> None:
+            now = time.monotonic()
+            if now - last[0] < METER_EVERY_S:
+                return
+            last[0] = now
+            peak = float(abs(indata).max()) if frames else 0.0
+            self.app._call_ui(self._send_level, round(min(1.0, peak), 3))
+
+        try:
+            import sounddevice  # noqa: PLC0415
+
+            stream = sounddevice.InputStream(
+                device=devices.resolve_input_index(getattr(self.app.config, "input_device", "")),
+                channels=1, samplerate=16000, callback=callback,
+            )
+            stream.start()
+        except Exception:
+            LOGGER.warning("No level meter for the guide", exc_info=True)
+            return
+        self._meter = stream
+
+    def _send_level(self, value: float) -> None:
+        if self._visible("onboarding"):
+            self.onboarding.send({"t": "level", "v": value})
+        else:
+            self._set_meter(False)  # closed without saying so: let the microphone go
 
     def _poll(self, name: str, done: Callable[[], bool]) -> None:
         """Watch a permission while the guide waits on it, and redraw when it changes."""
@@ -644,6 +735,13 @@ class Windows:
     def _push_onboarding(self) -> None:
         if self._visible("onboarding"):
             self.onboarding.send(self.onboarding_state())
+
+
+def _current_input() -> str:
+    try:
+        return devices.current_input_device()
+    except Exception:
+        return ""
 
 
 # ------------------------------------------------------------------ AppKit

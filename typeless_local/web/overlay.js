@@ -72,6 +72,8 @@ const BUD = {
   undo: () => `<button data-act="undo">${I('undo')}<span>${L('撤销', 'Undo')}</span></button>`,
   edit: () => `<button data-act="edit">${I('pencil')}<span>${L('修改', 'Edit')}</span></button>`,
   rerefine: () => `<button class="pri" data-act="rerefine">${I('refresh')}<span>${L('重新润色', 'Refine Again')}</span></button>`,
+  restart: () => `<button class="pri" data-act="restart">${I('refresh')}<span>${L('重新打开', 'Relaunch')}</span></button>`,
+  billing: () => `<button class="pri" data-act="billing">${I('key')}<span>${L('去充值…', 'Add Credit…')}</span></button>`,
   setkey: () => `<button class="pri" data-act="setkey">${I('key')}<span>${L('设置 API Key…', 'Set API Key…')}</span></button>`,
   input: () => `<button data-act="input">${I('mic')}<span>${L('选择输入…', 'Choose Input…')}</span></button>`,
   micperm: () => `<button class="pri" data-act="micperm">${I('mic')}<span>${L('打开设置…', 'Open Settings…')}</span></button>`,
@@ -82,6 +84,7 @@ const extendBud = min => `<button data-act="extend">${I('plus')}<span>${L(`延�
 const why = k => ({
   timeout: L('润色超时', 'refinement timed out'), error: L('润色失败', 'refinement failed'),
   truncated: L('润色被截断', 'refinement was cut off'), empty: L('润色没有返回', 'refinement came back empty'),
+  credit: L('OpenAI 账户余额用完了', 'your OpenAI account is out of credit'), badkey: L('API Key 无效', 'the API key was rejected'),
 })[k] || L('润色失败', 'refinement failed');
 const etaText = eta => eta ? ` · ${esc(eta)}` : '';
 // Announced in steps of ten, not on every progress report.
@@ -118,8 +121,8 @@ function recHTML() {
   const selSay = o.sel ? L('，将改写所选文字', ', rewriting the selection') : '';
   switch (S.mode) {
     case 'hold': return [`<span class="recdot"></span>${sel}${waveHTML()}<span class="hint">${L('松开完成', 'Release to finish')}</span>`, L('录音中，松开按键完成', 'Recording. Release the key to finish') + selSay];
-    case 'latch': return [`${btnCancel()}${lock}${sel}${duck}${waveHTML()}<span class="tmr">${S.tmrText}</span>${btnFinish()}`, L('已锁定录音，再按一次 F5 完成', 'Recording locked. Press F5 again to finish') + selSay];
-    default: return [`${btnCancel()}${sel}${duck}${waveHTML()}<span class="tmr">${S.tmrText}</span>${btnFinish()}`, L('录音中，再按一次 F5 完成', 'Recording. Press F5 again to finish') + selSay];
+    case 'latch': return [`${btnCancel()}${lock}${sel}${duck}${waveHTML()}<span class="tmr">${S.tmrText}</span>${btnFinish()}`, L('已锁定录音，再点一下右 ⌘ 完成', 'Recording locked. Tap right ⌘ again to finish') + selSay];
+    default: return [`${btnCancel()}${sel}${duck}${waveHTML()}<span class="tmr">${S.tmrText}</span>${btnFinish()}`, L('录音中，再点一下右 ⌘ 完成', 'Recording. Tap right ⌘ again to finish') + selSay];
   }
 }
 
@@ -135,23 +138,31 @@ function view(st, o) {
       const done = o.replaced ? L('已替换所选', 'Replaced selection') : L('已插入', 'Inserted');
       return [`${CHECK}<span class="lbl">${done} · ${units(o.n)}</span>`, 'pill', [BUD.undo(), BUD.edit()], `${done} ${units(o.n)}`];
     }
-    case 'inserted-raw-net': return [`<span class="lead warn wiggle">${I('warn')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${why(o.why)}</span></span>`, 'pill', [BUD.rerefine(), BUD.undo()], `${L('已插入原始转写，', 'Inserted the raw transcript: ')}${why(o.why)}`];
+    case 'inserted-raw-net': return [`<span class="lead warn wiggle">${I('warn')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${why(o.why)}</span></span>`, 'pill', o.why === 'credit' ? [BUD.billing()] : o.why === 'badkey' ? [BUD.setkey()] : [BUD.rerefine(), BUD.undo()], `${L('已插入原始转写，', 'Inserted the raw transcript: ')}${why(o.why)}`];
+    case 'inserted-raw-trial': {
+      const r = { trial_region: L('免费试用仅限美国和加拿大', 'free trial is US and Canada only'), trial_paused: L('免费试用本月已暂停', 'free trial paused this month'), trial_ip: L('这个网络今天的免费额度用完了', "this network's free trial is done for today") }[o.why] || L('免费试用已用完', 'free trial used up');
+      return [`<span class="lead warn">${I('key')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${r}</span></span>`, 'pill', [BUD.setkey()], L(`已插入原始转写，${r}，可以填自己的 API Key`, `Inserted the raw transcript: ${r}; add your own API key`)];
+    }
     case 'inserted-raw-key': return [`<span class="lead warn">${I('key')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${L('缺少 API Key', 'no API key')}</span></span>`, 'pill', [BUD.setkey()], L('已插入原始转写，还没有设置 API Key', 'Inserted the raw transcript: no API key is set')];
+    case 'inserted-unsure': return [`<span class="lead warn">${I('warn')}</span><span class="lbl">${L('可能没插进去', 'May not have gone in')} <span class="sub">· ${L('已复制，⌘V 粘贴', 'copied, press ⌘V')}</span></span>`, 'pill', [], L('可能没插进去，文字已复制，按 ⌘V 粘贴', 'The text may not have gone in. It is copied; press Command V to paste')];
     case 'edit-notarget': return [cardHTML(L('没有可插入的位置', 'Nowhere to insert'), L('已复制到剪贴板。改完按 ⏎ 再复制一次。', 'Copied to the clipboard. Press ⏎ after editing to copy again.'), o.text, [['done', L('完成', 'Done'), true]]), 'card', [], L('没有可插入的位置，结果已复制到剪贴板，可以直接修改', 'Nowhere to insert. The text is copied to the clipboard and can be edited here')];
     case 'edit-modify': return [cardHTML(L('修改刚插入的文字', 'Edit the inserted text'), L('替换 = 在原 App 里撤销那次粘贴，再粘贴新文字', 'Replace undoes the paste in its app, then pastes the new text'), o.text, [['close', L('取消', 'Cancel')], ['replace', L('替换', 'Replace'), true]]), 'card', [], L('修改刚插入的文字，回车替换，esc 取消', 'Edit the inserted text. Return replaces it, Escape cancels')];
     case 'empty': return [`<span class="lead">${I('mic-slash')}</span><span class="lbl">${L('没有听到声音', 'Heard nothing')}${o.device ? ` <span class="sub">· ${esc(o.device)}</span>` : ''}</span>`, 'pill', [], L('没有听到声音', 'Heard nothing')];
-    case 'mic': return o.why === 'denied'
+    case 'mic': return o.why === 'stuck'
+      ? [`<span class="lead err wiggle">${I('warn')}</span><span class="lbl">${L('麦克风卡住了', 'The microphone is stuck')} <span class="sub">· ${L('重新打开就好', 'relaunching fixes it')}</span></span>`, 'pill', [BUD.restart()], L('麦克风卡住了，重新打开就好', 'The microphone is stuck; relaunching the app fixes it')]
+      : o.why === 'denied'
       ? [`<span class="lead err wiggle">${I('mic-slash')}</span><span class="lbl">${L('没有麦克风权限', 'No microphone permission')} <span class="sub">· ${L('在系统设置里打开', 'turn it on in System Settings')}</span></span>`, 'pill', [BUD.micperm()], L('没有麦克风权限', 'No microphone permission')]
       : [`<span class="lead err wiggle">${I('warn')}</span><span class="lbl">${L('麦克风不可用', 'Microphone unavailable')} <span class="sub">· ${L('可能被其他 App 占用', 'another app may be using it')}</span></span>`, 'pill', [BUD.input()], L('麦克风不可用', 'Microphone unavailable')];
     case 'download': {
       const p = Math.max(0, Math.min(1, +o.p || 0));
-      return [`<span class="pring" style="--p:${p.toFixed(3)}"></span><span class="lbl">${L('语音模型下载中', 'Downloading speech model')} · <span class="pct">${Math.round(p * 100)}%</span><span class="sub eta">${etaText(o.eta)}</span></span>`, 'pill', [], downloadSay(p)];
+      return [`<span class="pring" style="--p:${p.toFixed(3)}"></span><span class="lbl">${L('语音模型下载中', 'Downloading the speech model')} · <span class="pct">${Math.round(p * 100)}%</span><span class="sub eta">${etaText(o.eta)}</span></span>`, 'pill', [], downloadSay(p)];
     }
     case 'cancelled': return [`<span class="lead">${I('xmark')}</span><span class="lbl">${L('已取消', 'Cancelled')}</span>`, 'pill', [], L('已取消', 'Cancelled')];
     case 'undone': return [`<span class="lead">${I('undo')}</span><span class="lbl">${L('已撤销', 'Undone')}</span>`, 'pill', [], L('已撤销', 'Undone')];
     case 'replaced': return [`${CHECK}<span class="lbl">${L('已替换', 'Replaced')} · ${units(o.n)}</span>`, 'pill', [], `${L('已替换', 'Replaced')} ${units(o.n)}`];
     case 'copied': return [`${CHECK}<span class="lbl">${L('已复制到剪贴板', 'Copied to the clipboard')}</span>`, 'pill', [], L('已复制到剪贴板', 'Copied to the clipboard')];
     case 'perm': return [`<span class="lead warn">${I('a11y')}</span><span class="lbl">${L('需要辅助功能权限', 'Needs Accessibility permission')} <span class="sub">· ${L('否则按键传不到言字', 'or Yana never hears the key')}</span></span>`, 'pill', [BUD.perm()], L('需要辅助功能权限', 'Needs Accessibility permission')];
+    case 'ready': return [`${CHECK}<span class="lbl">${L(`${esc(o.name || '言字')}准备好了`, `${esc(o.name || 'Yana')} is ready`)} <span class="sub">· ${L('点一下右 ⌘ 试试', 'tap right ⌘ to try it')}</span></span>`, 'pill', [], L('准备好了，点一下右 ⌘ 试试', 'Ready: tap right ⌘ to try it')];
     case 'notice': return [`<span class="lead">${I('info')}</span><span class="lbl">${esc(o.msg || '')}</span>`, 'pill', [], o.msg || ''];
     case 'error': return [`<span class="lead err wiggle">${I('warn')}</span><span class="lbl">${L('出错了', 'Something went wrong')}${o.msg ? ` <span class="sub">· ${esc(o.msg)}</span>` : ''}</span>`, 'pill', o.log === false ? [] : [BUD.log()], L('出错了', 'Something went wrong') + (o.msg ? L('，', ': ') + o.msg : '')];
   }

@@ -1,0 +1,26 @@
+name = "yana"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+[vars]
+UPSTREAM = "https://api.openai.com/v1"
+MODEL = "gpt-5.6-terra"
+DEVICE_BUDGET_USD = "0.50"
+MONTHLY_BUDGET_USD = "20"
+IP_DAILY_BUDGET_USD = "1"
+TRIAL_COUNTRIES = "US,CA"
+
+# Secrets, set with `npx wrangler secret put <NAME>`:
+#   OPENAI_API_KEY  the capped key the trial spends
+#   ADMIN_TOKEN     opens /admin?token=... (then kept in a cookie)
+#   IP_SALT         optional; salts the hashed client IPs
+
+[[d1_databases]]
+binding = "DB"
+database_name = "yana"
+database_id = "77bec8f7-5894-4bde-a4f9-cbea27ca9ff5"
+
+[[ratelimits]]
+name = "PER_IP"
+namespace_id = "1001"
+simple = { limit = 30, period = 60 }

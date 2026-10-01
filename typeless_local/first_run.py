@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+import shutil
 import threading
 from typing import Callable
 
@@ -54,8 +55,8 @@ def prompt_for_api_key(env_name: str, model: str, *, existing: bool = False) -> 
     )
     alert.setInformativeText_(
         t(
-            f"润色用的是 {model}，它读取 {env_name}。\n\nKey 存在这台 Mac 的钥匙串里，只会发给模型服务商。",
-            f"Refinement uses {model}, which reads {env_name}.\n\n"
+            f"润色读取 {env_name}。\n\nKey 存在这台 Mac 的钥匙串里，只会发给模型服务商。",
+            f"Refinement reads {env_name}.\n\n"
             "The key is kept in this Mac's keychain and only sent to the model's provider.",
         )
     )
@@ -128,14 +129,26 @@ def _store_api_key(env_name: str, key: str, env_path: Path) -> bool:
     return True
 
 
+# What the speech model takes on disk, with room to spare while it downloads.
+MODEL_DISK_BYTES = 1_600_000_000
+
+
+class NotEnoughDisk(OSError):
+    """Too little free space for the speech model."""
+
+
 def model_is_cached(repo_id: str) -> bool:
-    """Whether the weights are already local, i.e. no download is needed."""
+    """Whether the weights are already local, i.e. no download is needed.
+
+    A download cut off part way leaves a snapshot with config.json but no
+    weights, which huggingface_hub still calls complete.
+    """
 
     try:
         from huggingface_hub import snapshot_download
 
-        snapshot_download(repo_id, local_files_only=True)
-        return True
+        folder = Path(snapshot_download(repo_id, local_files_only=True))
+        return any(folder.glob("weights.*")) or any(folder.glob("*.safetensors"))
     except Exception:
         return False
 
@@ -147,6 +160,10 @@ def download_model(repo_id: str, on_progress: Callable[[float], None]) -> None:
 
     total = _expected_size(repo_id)
     cache_dir = _cache_dir(repo_id)
+    root = next((p for p in (cache_dir, *cache_dir.parents) if p.exists()), Path.home())
+    needed = max(0, (total or MODEL_DISK_BYTES) - _dir_size(cache_dir))
+    if shutil.disk_usage(root).free < needed:
+        raise NotEnoughDisk(f"{needed / 1e9:.1f} GB needed for the speech model")
     done = threading.Event()
     failure: list[BaseException] = []
 
@@ -208,7 +225,8 @@ def _dir_size(path: Path) -> int:
         return 0
     for entry in path.rglob("*"):
         try:
-            if entry.is_file():
+            # snapshots/ holds symlinks to the files in blobs/: count each file once.
+            if entry.is_file() and not entry.is_symlink():
                 total += entry.stat().st_size
         except OSError:
             continue

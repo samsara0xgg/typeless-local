@@ -190,18 +190,60 @@ def _read_u32(lib: Any, obj: int, selector: str) -> int | None:  # noqa: ANN401
     return value.value
 
 
-def other_app_is_playing() -> bool:
-    """Whether a Dock app other than this one is sending audio out right now.
+# Calls hold output open all through a meeting and ignore the play/pause key,
+# so they say nothing about whether music is playing.
+CALL_APPS = frozenset({
+    "us.zoom.xos", "com.tencent.xinWeChat", "com.microsoft.teams", "com.microsoft.teams2",
+    "com.hnc.Discord", "com.apple.FaceTime", "com.skype.skype", "com.cisco.webexmeetingsapp",
+    "com.webex.meetingmanager", "com.tencent.meeting", "com.alibaba.DingTalkMac", "com.electron.lark",
+    "com.bytedance.macos.feishu", "com.tinyspeck.slackmacgap",
+})
+
+
+def is_call_app(pid: int) -> bool:
+    try:
+        from AppKit import NSRunningApplication
+
+        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+        return app is not None and str(app.bundleIdentifier() or "") in CALL_APPS
+    except Exception:
+        return False
+
+
+def _responsible_pid(pid: int) -> int:
+    """The app a helper process works for (Chrome's audio service, Safari's WebKit GPU process)."""
+
+    global _responsible
+    if _responsible is None:
+        try:
+            fn = ctypes.CDLL("/usr/lib/libSystem.B.dylib").responsibility_get_pid_responsible_for_pid
+            fn.restype, fn.argtypes = ctypes.c_int, [ctypes.c_int]
+            _responsible = fn
+        except Exception:
+            _responsible = lambda pid: pid  # noqa: E731
+    try:
+        return int(_responsible(pid)) or pid
+    except Exception:
+        return pid
+
+
+_responsible = None
+
+
+def playing_apps() -> set[int]:
+    """The Dock apps other than this one sending audio out right now, by pid.
 
     CoreAudio lists which processes are running output. Background daemons are
     skipped (Jarvis holds a silent output stream open all day) by requiring
-    the process, or its parent for a helper such as Chrome's audio service, to
-    be a regular app.
+    the process, or the app responsible for a helper such as Chrome's audio
+    service or Safari's WebKit GPU process, to be a regular app. A call (Zoom, WeChat) counts too: it holds output open
+    whether or not anyone is talking.
     """
 
+    found: set[int] = set()
     lib = _load_coreaudio()
     if lib is None:
-        return False
+        return found
     try:
         from AppKit import NSApplicationActivationPolicyRegular, NSRunningApplication
 
@@ -214,13 +256,14 @@ def other_app_is_playing() -> bool:
             if not pid or pid == os.getpid() or not _read_u32(lib, process, "piro"):
                 continue
             if regular(pid):
-                return True
-            parent = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
-            if parent.isdigit() and int(parent) != os.getpid() and regular(int(parent)):
-                return True
+                found.add(pid)
+                continue
+            owner = _responsible_pid(pid)
+            if owner != pid and owner != os.getpid() and regular(owner):
+                found.add(owner)
     except Exception:
         LOGGER.debug("Unable to read which apps are playing", exc_info=True)
-    return False
+    return found
 
 
 def refresh() -> None:
@@ -268,6 +311,9 @@ def prime_input(index: int | None, sample_rate: int) -> None:
     stream.close()
 
 
+_said_missing: set[str] = set()
+
+
 def resolve_input_index(name: str) -> int | None:
     """sounddevice index for ``name``; None means "let the system decide"."""
 
@@ -284,7 +330,9 @@ def resolve_input_index(name: str) -> int | None:
             continue
         if str(device.get("name") or "").strip() == wanted:
             return index
-    LOGGER.warning("Input device %r not present; falling back to system default", wanted)
+    if wanted not in _said_missing:  # asked on every recording: say it once per device
+        _said_missing.add(wanted)
+        LOGGER.warning("Input device %r not present; falling back to system default", wanted)
     return None
 
 

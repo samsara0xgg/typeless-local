@@ -5,7 +5,7 @@
    queries. */
 :root{
   color-scheme: light dark;
-  --accent:#007AFF; --red:#FF3B30; --orange:#FF9500; --green:#28CD41;
+  --accent:#007AFF; --red:#FF3B30; --orange:#FF9500; --green:#28CD41; --green-text:#248A3D;
   --label:#1C1C1E; --label-2:rgba(38,38,44,.68); --label-3:rgba(38,38,44,.42);
   --g-fill:rgba(255,255,255,.46); --g-fill-2:rgba(255,255,255,.66); --g-solid:#F2F2F5;
   --g-hi:rgba(255,255,255,.95); --g-mid:rgba(255,255,255,.35); --g-edge:rgba(0,0,0,.07);
@@ -19,7 +19,7 @@
 }
 @media (prefers-color-scheme: dark){
   :root{
-    --accent:#0A84FF; --red:#FF453A; --orange:#FF9F0A; --green:#32D74B;
+    --accent:#0A84FF; --red:#FF453A; --orange:#FF9F0A; --green:#32D74B; --green-text:#32D74B;
     --label:#F5F5F7; --label-2:rgba(235,235,245,.66); --label-3:rgba(235,235,245,.38);
     --g-fill:rgba(38,38,44,.48); --g-fill-2:rgba(44,44,50,.72); --g-solid:#2A2A2E;
     --g-hi:rgba(255,255,255,.42); --g-mid:rgba(255,255,255,.12); --g-edge:rgba(0,0,0,.4);

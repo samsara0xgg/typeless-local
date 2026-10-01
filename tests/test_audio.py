@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -92,6 +93,37 @@ def test_microphone_recorder_closes_stream_when_stop_fails(monkeypatch) -> None:
     assert streams[0].aborted is True
     assert streams[0].closed is True
     assert np.allclose(audio, np.full(800, 0.05, dtype=np.float32))
+
+
+def test_a_stream_that_never_stops_does_not_hang_the_dictation(monkeypatch) -> None:
+    """CoreAudio deadlocked inside stop() once and froze the whole app; now the audio is kept and it moves on."""
+
+    stuck = threading.Event()
+
+    class StuckInputStream:
+        def __init__(self, samplerate, channels, dtype, blocksize, callback, device=None):
+            self.channels, self.blocksize, self.callback = channels, blocksize, callback
+
+        def start(self) -> None:
+            self.callback(np.full((self.blocksize, self.channels), 0.05, dtype=np.float32), self.blocksize, None, None)
+
+        def stop(self) -> None:
+            stuck.wait()  # never returns while the test runs
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setitem(sys.modules, "sounddevice", SimpleNamespace(InputStream=StuckInputStream))
+    monkeypatch.setattr("typeless_local.audio.STOP_WAIT_S", 0.05)
+    recorder = MicrophoneRecorder(sample_rate=16000, channels=1, block_duration=0.05)
+
+    recorder.start()
+    audio = recorder.stop()
+    stuck.set()
+
+    assert np.allclose(audio, np.full(800, 0.05, dtype=np.float32))
+    assert not recorder.is_recording
+    assert recorder.wedged, "the next start must not touch PortAudio again"
 
 
 def test_voice_activity_analyzer_prefers_vocal_band_over_silence() -> None:
@@ -265,3 +297,31 @@ def test_recorder_keeps_the_configured_channel_within_what_the_device_has(monkey
     inputs["max_input_channels"] = 1
     recorder.start()
     assert opened == [2, 1] and np.allclose(recorder.stop(), 0.0)
+
+
+def test_a_microphone_that_never_opens_fails_the_start_instead_of_hanging(monkeypatch) -> None:
+    stuck = threading.Event()
+
+    class HangingInputStream:
+        def __init__(self, **kwargs) -> None:
+            stuck.wait()  # CoreAudio never answers while the test runs
+
+    monkeypatch.setitem(sys.modules, "sounddevice", SimpleNamespace(InputStream=HangingInputStream))
+    monkeypatch.setattr("typeless_local.audio.START_WAIT_S", 0.05)
+    recorder = MicrophoneRecorder(sample_rate=16000, channels=1, block_duration=0.05)
+
+    try:
+        recorder.start()
+    except RuntimeError as exc:
+        assert "did not open" in str(exc)
+    else:
+        raise AssertionError("start() should have given up")
+    assert recorder.wedged
+    try:
+        recorder.start()  # fails at once, without another wait on CoreAudio
+    except RuntimeError as exc:
+        assert "hung earlier" in str(exc)
+    else:
+        raise AssertionError("a wedged recorder should refuse to start")
+    stuck.set()
+    assert not recorder.is_recording

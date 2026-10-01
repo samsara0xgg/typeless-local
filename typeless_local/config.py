@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -69,11 +70,15 @@ def resolve_app_root() -> Path:
 def resolve_jarvis_root(app_root: Path | None = None) -> Path:
     """Resolve the Jarvis checkout used only as a dependency source."""
 
+    root = app_root or resolve_app_root()
+    if getattr(sys, "frozen", False):
+        # The built app runs on its vendored copy. A Jarvis checkout on this
+        # Mac would go on sys.path ahead of it and shadow the bundle's modules.
+        return root
     explicit = os.environ.get("JARVIS_PROJECT_ROOT", "").strip()
     if explicit:
         return Path(explicit).expanduser().resolve()
 
-    root = app_root or resolve_app_root()
     sibling = (root.parent / "jarvis").resolve()
     if sibling.exists():
         return sibling
@@ -114,9 +119,8 @@ def migrate_legacy_config_dir() -> Path:
 
 
 def resolve_user_paths(app_root: Path | None = None) -> UserPaths:
-    """Return all on-disk paths Typlus touches outside its install."""
+    """Return all on-disk paths the app touches outside its install."""
 
-    home = Path(os.environ.get("HOME") or Path.home()).expanduser()
     config_dir = migrate_legacy_config_dir()
     config_dir.mkdir(parents=True, exist_ok=True)
     root = app_root or resolve_app_root()
@@ -271,15 +275,19 @@ def adopt_default_preset(config: AppConfig, preset: str) -> AppConfig:
     return replace(config, jarvis_config=jarvis_config, refine=_resolve_refine_config(jarvis_config))
 
 
+DEFAULT_PRESET = "gpt-5.6-terra"
+
+
 def _resolve_refine_config(jarvis_config: dict[str, Any], preset_name: str | None = None) -> RefineConfig:
     llm = dict(jarvis_config.get("llm") or {})
     presets = dict(llm.get("presets") or {})
-    preset_name = str(preset_name or llm.get("default_preset") or "fast")
-    if preset_name not in presets and "fast" in presets:
-        preset_name = "fast"
+    preset_name = str(preset_name or llm.get("default_preset") or DEFAULT_PRESET)
+    if preset_name not in presets and DEFAULT_PRESET in presets:
+        # A preset an update removed (or a typo) lands on the one model everyone uses.
+        preset_name = DEFAULT_PRESET
     preset = dict(presets.get(preset_name) or {})
 
-    model = str(preset.get("model") or llm.get("model") or "gpt-5.4-mini")
+    model = str(preset.get("model") or llm.get("model") or DEFAULT_PRESET)
     base_url = preset.get("base_url") or llm.get("base_url") or "https://api.openai.com/v1"
     api_key_env = str(preset.get("api_key_env") or "OPENAI_API_KEY")
     max_tokens = int(preset.get("max_tokens") or llm.get("max_tokens") or 512)

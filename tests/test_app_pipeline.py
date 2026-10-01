@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -92,6 +94,8 @@ def _mac(monkeypatch):
     _ManualTimer.made = []
     monkeypatch.setattr(app_module.permissions, "microphone_status", lambda: "authorized")
     monkeypatch.setattr(app_module, "frontmost_pid", lambda: TARGET_PID)
+    monkeypatch.setattr(app_module, "prepare_paste", lambda context: "blind")
+    monkeypatch.setattr(app_module, "focused_text_length", lambda pid: None)
     monkeypatch.setattr(app_module, "caret_rect", lambda: None)
     monkeypatch.setattr(app_module, "undo_last_edit", lambda: None)
 
@@ -205,7 +209,8 @@ def _media_keys(monkeypatch) -> list[str]:
     """Never tap the real play/pause key or read the real mixer from a test."""
 
     presses: list[str] = []
-    monkeypatch.setattr(app_module.devices, "other_app_is_playing", lambda: False)
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: set())
+    monkeypatch.setattr(app_module.devices, "is_call_app", lambda pid: False)
     monkeypatch.setattr(app_module, "press_play_pause", lambda: presses.append("play_pause"))
     return presses
 
@@ -243,6 +248,19 @@ def test_process_audio_transcribes_refines_and_pastes(monkeypatch) -> None:
     assert app._insertion == Insertion("Refined text.", "raw dictation", TARGET_PID, context)
     assert app._keys_wanted is True
     assert app.state == "idle"
+
+
+def test_the_guide_sees_what_was_heard_and_what_went_in(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.paste_text", lambda text: None)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("raw dictation")
+    told = []
+    app.windows = SimpleNamespace(guide=told.append)
+    app._call_ui = lambda callback, *args: callback(*args)
+
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("TextEdit", "", can_insert_text=True))
+
+    assert told == [{"t": "result", "raw": "raw dictation", "text": "Refined text."}]
 
 
 def test_process_audio_joins_stretches_heard_while_talking_with_the_rest(monkeypatch) -> None:
@@ -438,6 +456,22 @@ def test_recording_ducks_system_audio_until_finish(monkeypatch) -> None:
     assert app.recorder.started is True
     assert app.recorder.stopped is True
     assert app.overlay.shown() == ["starting", "rec", "transcribing"]
+
+
+def test_a_stuck_microphone_fails_fast_and_offers_a_relaunch(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
+    refreshed = []
+    monkeypatch.setattr(app_module.devices, "refresh", lambda: refreshed.append("refresh"))
+    monkeypatch.setattr(app_module.devices, "refresh_if_changed", lambda: refreshed.append("if_changed"))
+    app = _recording_app()
+    app.recorder.fail_start = True
+    app.recorder.wedged = True
+
+    app._start_recording("tap")
+
+    assert refreshed == [], "PortAudio is not touched again while a stream is stuck"
+    assert app.state == "idle"
+    assert app.overlay.calls[-1] == ("show", "mic", {"why": "stuck"})
 
 
 def test_recording_restores_audio_when_microphone_start_fails(monkeypatch) -> None:
@@ -678,6 +712,45 @@ def test_refine_failure_pastes_the_raw_transcript(monkeypatch) -> None:
     assert app.overlay.calls[-1] == ("show", "inserted-raw-net", {"why": "timeout"})
 
 
+def test_own_key_out_of_credit_says_so_plainly(monkeypatch) -> None:
+    import openai
+
+    monkeypatch.setattr("typeless_local.app.paste_text", lambda text, **kwargs: None)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("hello there")
+    app.asr = _FakeASR("hello there", language="en")
+    response = SimpleNamespace(status_code=429, headers={}, request=None)
+    exc = openai.RateLimitError(
+        "no credits", response=response, body={"code": "credit_balance_exhausted", "type": "insufficient_quota"}
+    )
+    app.refiner = _FailingRefiner(exc)
+
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("TextEdit", "Untitled", can_insert_text=True))
+
+    assert app.overlay.calls[-1] == ("show", "inserted-raw-net", {"why": "credit"})
+
+
+def test_a_spent_trial_is_remembered_and_not_asked_again(monkeypatch) -> None:
+    from typeless_local.refine import TrialUnavailable
+
+    monkeypatch.setattr("typeless_local.app.paste_text", lambda text, **kwargs: None)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("hello there")
+    app.asr = _FakeASR("hello there", language="en")
+    app.prefs = Preferences()
+    app.config.refine = SimpleNamespace(preset=app_module.trial.PRESET, model="m", api_key_env="YANA_TRIAL_TOKEN")
+    saved = []
+    app.set_preference = lambda key, value: (saved.append((key, value)), setattr(app, "prefs", dataclasses.replace(app.prefs, **{key: value})))
+    app.refiner = _FailingRefiner(TrialUnavailable("trial_used_up"))
+
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("TextEdit", "Untitled", can_insert_text=True))
+    assert saved == [("trial_used_up", True)]
+
+    app.refiner = _FailingRefiner(AssertionError("the trial server must not be asked again"))
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("TextEdit", "Untitled", can_insert_text=True))
+    assert app.overlay.calls[-1][1] == "inserted-raw-trial"
+
+
 def test_missing_key_pastes_raw_and_offers_to_set_one(monkeypatch) -> None:
     pasted = []
     monkeypatch.setattr("typeless_local.app.paste_text", pasted.append)
@@ -690,6 +763,22 @@ def test_missing_key_pastes_raw_and_offers_to_set_one(monkeypatch) -> None:
     assert pasted == ["hello there"]
     assert app.overlay.calls[-1] == ("show", "inserted-raw-key", {})
     assert _ManualTimer.made[-1].delay == 8.0
+
+
+def test_used_up_trial_pastes_raw_and_asks_for_their_own_key(monkeypatch) -> None:
+    from typeless_local.refine import TrialUnavailable
+
+    pasted = []
+    monkeypatch.setattr("typeless_local.app.paste_text", pasted.append)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("hello there")
+    app.refiner = _FailingRefiner(TrialUnavailable("trial_used_up"))
+
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("Notes", "", can_insert_text=True))
+
+    assert pasted == ["hello there"]
+    assert app.overlay.calls[-1] == ("show", "inserted-raw-trial", {"why": "trial_used_up"})
+    assert app._trial_over is True
 
 
 def test_refinement_switched_off_pastes_the_transcript_as_heard(monkeypatch) -> None:
@@ -980,8 +1069,7 @@ def test_download_progress_never_replaces_a_dictation(monkeypatch) -> None:
 
     app._start_model_prefetch()
 
-    assert app.overlay.shown() == ["download", "rec", "download"]
-    assert app.overlay.calls[-1] == ("hide",)  # taken down once the model is in
+    assert app.overlay.shown() == ["download", "rec", "download", "ready"]  # "ready" replaces the progress
     assert app._download is None
 
 
@@ -1133,7 +1221,7 @@ def test_refine_off_needs_no_key(monkeypatch) -> None:
     assert app._current_issues() == ()
 
 
-def test_menu_snapshot_reads_presets_devices_and_the_last_dictation(monkeypatch) -> None:
+def test_menu_snapshot_reads_the_model_devices_and_the_last_dictation(monkeypatch) -> None:
     monkeypatch.delenv("TEST_KEY_B", raising=False)
     app = _menu_app(monkeypatch, env={"TEST_KEY_A": "sk-test"})
     monkeypatch.setattr(app_module.devices, "refresh_if_changed", lambda: False)
@@ -1143,7 +1231,6 @@ def test_menu_snapshot_reads_presets_devices_and_the_last_dictation(monkeypatch)
     snap = app._menu_snapshot()
 
     assert snap.state == "idle" and snap.issues == ()
-    assert [(p.name, p.needs_key) for p in snap.presets] == [("mini", False), ("deep", True)]
     assert snap.active_preset == "mini"
     assert snap.inputs == ("MacBook Pro 麦克风",)
     assert (snap.recent.text, snap.recent.app) == ("明天开会", "备忘录")
@@ -1270,7 +1357,7 @@ class _FakeWindows:
     def refresh(self, history=False) -> None:
         self.calls.append(("refresh", history))
 
-    def download(self, fraction, eta="", done=False, error=False) -> None:
+    def download(self, fraction, eta="", done=False, error=False, why="") -> None:
         self.calls.append(("download", fraction, done, error))
 
 
@@ -1297,7 +1384,7 @@ def test_first_launch_skips_the_guide_when_everything_is_set_up(monkeypatch) -> 
     app = _windows_app(monkeypatch, {"TEST_KEY_A": "sk-test-aaaaaaaaaaaa1234"})
     app._first_run()
     assert app.windows.calls == []
-    assert app._saved == [("onboarding_done", True)]
+    assert app._saved == [("onboarding_done", True), ("f5_hotkey", True)]
 
 
 def test_the_guide_is_shown_only_once(monkeypatch) -> None:
@@ -1448,16 +1535,79 @@ def test_music_playing_elsewhere_is_paused_for_the_recording_and_resumed(monkeyp
         "typeless_local.app.capture_focus_context",
         lambda **_: FocusContext(app_name="TextEdit", window_title="Untitled"),
     )
-    monkeypatch.setattr(app_module.devices, "other_app_is_playing", lambda: True)
+    music, playing = 101, {101}
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: set(playing))
+    monkeypatch.setattr(app_module, "press_play_pause", lambda: (_media_keys.append("play_pause"), playing.symmetric_difference_update({music})))
     app = _recording_app()
 
     app._start_recording("tap")
-    assert _media_keys == ["play_pause"]
+    assert _media_keys == ["play_pause"] and playing == set()  # it stopped sending audio: paused
+    app._finish_recording()
+    assert _media_keys == ["play_pause", "play_pause"] and playing == {music}
+
+
+def test_a_player_that_keeps_output_open_is_put_back_as_it_was(monkeypatch, _media_keys) -> None:
+    """NetEase holds output open while paused: no change is visible, so the press is undone."""
+
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
+    monkeypatch.setattr(app_module, "MEDIA_CHECK_S", 0.02)
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: {101})
+    monkeypatch.setattr(app_module.devices, "is_call_app", lambda pid: False)
+    app = _recording_app()
+
+    app._start_recording("tap")
+    assert _media_keys == ["play_pause", "play_pause"]
     app._finish_recording()
     assert _media_keys == ["play_pause", "play_pause"]
 
 
-def _main_env(monkeypatch, tmp_path, *, chip: str, china: bool, onboarding_done: bool = False):
+def test_only_a_call_holding_output_never_touches_play_pause(monkeypatch, _media_keys) -> None:
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: {200})
+    monkeypatch.setattr(app_module.devices, "is_call_app", lambda pid: pid == 200)
+    app = _recording_app()
+
+    app._start_recording("tap")
+    app._finish_recording()
+    assert _media_keys == []
+
+
+def test_paused_music_is_never_started_by_the_recording(monkeypatch, _media_keys) -> None:
+    """In class: Zoom holds output open, the music is paused, and play/pause would start it."""
+
+    monkeypatch.setattr(
+        "typeless_local.app.capture_focus_context",
+        lambda **_: FocusContext(app_name="TextEdit", window_title="Untitled"),
+    )
+    zoom, music = 200, 101
+    playing = {zoom}
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: set(playing))
+    monkeypatch.setattr(app_module, "press_play_pause", lambda: (_media_keys.append("play_pause"), playing.symmetric_difference_update({music})))
+    app = _recording_app()
+
+    app._start_recording("tap")
+    assert _media_keys == ["play_pause", "play_pause"]  # started the music, so stopped it again at once
+    assert playing == {zoom}
+    app._finish_recording()
+    assert _media_keys == ["play_pause", "play_pause"]  # and nothing "resumed" afterwards
+    assert playing == {zoom}
+
+
+def test_music_is_left_alone_when_muting_other_sound_is_off(monkeypatch, _media_keys) -> None:
+    monkeypatch.setattr(
+        "typeless_local.app.capture_focus_context",
+        lambda **_: FocusContext(app_name="TextEdit", window_title="Untitled"),
+    )
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: {101})
+    app = _recording_app()
+    app.audio_ducker.enabled = False
+
+    app._start_recording("tap")
+    app._finish_recording()
+    assert _media_keys == []
+
+
+def _main_env(monkeypatch, tmp_path, *, chip: str, china: bool, onboarding_done: bool = False, own_key: bool = False, trial_region: bool = True):
     """Run main() up to the point it builds the app, with nothing real underneath."""
 
     from typeless_local import config as cfg_mod
@@ -1467,11 +1617,22 @@ def _main_env(monkeypatch, tmp_path, *, chip: str, china: bool, onboarding_done:
     monkeypatch.setenv("JARVIS_PROJECT_ROOT", str(tmp_path / "jarvis"))
     if onboarding_done:
         cfg_mod.save_user_setting(cfg_mod.resolve_user_paths(), "ui", "onboarding_done", True)
+    # The alerts are checked in Chinese whatever language this Mac runs in.
+    cfg_mod.save_user_setting(cfg_mod.resolve_user_paths(), "ui", "ui_language", "zh")
     seen = SimpleNamespace(alerts=[], built=[])
+    # The real NSApplication.run() never returns.
+    fake_app = SimpleNamespace(setActivationPolicy_=lambda policy: None, run=lambda: None)
+    monkeypatch.setattr(app_module, "NSApplication", SimpleNamespace(sharedApplication=lambda: fake_app))
+    monkeypatch.setattr(app_module.trial, "ensure_token", lambda: None)
+    if own_key:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-aaaaaaaaaaaa")
+    else:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr(app_module, "configure_logging", lambda: None)
     monkeypatch.setattr(app_module, "claim_single_instance", lambda config_dir: object())
     monkeypatch.setattr(app_module.reach, "machine", lambda: chip)
     monkeypatch.setattr(app_module.reach, "in_mainland_china", lambda: china)
+    monkeypatch.setattr(app_module.reach, "in_trial_region", lambda: trial_region and not china)
     monkeypatch.setattr(app_module, "_alert", lambda app, title, body: seen.alerts.append(title))
     monkeypatch.setattr(app_module.keychain, "fill_environ", lambda names: None)
     monkeypatch.setattr(
@@ -1501,6 +1662,21 @@ def test_a_new_install_in_mainland_china_starts_on_deepseek(monkeypatch, tmp_pat
 
 def test_an_install_that_finished_the_guide_keeps_its_model(monkeypatch, tmp_path) -> None:
     (config,) = _main_env(monkeypatch, tmp_path, chip="apple", china=True, onboarding_done=True).built
+    assert config.refine.preset == "gpt-5.6-terra"
+
+
+def test_a_new_install_elsewhere_with_no_key_starts_on_the_free_trial(monkeypatch, tmp_path) -> None:
+    (config,) = _main_env(monkeypatch, tmp_path, chip="apple", china=False).built
+    assert config.refine.preset == app_module.trial.PRESET
+
+
+def test_a_new_install_outside_the_us_and_canada_is_asked_for_a_key(monkeypatch, tmp_path) -> None:
+    (config,) = _main_env(monkeypatch, tmp_path, chip="apple", china=False, trial_region=False).built
+    assert config.refine.preset != app_module.trial.PRESET
+
+
+def test_a_new_install_with_its_own_key_skips_the_trial(monkeypatch, tmp_path) -> None:
+    (config,) = _main_env(monkeypatch, tmp_path, chip="apple", china=False, own_key=True).built
     assert config.refine.preset == "gpt-5.6-terra"
 
 
@@ -1540,3 +1716,109 @@ def test_diagnostics_are_zipped_into_the_data_folder_without_keys(monkeypatch, t
         everything = b"".join(archive.read(name) for name in archive.namelist()).decode()
     assert "sk-test-0123456789abcdefghij" not in everything
     assert '"OPENAI_API_KEY": true' in everything and "USB Mic" in everything
+
+
+def test_saving_an_openai_key_on_the_trial_switches_off_the_trial(monkeypatch, tmp_path) -> None:
+    from typeless_local import config as cfg_mod, trial
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_PROJECT_ROOT", str(tmp_path))
+    config = cfg_mod.adopt_default_preset(cfg_mod.load_config(), trial.PRESET)
+    assert config.refine.preset == trial.PRESET
+    monkeypatch.setattr(app_module, "_store_api_key", lambda *args: None)
+    app = TypelessLocalApp.__new__(TypelessLocalApp)
+    app.config = config
+    app._call_ui = lambda fn, *args: None
+    app._windows_changed = lambda *args, **kwargs: None
+    app._trial_over = True
+
+    app.store_api_key("OPENAI_API_KEY", "sk-test-aaaaaaaaaaaa")
+
+    assert app.config.refine.preset == trial.OWN_KEY_PRESET
+    assert app.refiner.config.api_key_env == "OPENAI_API_KEY"
+    assert app._trial_over is False
+    assert "default_preset: gpt-5.6-terra" in (tmp_path / ".typlus" / "config.yaml").read_text()
+
+
+def test_a_right_cmd_hold_records_until_release_and_ducks_only_once_it_lasts(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
+    timers = []
+    monkeypatch.setattr(app_module.threading, "Timer", lambda delay, fn: SimpleNamespace(
+        daemon=False, start=lambda: timers.append(fn), cancel=lambda: None))
+    app, hotkeys, clock = _hotkey_app(monkeypatch)
+
+    hotkeys.last_primary_down_at = 10.0
+    app._on_hotkey("hold_start")
+    assert app.state == "recording" and app._holding
+    assert app.audio_ducker.calls == []  # a slow Cmd-click must not blip the music
+    for fn in timers:
+        fn()
+    assert app.audio_ducker.calls == ["duck"]
+    app._on_hotkey("hold_end")
+
+    assert app.state == "processing"
+
+
+def test_a_slow_chord_only_drops_the_recording_its_hold_started(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
+    app, hotkeys, clock = _hotkey_app(monkeypatch)
+
+    app._on_hotkey("hands_free")  # a locked recording is running
+    app._on_hotkey("hold_start")  # right Cmd held for a Cmd-click
+    app._on_hotkey("hold_abort")
+    app._on_hotkey("hold_end")
+    assert app.state == "recording" and app.mode == "hands_free"
+
+    app._on_hotkey("hands_free")  # stopped: now processing
+    assert app.state == "processing"
+    app._on_hotkey("hold_start")
+    app._on_hotkey("hold_abort")
+    assert app.state == "processing", "the dictation being transcribed is kept"
+
+    app.state = "idle"
+    app._on_hotkey("hold_start")
+    app._on_hotkey("hold_abort")
+    assert app.state == "idle"
+    assert app.overlay.shown()[-1] == "cancelled"
+
+
+def _deliver_into_claude(monkeypatch, where, lengths):
+    pasted, copied = [], []
+    monkeypatch.setattr(app_module, "paste_text", pasted.append)
+    monkeypatch.setattr(app_module, "set_clipboard_text", copied.append)
+    monkeypatch.setattr(app_module, "prepare_paste", lambda context: where)
+    monkeypatch.setattr(app_module, "focused_text_length", lambda pid: lengths.pop(0) if lengths else 0)
+    monkeypatch.setattr(app_module, "PASTE_CHECK_S", 0.0)
+    app = _make_app("hello there")
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("Claude", "", can_insert_text=True, pid=TARGET_PID))
+    return app, pasted, copied
+
+
+def test_a_paste_that_changed_nothing_does_not_claim_inserted(monkeypatch) -> None:
+    app, pasted, _ = _deliver_into_claude(monkeypatch, "ok", [0, 0])
+
+    assert pasted == ["Refined text."]
+    assert app.overlay.shown()[-1] == "inserted-unsure"
+
+
+def test_a_paste_that_grew_the_field_says_inserted(monkeypatch) -> None:
+    app, pasted, _ = _deliver_into_claude(monkeypatch, "ok", [0, 12])
+
+    assert pasted == ["Refined text."]
+    assert app.overlay.shown()[-1] == "inserted"
+
+
+@pytest.mark.parametrize("where", ["elsewhere", "lost"])
+def test_no_blind_paste_when_the_text_field_is_gone(monkeypatch, where) -> None:
+    app, pasted, copied = _deliver_into_claude(monkeypatch, where, [])
+
+    assert pasted == []
+    assert copied == ["Refined text."]
+    assert app.overlay.shown()[-1] == "edit-notarget"
+
+
+def test_an_app_with_no_readable_field_is_still_pasted_into(monkeypatch) -> None:
+    app, pasted, _ = _deliver_into_claude(monkeypatch, "blind", [0, 0])
+
+    assert pasted == ["Refined text."]
+    assert app.overlay.shown()[-1] == "inserted"

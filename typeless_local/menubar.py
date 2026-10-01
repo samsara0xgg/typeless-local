@@ -36,7 +36,7 @@ STATE_LABEL: dict[str, tuple[str, str]] = {
     "recording": ("正在听写", "Dictating"),
     "processing": ("正在转写和润色…", "Transcribing and refining…"),
 }
-HINT = ("按 F5 或右 ⌘ 开始 · 连按两下锁定", "Press F5 or right ⌘ to start · twice to lock")
+HINT = ("轻点右 ⌘ 开始 · 连点两下锁定", "Tap right ⌘ to start · twice to lock")
 
 # What needs the user, most blocking first: (what is wrong, the menu item that fixes it).
 ISSUES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
@@ -45,9 +45,14 @@ ISSUES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
         ("授予辅助功能权限…", "Grant Accessibility Permission…"),
     ),
     "mic": (("不能使用麦克风", "Can't use the microphone"), ("允许使用麦克风…", "Allow the Microphone…")),
+    "model": (("语音模型没下载成功", "The speech model didn't download"), ("重新下载语音模型", "Download the Speech Model Again")),
     "key": (
         ("缺少 API Key，只能贴原文", "No API key: raw transcripts only"),
         ("填写 API Key…", "Enter API Key…"),
+    ),
+    "trial": (
+        ("免费试用不可用，只能贴原文", "Free trial unavailable: raw transcripts only"),
+        ("填写自己的 API Key…", "Enter Your Own API Key…"),
     ),
 }
 SYSTEM_DEFAULT = ("系统默认", "System Default")
@@ -95,7 +100,7 @@ class Item:
     title: str = ""
     key: str = ""  # what choosing it does; "" is not clickable
     kind: str = "item"  # item | header | hint | section | separator
-    shortcut: str = ""  # "F5", "⌘Y", "⌘,", "⌘Q"
+    shortcut: str = ""  # "⌘Y", "⌘,", "⌘Q"
     badge: str = ""  # secondary text at the trailing edge
     subtitle: str = ""
     checked: bool = False
@@ -115,18 +120,10 @@ class Recent:
 
 
 @dataclass(frozen=True)
-class Preset:
-    name: str
-    needs_key: bool = False
-    median_ms: int | None = None
-
-
-@dataclass(frozen=True)
 class Snapshot:
     state: str = "idle"
     issues: tuple[str, ...] = ()
     recent: Recent | None = None
-    presets: tuple[Preset, ...] = ()
     active_preset: str = ""
     inputs: tuple[str, ...] = ()
     active_input: str = ""
@@ -168,11 +165,11 @@ def build_menu(snap: Snapshot, now: float | None = None) -> list[Item]:
 
     idle = snap.state == "idle"
     if snap.state in ("starting", "recording"):
-        items.append(Item(t("结束听写", "Stop Dictation"), key="toggle", shortcut="F5", symbol="stop.circle"))
+        items.append(Item(t("结束听写", "Stop Dictation"), key="toggle", symbol="stop.circle"))
     else:
-        items.append(Item(t("开始听写", "Start Dictation"), key="toggle", shortcut="F5", enabled=idle, symbol="mic"))
+        items.append(Item(t("开始听写", "Start Dictation"), key="toggle", enabled=idle, symbol="mic"))
     items += [
-        Item(t("锁定听写", "Locked Dictation"), key="latch", badge=t("右⌘ Space", "Right ⌘ Space"), enabled=idle, symbol="lock"),
+        Item(t("锁定听写", "Locked Dictation"), key="latch", badge=t("右 ⌘ ×2", "Right ⌘ ×2"), enabled=idle, symbol="lock"),
         SEPARATOR,
     ]
 
@@ -187,18 +184,12 @@ def build_menu(snap: Snapshot, now: float | None = None) -> list[Item]:
         items.append(Item(t("还没有听写", "Nothing dictated yet"), enabled=False))
     items.append(SEPARATOR)
 
-    if snap.presets:
-        models = tuple(
-            Item(
-                preset.name,
-                key=f"preset:{preset.name}",
-                checked=preset.name == snap.active_preset,
-                badge=t("需要 Key", "Needs key") if preset.needs_key else _seconds(preset.median_ms),
-            )
-            for preset in snap.presets
-        ) + (SEPARATOR, Item(t("管理模型与 Key…", "Manage Models and Keys…"), key="settings:model"))
-        active = snap.active_preset if snap.refine else t("关闭", "Off")
-        items.append(Item(t("润色模型", "Refinement Model"), badge=active, children=models, symbol="sparkles"))
+    # One model for everyone, never named in the UI; this only says whose key pays and opens its settings.
+    if snap.refine:
+        status = t("免费试用", "Free trial") if snap.active_preset == "free-trial" else t("你的 Key", "Your Key")
+    else:
+        status = t("关闭", "Off")
+    items.append(Item(t("润色与 API Key…", "Refinement and API Key…"), key="settings:model", badge=status, symbol="sparkles"))
     active_input = snap.active_input if snap.active_input in snap.inputs else ""
     inputs = (Item(t(*SYSTEM_DEFAULT), key="input:", checked=not active_input),) + tuple(
         Item(name, key=f"input:{name}", checked=name == active_input) for name in snap.inputs
@@ -476,7 +467,7 @@ def _place_badge(view, button) -> None:
         LOGGER.debug("Could not place the badge", exc_info=True)
 
 
-_SHORTCUTS = {"F5": ("", 0), "⌘Y": ("y", 1 << 20), "⌘,": (",", 1 << 20), "⌘Q": ("q", 1 << 20)}
+_SHORTCUTS = {"⌘Y": ("y", 1 << 20), "⌘,": (",", 1 << 20), "⌘Q": ("q", 1 << 20)}
 
 
 def _fill(menu, items: list[Item], target) -> None:
