@@ -21,6 +21,10 @@ StretchCallback = Callable[[np.ndarray], None]
 QUIET_RMS = 10 ** (-45 / 20)
 PAUSE_SECONDS = 0.5
 MIN_STRETCH_SECONDS = 5.0
+# CoreAudio can deadlock stopping a stream (its IO thread and the stopping
+# thread each wait on the other's lock, seen when the audio device changes).
+# The stop gets this long, then the dictation carries on without it.
+STOP_WAIT_S = 2.0
 
 
 def peak_level(audio: np.ndarray, sample_rate: int, window_seconds: float = 0.2) -> float:
@@ -298,21 +302,11 @@ class MicrophoneRecorder:
         stream = self._stream
         self._stream = None
         if stream is not None:
-            try:
-                stream.stop()
-            except Exception:
-                LOGGER.warning("Failed to stop microphone stream cleanly", exc_info=True)
-                abort = getattr(stream, "abort", None)
-                if abort is not None:
-                    try:
-                        abort()
-                    except Exception:
-                        LOGGER.debug("Failed to abort microphone stream", exc_info=True)
-            finally:
-                try:
-                    stream.close()
-                except Exception:
-                    LOGGER.warning("Failed to close microphone stream", exc_info=True)
+            released = threading.Event()
+            threading.Thread(target=_release, args=(stream, released), name="mic-stop", daemon=True).start()
+            if not released.wait(STOP_WAIT_S):
+                # ponytail: the stuck stream and its thread are abandoned until the app quits.
+                LOGGER.warning("Microphone stream did not stop within %.1fs; keeping the audio and moving on", STOP_WAIT_S)
         with self._lock:
             chunks = list(self._chunks)
             self._chunks = []
@@ -322,3 +316,24 @@ class MicrophoneRecorder:
         audio = np.concatenate(chunks, axis=0).astype(np.float32, copy=False)
         LOGGER.info("Microphone recording stopped with %.2fs audio", audio.size / self.sample_rate)
         return audio
+
+
+def _release(stream, released: threading.Event) -> None:
+    """Stop and close a stream; on its own thread, because CoreAudio may never return."""
+
+    try:
+        stream.stop()
+    except Exception:
+        LOGGER.warning("Failed to stop microphone stream cleanly", exc_info=True)
+        abort = getattr(stream, "abort", None)
+        if abort is not None:
+            try:
+                abort()
+            except Exception:
+                LOGGER.debug("Failed to abort microphone stream", exc_info=True)
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            LOGGER.warning("Failed to close microphone stream", exc_info=True)
+        released.set()
