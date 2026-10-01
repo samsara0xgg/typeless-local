@@ -296,3 +296,25 @@ def test_recorder_keeps_the_configured_channel_within_what_the_device_has(monkey
     inputs["max_input_channels"] = 1
     recorder.start()
     assert opened == [2, 1] and np.allclose(recorder.stop(), 0.0)
+
+
+def test_a_microphone_that_never_opens_fails_the_start_instead_of_hanging(monkeypatch) -> None:
+    stuck = threading.Event()
+
+    class HangingInputStream:
+        def __init__(self, **kwargs) -> None:
+            stuck.wait()  # CoreAudio never answers while the test runs
+
+    monkeypatch.setitem(sys.modules, "sounddevice", SimpleNamespace(InputStream=HangingInputStream))
+    monkeypatch.setattr("typeless_local.audio.START_WAIT_S", 0.05)
+    recorder = MicrophoneRecorder(sample_rate=16000, channels=1, block_duration=0.05)
+
+    try:
+        recorder.start()
+    except RuntimeError as exc:
+        assert "did not open" in str(exc)
+    else:
+        raise AssertionError("start() should have given up")
+    finally:
+        stuck.set()
+    assert not recorder.is_recording

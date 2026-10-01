@@ -25,6 +25,8 @@ MIN_STRETCH_SECONDS = 5.0
 # thread each wait on the other's lock, seen when the audio device changes).
 # The stop gets this long, then the dictation carries on without it.
 STOP_WAIT_S = 2.0
+# Opening the stream can hang in CoreAudio the same way; past this the start counts as failed.
+START_WAIT_S = 4.0
 
 
 def peak_level(audio: np.ndarray, sample_rate: int, window_seconds: float = 0.2) -> float:
@@ -278,22 +280,47 @@ class MicrophoneRecorder:
             if self.on_level is not None and chunk.size:
                 self.on_level(self._analyzer.analyze(chunk))
 
-        stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=channels,
-            dtype="float32",
-            blocksize=blocksize,
-            callback=callback,
-            device=self.device,
-        )
-        try:
-            stream.start()
-        except Exception:
-            # Left assigned, a stream that never started would make the next
-            # start() return early and "record" nothing.
-            stream.close()
-            raise
-        self._stream = stream
+        opened: dict = {}
+        done = threading.Event()
+        handoff = threading.Lock()  # so a stream is either taken here or released there, never neither
+
+        def open_stream() -> None:
+            try:
+                stream = sd.InputStream(
+                    samplerate=self.sample_rate,
+                    channels=channels,
+                    dtype="float32",
+                    blocksize=blocksize,
+                    callback=callback,
+                    device=self.device,
+                )
+                try:
+                    stream.start()
+                except Exception:
+                    # Left assigned, a stream that never started would make the next
+                    # start() return early and "record" nothing.
+                    stream.close()
+                    raise
+                opened["stream"] = stream
+            except Exception as exc:
+                opened["error"] = exc
+            finally:
+                with handoff:
+                    done.set()
+                    late = opened.get("abandoned")
+                if late and "stream" in opened:
+                    _release(opened["stream"], threading.Event())  # it came up after all, too late
+
+        # Opened off the calling thread (the hotkey's): CoreAudio has hung here before.
+        threading.Thread(target=open_stream, name="mic-start", daemon=True).start()
+        done.wait(START_WAIT_S)
+        with handoff:
+            if not done.is_set():
+                opened["abandoned"] = True
+                raise RuntimeError(f"the microphone did not open within {START_WAIT_S:.0f}s")
+        if "error" in opened:
+            raise opened["error"]
+        self._stream = opened["stream"]
         LOGGER.info("Microphone recording started")
 
     def stop(self) -> np.ndarray:

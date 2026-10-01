@@ -205,7 +205,7 @@ def _media_keys(monkeypatch) -> list[str]:
     """Never tap the real play/pause key or read the real mixer from a test."""
 
     presses: list[str] = []
-    monkeypatch.setattr(app_module.devices, "other_app_is_playing", lambda: False)
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: set())
     monkeypatch.setattr(app_module, "press_play_pause", lambda: presses.append("play_pause"))
     return presses
 
@@ -1476,13 +1476,49 @@ def test_music_playing_elsewhere_is_paused_for_the_recording_and_resumed(monkeyp
         "typeless_local.app.capture_focus_context",
         lambda **_: FocusContext(app_name="TextEdit", window_title="Untitled"),
     )
-    monkeypatch.setattr(app_module.devices, "other_app_is_playing", lambda: True)
+    monkeypatch.setattr(app_module, "MEDIA_CHECK_S", 0.02)
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: {101})  # Music, playing
     app = _recording_app()
 
     app._start_recording("tap")
     assert _media_keys == ["play_pause"]
     app._finish_recording()
     assert _media_keys == ["play_pause", "play_pause"]
+
+
+def test_paused_music_is_never_started_by_the_recording(monkeypatch, _media_keys) -> None:
+    """In class: Zoom holds output open, the music is paused, and play/pause would start it."""
+
+    monkeypatch.setattr(
+        "typeless_local.app.capture_focus_context",
+        lambda **_: FocusContext(app_name="TextEdit", window_title="Untitled"),
+    )
+    zoom, music = 200, 101
+    playing = {zoom}
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: set(playing))
+    monkeypatch.setattr(app_module, "press_play_pause", lambda: (_media_keys.append("play_pause"), playing.symmetric_difference_update({music})))
+    app = _recording_app()
+
+    app._start_recording("tap")
+    assert _media_keys == ["play_pause", "play_pause"]  # started the music, so stopped it again at once
+    assert playing == {zoom}
+    app._finish_recording()
+    assert _media_keys == ["play_pause", "play_pause"]  # and nothing "resumed" afterwards
+    assert playing == {zoom}
+
+
+def test_music_is_left_alone_when_muting_other_sound_is_off(monkeypatch, _media_keys) -> None:
+    monkeypatch.setattr(
+        "typeless_local.app.capture_focus_context",
+        lambda **_: FocusContext(app_name="TextEdit", window_title="Untitled"),
+    )
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: {101})
+    app = _recording_app()
+    app.audio_ducker.enabled = False
+
+    app._start_recording("tap")
+    app._finish_recording()
+    assert _media_keys == []
 
 
 def _main_env(monkeypatch, tmp_path, *, chip: str, china: bool, onboarding_done: bool = False, own_key: bool = False):

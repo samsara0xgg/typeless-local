@@ -74,6 +74,9 @@ from typeless_local.windows import Windows, install_main_menu, prices
 LOGGER = logging.getLogger(__name__)
 Mode = Literal["tap", "hands_free"]
 DOUBLE_CLICK_SECONDS = 0.4
+# After pressing play/pause, how long to watch for media that started instead of stopping.
+MEDIA_CHECK_S = 0.6
+MEDIA_POLL_S = 0.05
 LONG_PRESS_SECONDS = 0.6
 MIN_MIC_STARTUP_SECONDS = 0.75
 # A non-Chinese transcript this short is usually Whisper inventing a word over
@@ -1452,12 +1455,32 @@ class TypelessLocalApp:
         self._run_audio_io(self._resume_media)
 
     def _pause_media(self) -> None:
-        """Pause music like Typeless does: a lowered song still reaches a mic without echo cancellation."""
+        """Pause music like Typeless does: a lowered song still reaches a mic without echo cancellation.
 
-        self._media_paused = devices.other_app_is_playing()
-        if self._media_paused:
-            LOGGER.info("Pausing media while recording")
-            press_play_pause()
+        The play/pause key goes to the Now Playing app, and nothing says
+        whether that app is playing: a class on Zoom holds output open while
+        the music sits paused, and the key would start the music. So the key
+        is pressed and the output watched; an app that starts playing because
+        of it gets the key again at once, and nothing is resumed later.
+        """
+
+        self._media_paused = False
+        if not getattr(self.audio_ducker, "enabled", True):
+            return  # "mute other sound while recording" is off: leave the music alone too
+        before = devices.playing_apps()
+        if not before:
+            return
+        press_play_pause()
+        deadline = time.monotonic() + MEDIA_CHECK_S
+        while time.monotonic() < deadline:
+            started = devices.playing_apps() - before
+            if started:
+                LOGGER.info("Play/pause started paused media (pid %s); pausing it again", sorted(started))
+                press_play_pause()
+                return
+            time.sleep(MEDIA_POLL_S)
+        LOGGER.info("Pausing media while recording")
+        self._media_paused = True
 
     def _resume_media(self) -> None:
         if getattr(self, "_media_paused", False):

@@ -190,18 +190,20 @@ def _read_u32(lib: Any, obj: int, selector: str) -> int | None:  # noqa: ANN401
     return value.value
 
 
-def other_app_is_playing() -> bool:
-    """Whether a Dock app other than this one is sending audio out right now.
+def playing_apps() -> set[int]:
+    """The Dock apps other than this one sending audio out right now, by pid.
 
     CoreAudio lists which processes are running output. Background daemons are
     skipped (Jarvis holds a silent output stream open all day) by requiring
     the process, or its parent for a helper such as Chrome's audio service, to
-    be a regular app.
+    be a regular app. A call (Zoom, WeChat) counts too: it holds output open
+    whether or not anyone is talking.
     """
 
+    found: set[int] = set()
     lib = _load_coreaudio()
     if lib is None:
-        return False
+        return found
     try:
         from AppKit import NSApplicationActivationPolicyRegular, NSRunningApplication
 
@@ -214,13 +216,14 @@ def other_app_is_playing() -> bool:
             if not pid or pid == os.getpid() or not _read_u32(lib, process, "piro"):
                 continue
             if regular(pid):
-                return True
+                found.add(pid)
+                continue
             parent = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
             if parent.isdigit() and int(parent) != os.getpid() and regular(int(parent)):
-                return True
+                found.add(int(parent))
     except Exception:
         LOGGER.debug("Unable to read which apps are playing", exc_info=True)
-    return False
+    return found
 
 
 def refresh() -> None:
