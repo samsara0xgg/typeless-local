@@ -76,7 +76,7 @@ LOGGER = logging.getLogger(__name__)
 Mode = Literal["tap", "hands_free"]
 DOUBLE_CLICK_SECONDS = 0.4
 # After pressing play/pause, how long to watch for media that started instead of stopping.
-MEDIA_CHECK_S = 0.6
+MEDIA_CHECK_S = 0.8
 MEDIA_POLL_S = 0.05
 LONG_PRESS_SECONDS = 0.6
 # A right-Cmd hold this long into its recording is talking, not a slow chord:
@@ -1532,28 +1532,37 @@ class TypelessLocalApp:
 
         The play/pause key goes to the Now Playing app, and nothing says
         whether that app is playing: a class on Zoom holds output open while
-        the music sits paused, and the key would start the music. So the key
-        is pressed and the output watched; an app that starts playing because
-        of it gets the key again at once, and nothing is resumed later.
+        the music sits paused, and some players (NetEase, Spotify) keep output
+        open while paused, so the key could start the music. So the key is
+        pressed and the output watched: only an app that stops sending audio
+        counts as paused, and is resumed afterwards. One that starts, or no
+        visible change at all, gets the key again at once and is left alone.
         """
 
         self._media_paused = False
         if not getattr(self.audio_ducker, "enabled", True):
             return  # "mute other sound while recording" is off: leave the music alone too
         before = devices.playing_apps()
-        if not before:
+        if not before or all(devices.is_call_app(pid) for pid in before):
+            # Only a call is holding output (a class on Zoom): the key would
+            # go to a paused music app, or launch Music, and start it.
             return
         press_play_pause()
         deadline = time.monotonic() + MEDIA_CHECK_S
         while time.monotonic() < deadline:
-            started = devices.playing_apps() - before
-            if started:
-                LOGGER.info("Play/pause started paused media (pid %s); pausing it again", sorted(started))
+            now = devices.playing_apps()
+            if now - before:
+                LOGGER.info("Play/pause started paused media (pid %s); pausing it again", sorted(now - before))
                 press_play_pause()
                 return
+            if before - now:
+                LOGGER.info("Pausing media while recording")
+                self._media_paused = True
+                return
             time.sleep(MEDIA_POLL_S)
-        LOGGER.info("Pausing media while recording")
-        self._media_paused = True
+        # ponytail: an ambiguous press is undone (a brief blip at worst); per-process levels would tell for sure.
+        LOGGER.info("Could not tell what play/pause did; pressing it again")
+        press_play_pause()
 
     def _resume_media(self) -> None:
         if getattr(self, "_media_paused", False):

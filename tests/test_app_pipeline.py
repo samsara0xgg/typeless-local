@@ -206,6 +206,7 @@ def _media_keys(monkeypatch) -> list[str]:
 
     presses: list[str] = []
     monkeypatch.setattr(app_module.devices, "playing_apps", lambda: set())
+    monkeypatch.setattr(app_module.devices, "is_call_app", lambda pid: False)
     monkeypatch.setattr(app_module, "press_play_pause", lambda: presses.append("play_pause"))
     return presses
 
@@ -1510,14 +1511,41 @@ def test_music_playing_elsewhere_is_paused_for_the_recording_and_resumed(monkeyp
         "typeless_local.app.capture_focus_context",
         lambda **_: FocusContext(app_name="TextEdit", window_title="Untitled"),
     )
-    monkeypatch.setattr(app_module, "MEDIA_CHECK_S", 0.02)
-    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: {101})  # Music, playing
+    music, playing = 101, {101}
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: set(playing))
+    monkeypatch.setattr(app_module, "press_play_pause", lambda: (_media_keys.append("play_pause"), playing.symmetric_difference_update({music})))
     app = _recording_app()
 
     app._start_recording("tap")
-    assert _media_keys == ["play_pause"]
+    assert _media_keys == ["play_pause"] and playing == set()  # it stopped sending audio: paused
+    app._finish_recording()
+    assert _media_keys == ["play_pause", "play_pause"] and playing == {music}
+
+
+def test_a_player_that_keeps_output_open_is_put_back_as_it_was(monkeypatch, _media_keys) -> None:
+    """NetEase holds output open while paused: no change is visible, so the press is undone."""
+
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
+    monkeypatch.setattr(app_module, "MEDIA_CHECK_S", 0.02)
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: {101})
+    monkeypatch.setattr(app_module.devices, "is_call_app", lambda pid: False)
+    app = _recording_app()
+
+    app._start_recording("tap")
+    assert _media_keys == ["play_pause", "play_pause"]
     app._finish_recording()
     assert _media_keys == ["play_pause", "play_pause"]
+
+
+def test_only_a_call_holding_output_never_touches_play_pause(monkeypatch, _media_keys) -> None:
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: {200})
+    monkeypatch.setattr(app_module.devices, "is_call_app", lambda pid: pid == 200)
+    app = _recording_app()
+
+    app._start_recording("tap")
+    app._finish_recording()
+    assert _media_keys == []
 
 
 def test_paused_music_is_never_started_by_the_recording(monkeypatch, _media_keys) -> None:
