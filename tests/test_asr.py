@@ -197,3 +197,14 @@ def test_chinese_clauses_get_full_width_punctuation() -> None:
     assert full_width_punctuation("明天下午3点我们在会议室开会,记得带上项目报告。") == "明天下午3点我们在会议室开会，记得带上项目报告。"
     assert full_width_punctuation("你好吗? 我很好!") == "你好吗？我很好！"
     assert full_width_punctuation("It costs 3,000, ok?") == "It costs 3,000, ok?"
+
+
+def test_a_per_call_language_does_not_stay_on_the_recognizer(monkeypatch, tmp_path: Path) -> None:
+    calls = _fake_mlx_whisper(monkeypatch)
+    j = asr_module.JarvisASR(tmp_path, _mlx_config())
+
+    j.transcribe(np.ones(16000, dtype=np.float32) * 0.1, language="zh")
+    j.transcribe(np.ones(16000, dtype=np.float32) * 0.1)
+
+    assert [call["language"] for call in calls] == ["zh", None]
+    assert j._recognizer.language is None

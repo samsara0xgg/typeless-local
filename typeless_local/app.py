@@ -23,7 +23,7 @@ from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 import numpy as np
 from PyObjCTools import AppHelper
 
-from typeless_local import app_version, brand, diagnostics, i18n, keyboard_layout, keychain, permissions, reach, trial, usage
+from typeless_local import app_version, brand, diagnostics, i18n, keyboard_layout, keychain, languages, permissions, reach, trial, usage
 from typeless_local.i18n import t
 from typeless_local.asr import JarvisASR, Transcript, mlx_whisper_repo
 from typeless_local.audio import MicrophoneRecorder, keep_recording, peak_level
@@ -90,7 +90,8 @@ PASTE_CHECK_S = 0.5
 MIN_MIC_STARTUP_SECONDS = 0.75
 # A non-Chinese transcript this short is usually Whisper inventing a word over
 # noise ("you", "Bye."), but it is also how "OK" and "Yes" come out. Whisper's
-# own confidence tells them apart: invented words score low.
+# own confidence tells them apart: invented words score low. A language the
+# user does not speak (not in languages.allowed) is dropped whatever the score.
 SHORT_FRAGMENT_CHARS = 5
 WHISPER_WINDOW_S = 30
 # Whisper's prompt is text it takes to have come before: Simplified text
@@ -1687,13 +1688,63 @@ class TypelessLocalApp:
         when refinement is off or fails. Automatic and English get no hint."""
 
         sample_rate = int(getattr(self.config, "sample_rate", 16000))
-        if audio.size > WHISPER_WINDOW_S * sample_rate:
-            return self.asr.transcribe(audio, initial_prompt=None)
-        prompt = getattr(self, "whisper_prompt", "") or ""
         spoken = str((getattr(self.asr, "_asr_config", None) or {}).get("language") or "")
-        if spoken == "zh":
-            prompt = f"{SIMPLIFIED_HINT} {prompt}".strip()
-        return self.asr.transcribe(audio, initial_prompt=prompt or None)
+        if audio.size > WHISPER_WINDOW_S * sample_rate:
+            transcript = self.asr.transcribe(audio, initial_prompt=None)
+            self._learn_language(transcript, audio.size / sample_rate, spoken)
+            return transcript
+        prompt = getattr(self, "whisper_prompt", "") or ""
+        hint = f"{SIMPLIFIED_HINT} {prompt}".strip()
+        transcript = self.asr.transcribe(audio, initial_prompt=(hint if spoken == "zh" else prompt) or None)
+        if not spoken and audio.size < languages.SHORT_CLIP_S * sample_rate:
+            redo = self._misheard_language(transcript, audio)
+            if redo:
+                transcript = self.asr.transcribe(
+                    audio, initial_prompt=(hint if redo == "zh" else prompt) or None, language=redo
+                )
+        self._learn_language(transcript, audio.size / sample_rate, spoken)
+        return transcript
+
+    def _allowed_languages(self) -> set[str]:
+        prefs = getattr(self, "prefs", None)
+        return languages.allowed(getattr(prefs, "heard_languages", ()))
+
+    def _misheard_language(self, transcript: Transcript, audio: np.ndarray) -> str | None:
+        """Automatic, short clip: Whisper's free guess is usually right, so it costs nothing.
+        Only a language outside the user's own is checked again: the likeliest
+        allowed one, or None to keep what was heard."""
+
+        heard = str(getattr(transcript, "language", "") or "").lower()
+        allowed = self._allowed_languages()
+        if heard in allowed or not languages.whisper_codes([heard]):
+            return None
+        try:
+            chosen = languages.pick(self.asr.detect_language(audio), allowed)
+        except Exception:
+            LOGGER.debug("Language detection for a short clip failed; keeping what Whisper heard", exc_info=True)
+            return None
+        if chosen:
+            LOGGER.info("Whisper heard %s in a short clip; hearing it again as %s", heard, chosen)
+        return chosen
+
+    def _learn_language(self, transcript: Transcript, seconds: float, spoken: str) -> None:
+        """A confident long dictation in Automatic shows a language the user speaks."""
+
+        language = str(getattr(transcript, "language", "") or "").lower()
+        if (
+            spoken
+            or seconds < languages.SHORT_CLIP_S
+            or float(getattr(transcript, "confidence", 0.0) or 0.0) < languages.LEARN_MIN_CONFIDENCE
+            or len(str(getattr(transcript, "text", "") or "").strip()) < languages.LEARN_MIN_CHARS
+        ):
+            return
+        heard = list(getattr(getattr(self, "prefs", None), "heard_languages", ()))
+        if language in heard or not languages.whisper_codes([language]):
+            return
+        try:
+            self.set_preference("heard_languages", (heard + [language])[-languages.MAX_HEARD_LANGUAGES:])
+        except Exception:
+            LOGGER.debug("Could not remember language %s", language, exc_info=True)
 
     def _refine_context(self, context: FocusContext) -> FocusContext:
         """What refinement may see of the focused app, as the privacy settings allow."""
@@ -1970,15 +2021,18 @@ class TypelessLocalApp:
         if not text:
             return True
         language = str(getattr(transcript, "language", "") or "").lower()
-        if language and language != "zh" and len(text) <= SHORT_FRAGMENT_CHARS:
+        if language and len(text) <= SHORT_FRAGMENT_CHARS:
             confidence = float(getattr(transcript, "confidence", 0.0) or 0.0)
-            if language == "en" and confidence >= MIN_SHORT_ENGLISH_CONFIDENCE:
+            # A language the user chose in Settings is theirs even if the Mac does not list it.
+            spoken = str((getattr(self.asr, "_asr_config", None) or {}).get("language") or "")
+            if language not in self._allowed_languages() | {spoken}:
+                reason = "language the user does not speak"
+            elif language != "zh" and confidence < MIN_SHORT_ENGLISH_CONFIDENCE:
+                reason = "low confidence"
+            else:
                 return False
             LOGGER.info(
-                "Dropping short non-zh ASR fragment: lang=%s conf=%.2f text=%r",
-                language,
-                confidence,
-                text,
+                "Dropping short ASR fragment (%s): lang=%s conf=%.2f text=%r", reason, language, confidence, text
             )
             return True
         return False
