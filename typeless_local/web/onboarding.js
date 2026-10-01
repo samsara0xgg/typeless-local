@@ -80,19 +80,27 @@ function apiKey() {
     act + (k.has || (UI.key && UI.key.ok) ? '' : link(L('暂不设置，先插入原始转写', 'Skip for now and insert raw transcripts'), 'next')));
 }
 
-// On the free trial refinement already works; their own key is optional and for later.
+// On the free trial refinement already works: starting the trial is the big,
+// obvious choice; their own key is tucked behind a link for later.
 function trialKey() {
-  const lede = L('已经可以直接用：前几次润色由言字免费提供，不用填任何东西。想长期用，再填你自己的 OpenAI API Key。',
-    'It already works: the first refinements are on us, nothing to fill in. For the long run, add your own OpenAI API key.');
+  const lede = L('前大约 400 次润色免费，不用填任何东西，现在就能用。之后需要你自己的 OpenAI API Key，到时候会提醒你。',
+    'Your first 400 or so refinements are free, with nothing to fill in. After that you will need your own OpenAI API key; you will be reminded when the time comes.');
+  const start = `<button class="gbtn pri big" data-o="next">${esc(L('开始免费试用', 'Start the Free Trial'))}</button>`;
+  if (!UI.ownKey && !UI.keyBusy && !UI.key) {
+    const card = `<div class="trialcard"><b>~400</b><span>${esc(L('次免费润色，送给你', 'free refinements, on us'))}</span></div>`;
+    return page(tile('key', '#34C759'), L('免费试用已开启', 'Your free trial is on'), lede, card,
+      start + link(L('我已经有 OpenAI API Key', 'I already have an OpenAI API key'), 'own-key'));
+  }
   const field = `<div class="fieldline"><span class="svc">OpenAI</span>`
-    + `<input class="secure" id="key" type="password" autocomplete="off" spellcheck="false" placeholder="${L('可选：sk-…', 'Optional: sk-…')}" aria-label="OpenAI API Key"${UI.keyBusy ? ' disabled' : ''}></div>`;
+    + `<input class="secure" id="key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…" aria-label="OpenAI API Key"${UI.keyBusy ? ' disabled' : ''}></div>`;
   let act;
   if (UI.keyBusy) act = spin(L('正在保存并发送一次测试请求…', 'Saving and sending a test request…'));
   else if (UI.key && UI.key.ok) act = status(esc(UI.key.msg), 'ok') + next();
-  else if (UI.key) act = status(esc(UI.key.msg), 'err') + btn(L('继续用免费试用', 'Continue on the Free Trial'), 'next') + link(L('再试一次', 'Try Again'), 'verify');
-  else act = btn(L('继续用免费试用', 'Continue on the Free Trial'), 'next') + link(L('保存我的 Key', 'Save My Key'), 'verify')
-    + link(L('去 OpenAI 申请 Key', 'Get a Key from OpenAI'), 'open-keys');
-  return page(tile('key', '#AF52DE'), L('润色已经可以用了', 'Refinement is ready'), lede, field, act);
+  else if (UI.key) act = status(esc(UI.key.msg), 'err') + btn(L('再试一次', 'Try Again'), 'verify') + link(L('先用免费试用', 'Use the Free Trial for Now'), 'next');
+  else act = btn(L('保存我的 Key', 'Save My Key'), 'verify') + link(L('去 OpenAI 申请 Key', 'Get a Key from OpenAI'), 'open-keys')
+    + link(L('先用免费试用', 'Use the Free Trial for Now'), 'next');
+  return page(tile('key', '#AF52DE'), L('用你自己的 OpenAI Key', 'Use your own OpenAI key'),
+    L('保存在这台 Mac 的钥匙串里。保存后就不再走免费试用。', "It's kept in this Mac's keychain. Once it's saved, the free trial is no longer used."), field, act);
 }
 
 function download() {
@@ -192,6 +200,7 @@ document.addEventListener('click', e => {
   else if (o === 'a11y') { UI.asked = 'a11y'; post({ t: 'a11y' }); draw(); }
   else if (o === 'verify') verify();
   else if (o === 'open-keys') post({ t: 'open', what: 'openai-keys' });
+  else if (o === 'own-key') { UI.ownKey = true; draw(); }
   else if (o === 'download') { UI.dl = { p: 0, eta: '', done: false, error: false }; post({ t: 'download' }); draw(); }
   else if (o === 'done') post({ t: 'done' });
   else if (o === 'lang') post({ t: 'lang', v: e.target.closest('[data-o]').dataset.v });
@@ -226,8 +235,7 @@ on('state', m => {
   S = m;
   // Waiting on a permission and it just came through: carry on by itself.
   if (before && step === 1 && UI.asked === 'mic' && m.mic !== 'not_determined') {
-    UI.asked = '';
-    if (m.mic === 'authorized') advanceSoon(1);
+    UI.asked = '';  // stays on this step: they press Continue themselves
   }
   if (before && step === 2 && UI.asked === 'a11y' && m.ax && !before.ax) advanceSoon(2);
   draw();
