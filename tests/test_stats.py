@@ -30,3 +30,25 @@ def test_a_failed_send_keeps_the_day_for_later(tmp_path) -> None:
 
     assert stats.send("https://x/stats", today=date(2026, 10, 3), post=offline) == 0
     assert "2026-10-01" in json.loads((tmp_path / "stats.json").read_text())["days"]
+
+
+def test_turning_stats_off_during_a_send_stops_it_and_leaves_no_file(tmp_path) -> None:
+    from datetime import date
+
+    from typeless_local.stats import DailyStats
+
+    stats = DailyStats(tmp_path / "stats.json", "0.4.0")
+    stats.record(dictations=1, today=date(2026, 9, 1))
+    stats.record(dictations=1, today=date(2026, 9, 2))
+    posted = []
+
+    def post(url, payload):
+        posted.append(payload["day"])
+        stats.forget()  # the user turns it off while the first day is in flight
+
+    stats.send("https://x/stats", today=date(2026, 9, 3), post=post)
+
+    assert posted == ["2026-09-01"]
+    assert not (tmp_path / "stats.json").exists()
+    stats.record(dictations=1, today=date(2026, 9, 3))
+    assert not (tmp_path / "stats.json").exists()

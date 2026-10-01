@@ -28,6 +28,9 @@ class DailyStats:
         self.path = path
         self.version = version
         self._lock = threading.Lock()
+        # Cleared by forget(): a send already under way then neither posts
+        # another day nor writes the file back.
+        self.enabled = True
 
     def _load(self) -> dict:
         try:
@@ -49,6 +52,8 @@ class DailyStats:
 
         day = (today or date.today()).isoformat()
         with self._lock:
+            if not self.enabled:
+                return
             data = self._load()
             counts = data["days"].setdefault(day, {"dictations": 0, "chars": 0, "trial_spend": 0.0})
             counts["dictations"] += dictations
@@ -66,6 +71,8 @@ class DailyStats:
         for day in sorted(data["days"]):
             if day >= today.isoformat():
                 continue
+            if not self.enabled:
+                break
             if (today - date.fromisoformat(day)).days <= KEEP_DAYS:
                 counts = data["days"][day]
                 payload = {"id": data["id"], "day": day, "version": self.version, **counts}
@@ -76,6 +83,8 @@ class DailyStats:
                     break
                 sent += 1
             with self._lock:
+                if not self.enabled:
+                    break
                 current = self._load()
                 current["days"].pop(day, None)
                 self._save(current)
@@ -85,6 +94,7 @@ class DailyStats:
         """Turned off: drop the counts not sent yet."""
 
         with self._lock:
+            self.enabled = False
             try:
                 self.path.unlink()
             except OSError:

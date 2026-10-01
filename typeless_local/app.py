@@ -420,8 +420,11 @@ class TypelessLocalApp:
             self._relocalize()
         if changed in (None, "model_source"):
             reach.use_model_source(prefs.model_source)
-        if changed == "send_usage_stats" and not prefs.send_usage_stats and getattr(self, "daily_stats", None):
-            self.daily_stats.forget()
+        if changed == "send_usage_stats" and getattr(self, "daily_stats", None):
+            if prefs.send_usage_stats:
+                self.daily_stats.enabled = True
+            else:
+                self.daily_stats.forget()
 
     def _relocalize(self) -> None:
         """Redraw everything that has words in it, in the language just chosen."""
@@ -610,7 +613,8 @@ class TypelessLocalApp:
 
         AppHelper.callLater(STATS_EVERY_S, self._send_stats)
         stats, url = getattr(self, "daily_stats", None), self._stats_url()
-        if stats is None or not url or not self.prefs.send_usage_stats:
+        # Nothing goes out before the guide, which is where the user is told about it.
+        if stats is None or not url or not self.prefs.send_usage_stats or not self.prefs.onboarding_done:
             return
 
         def run() -> None:

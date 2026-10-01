@@ -7,11 +7,13 @@ UPSTREAM = "https://api.openai.com/v1"
 MODEL = "gpt-5.6-terra"
 DEVICE_BUDGET_USD = "0.50"
 MONTHLY_BUDGET_USD = "20"
+IP_DAILY_BUDGET_USD = "1"
 TRIAL_COUNTRIES = "US,CA"
 
 # Secrets, set with `npx wrangler secret put <NAME>`:
 #   OPENAI_API_KEY  the capped key the trial spends
-#   ADMIN_TOKEN     opens /admin?token=...
+#   ADMIN_TOKEN     opens /admin?token=... (then kept in a cookie)
+#   IP_SALT         optional; salts the hashed client IPs
 
 [[d1_databases]]
 binding = "DB"

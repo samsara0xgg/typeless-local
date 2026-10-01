@@ -467,6 +467,7 @@ class Windows:
             why = {
                 "trial_region": t("免费试用只在美国和加拿大提供。", "The free trial is only offered in the US and Canada."),
                 "trial_paused": t("免费试用本月已暂停。", "The free trial is paused this month."),
+                "trial_ip": t("这个网络今天的免费额度用完了，明天再试。", "This network's free trial is done for today; try again tomorrow."),
             }
             return False, 0, why.get(exc.code, t("免费试用已经用完了。", "The free trial is used up."))
         except MissingAPIKey:

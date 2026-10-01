@@ -9,6 +9,13 @@ CREATE TABLE IF NOT EXISTS trial_devices (
   last_seen TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS trial_ips (
+  ip TEXT NOT NULL,             -- SHA-256 of the client IP and a salt, never the IP
+  day TEXT NOT NULL,            -- YYYY-MM-DD, UTC
+  spend REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (ip, day)
+);
+
 CREATE TABLE IF NOT EXISTS trial_months (
   month TEXT PRIMARY KEY,       -- YYYY-MM, UTC
   spend REAL NOT NULL DEFAULT 0
@@ -21,6 +28,6 @@ CREATE TABLE IF NOT EXISTS daily_stats (
   dictations INTEGER NOT NULL,
   chars INTEGER NOT NULL,
   trial_spend REAL NOT NULL,
-  country TEXT,
+  country TEXT,                 -- no longer written
   PRIMARY KEY (id, day)
 );

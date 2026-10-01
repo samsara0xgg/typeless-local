@@ -140,7 +140,7 @@ function view(st, o) {
     }
     case 'inserted-raw-net': return [`<span class="lead warn wiggle">${I('warn')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${why(o.why)}</span></span>`, 'pill', o.why === 'credit' ? [BUD.billing()] : o.why === 'badkey' ? [BUD.setkey()] : [BUD.rerefine(), BUD.undo()], `${L('已插入原始转写，', 'Inserted the raw transcript: ')}${why(o.why)}`];
     case 'inserted-raw-trial': {
-      const r = { trial_region: L('免费试用仅限美国和加拿大', 'free trial is US and Canada only'), trial_paused: L('免费试用本月已暂停', 'free trial paused this month') }[o.why] || L('免费试用已用完', 'free trial used up');
+      const r = { trial_region: L('免费试用仅限美国和加拿大', 'free trial is US and Canada only'), trial_paused: L('免费试用本月已暂停', 'free trial paused this month'), trial_ip: L('这个网络今天的免费额度用完了', "this network's free trial is done for today") }[o.why] || L('免费试用已用完', 'free trial used up');
       return [`<span class="lead warn">${I('key')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${r}</span></span>`, 'pill', [BUD.setkey()], L(`已插入原始转写，${r}，可以填自己的 API Key`, `Inserted the raw transcript: ${r}; add your own API key`)];
     }
     case 'inserted-raw-key': return [`<span class="lead warn">${I('key')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${L('缺少 API Key', 'no API key')}</span></span>`, 'pill', [BUD.setkey()], L('已插入原始转写，还没有设置 API Key', 'Inserted the raw transcript: no API key is set')];
