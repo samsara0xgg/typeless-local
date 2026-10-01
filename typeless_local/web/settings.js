@@ -18,7 +18,7 @@ const PANES = [
 ];
 const paneTitle = id => L(...PANES.find(p => p[0] === id)[1]);
 const DAYS = v => ({ 30: L('30 天', '30 days'), 90: L('90 天', '90 days'), 365: L('1 年', '1 year'), 0: L('永久', 'Forever') })[v] || L(`${v} 天`, `${v} days`);
-const LANGS = () => [['', L('自动（中英混说）', 'Automatic (mixed Chinese and English)')], ['zh', '中文'], ['en', 'English']];
+const LANGS = () => [['', L('自动', 'Automatic')], ['zh', '中文'], ['en', 'English']];
 // The interface language names itself in both, so it can be found whichever one is showing.
 const UI_LANGS = () => [['auto', L('跟随系统', 'Same as the Mac')], ['zh', '中文'], ['en', 'English']];
 const SOURCES = () => [['auto', L('自动', 'Automatic')], ['huggingface', 'Hugging Face'], ['mirror', L('国内镜像 hf-mirror.com', 'China mirror (hf-mirror.com)')]];
@@ -78,7 +78,7 @@ function dictation() {
   return head(paneTitle('dictation'))
     + grp([
       row(L('识别语言', 'Spoken language'), select('language', S.language, LANGS(), L('识别语言', 'Spoken language')),
-        L('自动能识别中英混说；固定一种语言会快一点。', 'Automatic handles Chinese and English mixed; one fixed language is a little faster.')),
+        L('自动会听出你说的语言，混着说也行；固定一种语言会快一点。', 'Automatic hears which language you speak, even mixed; one fixed language is a little faster.')),
       row(L('语音模型', 'Speech model'), `<span class="val">${L('在这台 Mac 上运行', 'Runs on this Mac')}</span>`),
       row(L('模型下载源', 'Model download'), select('model_source', p.model_source, SOURCES(), L('模型下载源', 'Model download')),
         L('自动：在中国大陆用国内镜像，其他地方用 Hugging Face。只管下载，识别始终在这台 Mac 上。',

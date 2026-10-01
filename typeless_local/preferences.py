@@ -9,7 +9,7 @@ reads them.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 import logging
 from typing import Any
 
@@ -65,6 +65,9 @@ class Preferences:
     onboarding_done: bool = False
     ui_language: str = "auto"
     model_source: str = "auto"
+    # Languages heard in confident long dictations; with the spoken language on
+    # Automatic they are allowed on short clips (languages.py). Not in Settings.
+    heard_languages: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

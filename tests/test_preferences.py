@@ -65,3 +65,13 @@ def test_f5_is_off_for_new_installs_and_kept_for_earlier_ones(monkeypatch, tmp_p
 
     save_preference(paths, prefs, "f5_hotkey", False)
     assert load_preferences(paths).f5_hotkey is False  # and turning it off sticks
+
+
+def test_heard_languages_persist_as_a_list(monkeypatch, tmp_path) -> None:
+    paths = _paths(monkeypatch, tmp_path)
+
+    prefs = save_preference(paths, load_preferences(paths), "heard_languages", ["de", "ja"])
+
+    assert prefs.heard_languages == ["de", "ja"]
+    assert load_preferences(paths).heard_languages == ["de", "ja"]
+    assert Preferences().heard_languages == []

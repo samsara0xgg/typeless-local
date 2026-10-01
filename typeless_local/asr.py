@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 import importlib.util
 import inspect
@@ -154,11 +155,15 @@ class JarvisASR:
         self,
         audio: np.ndarray,
         initial_prompt: str | None = None,
+        language: str | None = None,
     ) -> Transcript:
-        """Transcribe mono float32 audio with an optional Whisper initial prompt."""
+        """Transcribe mono float32 audio with an optional Whisper initial prompt.
+
+        ``language`` forces the language for this call only.
+        """
 
         effective_prompt = initial_prompt
-        with self._prompt_lock:
+        with self._prompt_lock, self._language_for_call(language):
             if not initial_prompt:
                 result = self._recognizer.transcribe(audio)
             elif self._accepts_per_call_prompt:
@@ -187,6 +192,41 @@ class JarvisASR:
             language=str(getattr(result, "language", "") or "unknown"),
             confidence=float(getattr(result, "confidence", 0.0) or 0.0),
         )
+
+    @contextmanager
+    def _language_for_call(self, language: str | None):
+        """Under the prompt lock: ``language`` for one call, then the user's setting again."""
+
+        if not language:
+            yield
+            return
+        kept = self._recognizer.language
+        self._recognizer.language = language
+        try:
+            yield
+        finally:
+            self._recognizer.language = kept
+
+    def detect_language(self, audio: np.ndarray) -> dict[str, float]:
+        """Whisper's probability for each language it knows, from the first 30 s of ``audio``.
+
+        The same steps mlx_whisper.transcribe takes when no language is set,
+        on the model and dtype the recognizer already loaded.
+        """
+
+        import mlx.core as mx  # noqa: PLC0415
+        from mlx_whisper.audio import N_FRAMES, N_SAMPLES, log_mel_spectrogram, pad_or_trim  # noqa: PLC0415
+        from mlx_whisper.transcribe import ModelHolder  # noqa: PLC0415
+
+        rec = self._recognizer
+        dtype = mx.float16 if rec._mlx_whisper_fp16 else mx.float32
+        with self._prompt_lock:
+            model = ModelHolder.get_model(rec._mlx_whisper_repo, dtype)
+            if not model.is_multilingual:
+                return {}
+            mel = log_mel_spectrogram(rec._normalize_audio(audio), n_mels=model.dims.n_mels, padding=N_SAMPLES)
+            _, probs = model.detect_language(pad_or_trim(mel, N_FRAMES, axis=-2).astype(dtype))
+        return {lang: float(p) for lang, p in probs.items()}
 
     def _rehear_looped(self, audio: np.ndarray):
         """Decode a looped chunk again with Whisper's temperature fallback.

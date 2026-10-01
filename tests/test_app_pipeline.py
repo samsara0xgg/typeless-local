@@ -107,10 +107,16 @@ class _FakeASR:
         self.confidence = confidence
         self.calls = []
         self.prompts = []
+        self.languages = []
+        self.probs = {}
 
-    def transcribe(self, audio: np.ndarray, initial_prompt: str | None = None) -> Transcript:
+    def detect_language(self, audio: np.ndarray) -> dict:
+        return self.probs
+
+    def transcribe(self, audio: np.ndarray, initial_prompt: str | None = None, language: str | None = None) -> Transcript:
         self.calls.append(audio)
         self.prompts.append(initial_prompt)
+        self.languages.append(language)
         return Transcript(text=self.text, language=self.language, confidence=self.confidence)
 
 
@@ -118,8 +124,9 @@ class _FakeRefiner:
     def __init__(self) -> None:
         self.calls = []
 
-    def refine(self, text: str, context: FocusContext, vocab=None) -> RefineResult:
+    def refine(self, text: str, context: FocusContext, vocab=None, language="") -> RefineResult:
         self.calls.append((text, context))
+        self.language = language
         return RefineResult(text="Refined text.", raw_text=text, model="gpt-5.4-mini")
 
 
@@ -290,6 +297,30 @@ def test_word_list_goes_to_whisper_only_for_chunks_within_one_window() -> None:
     app._hear(np.full(16000 * 31, 0.5, dtype=np.float32))
 
     assert app.asr.prompts == ["Common terms: Jarvis, StarTrial.", None]
+
+
+def test_chinese_as_the_spoken_language_asks_whisper_for_simplified() -> None:
+    """Only a forced-Chinese recognizer gets the Simplified hint: Automatic and
+    English must not be pushed toward Chinese."""
+
+    app = _make_app("hi")
+    app.whisper_prompt = "Common terms: Jarvis."
+    for spoken in ("zh", "", "en"):
+        app.asr._asr_config = {"language": spoken}
+        app._hear(np.full(16000 * 10, 0.5, dtype=np.float32))
+    app.asr._asr_config = {}
+    app.whisper_prompt = ""
+    app._hear(np.full(16000 * 10, 0.5, dtype=np.float32))
+    app.asr._asr_config = {"language": "zh"}
+    app._hear(np.full(16000 * 31, 0.5, dtype=np.float32))
+
+    assert app.asr.prompts == [
+        f"{app_module.SIMPLIFIED_HINT} Common terms: Jarvis.",
+        "Common terms: Jarvis.",
+        "Common terms: Jarvis.",
+        None,
+        None,
+    ]
 
 
 def test_process_audio_hands_the_text_over_in_a_card_when_focus_is_not_editable(monkeypatch) -> None:
@@ -691,7 +722,7 @@ class _FailingRefiner:
     def __init__(self, exc: Exception) -> None:
         self.exc = exc
 
-    def refine(self, text, context, vocab=None):
+    def refine(self, text, context, vocab=None, language=""):
         raise self.exc
 
 
@@ -1822,3 +1853,145 @@ def test_an_app_with_no_readable_field_is_still_pasted_into(monkeypatch) -> None
 
     assert pasted == ["Refined text."]
     assert app.overlay.shown()[-1] == "inserted"
+
+
+def _audio(seconds: float) -> np.ndarray:
+    return np.full(int(16000 * seconds), 0.5, dtype=np.float32)
+
+
+def _auto_app(monkeypatch, system=("en", "zh")) -> TypelessLocalApp:
+    monkeypatch.setattr(app_module.languages, "_system", frozenset(system))
+    app = _make_app("hi")
+    app.prefs = Preferences()
+    app.asr._asr_config = {"language": ""}
+    app.asr.probs = {"is": 0.5, "zh": 0.3, "en": 0.2}
+    return app
+
+
+def _detecting(app, probs) -> list:
+    detections = []
+    app.asr.detect_language = lambda audio: (detections.append(1), probs)[1]
+    return detections
+
+
+def test_a_short_clip_heard_in_an_allowed_language_costs_no_detection(monkeypatch) -> None:
+    app = _auto_app(monkeypatch)
+    app.asr.language = "zh"
+    detections = _detecting(app, {"is": 0.5})
+
+    app._whisper(_audio(2))
+
+    assert detections == []
+    assert app.asr.languages == [None]
+
+
+def test_a_short_clip_heard_in_a_foreign_language_is_heard_again_in_the_likeliest_allowed_one(monkeypatch) -> None:
+    app = _auto_app(monkeypatch)
+    app.asr.language = "is"
+    detections = _detecting(app, {"is": 0.5, "zh": 0.3, "en": 0.2})
+    app.whisper_prompt = "Common terms: Jarvis."
+
+    app._whisper(_audio(2))
+
+    assert len(detections) == 1
+    assert app.asr.languages == [None, "zh"]
+    assert app.asr.prompts == ["Common terms: Jarvis.", f"{app_module.SIMPLIFIED_HINT} Common terms: Jarvis."]
+
+
+def test_an_english_redo_gets_no_simplified_hint(monkeypatch) -> None:
+    app = _auto_app(monkeypatch, system=("en",))
+    app.asr.language = "ko"
+
+    app._whisper(_audio(2))
+
+    assert app.asr.languages == [None, "en"]
+    assert app.asr.prompts == [None, None]
+
+
+def test_short_clip_routing_leaves_long_clips_and_chosen_languages_alone(monkeypatch) -> None:
+    app = _auto_app(monkeypatch)
+    app.asr.language = "is"
+    detections = _detecting(app, {"en": 1.0})
+    app._whisper(_audio(4))  # not shorter than SHORT_CLIP_S
+    app._whisper(_audio(35))
+    for spoken in ("zh", "en"):
+        app.asr._asr_config = {"language": spoken}
+        app._whisper(_audio(2))
+
+    assert detections == []
+    assert app.asr.languages == [None] * 4
+
+
+def test_a_failed_or_empty_detection_keeps_the_free_result(monkeypatch) -> None:
+    app = _auto_app(monkeypatch)
+    app.asr.language = "is"
+    app.asr.detect_language = lambda audio: 1 / 0
+    app._whisper(_audio(2))
+    app.asr.detect_language = lambda audio: {"is": 1.0}  # nothing allowed has any probability
+    app._whisper(_audio(2))
+
+    assert app.asr.languages == [None, None]
+
+
+def test_a_confident_long_dictation_teaches_its_language(monkeypatch) -> None:
+    app = _auto_app(monkeypatch)
+    saved = []
+    app.set_preference = lambda key, value: (saved.append((key, value)), setattr(app, "prefs", dataclasses.replace(app.prefs, **{key: value})))
+    app.asr = _FakeASR("Das ist ein langer Satz", language="de", confidence=0.9)
+    app.asr._asr_config = {"language": ""}
+
+    app._whisper(_audio(5))
+    app._whisper(_audio(5))  # already known: not saved again
+
+    assert saved == [("heard_languages", ["de"])]
+    assert app._allowed_languages() == {"en", "zh", "de"}
+
+
+def test_learning_needs_a_long_confident_automatic_transcript_of_a_known_language(monkeypatch) -> None:
+    app = _auto_app(monkeypatch)
+    saved = []
+    app.set_preference = lambda key, value: saved.append(value)
+    long_text = "Das ist ein langer Satz"
+    for text, language, confidence, seconds, spoken in [
+        (long_text, "de", 0.9, 2, ""),  # short clip
+        (long_text, "de", 0.3, 5, ""),  # unsure
+        ("Ja.", "de", 0.9, 5, ""),  # too little text
+        (long_text, "de", 0.9, 5, "en"),  # language chosen in Settings
+        (long_text, "xx", 0.9, 5, ""),  # not a Whisper language
+    ]:
+        app.asr = _FakeASR(text, language=language, confidence=confidence)
+        app.asr._asr_config = {"language": spoken}
+        app._whisper(_audio(seconds))
+
+    assert saved == []
+
+
+def test_heard_languages_are_capped(monkeypatch) -> None:
+    app = _auto_app(monkeypatch)
+    app.prefs = Preferences(heard_languages=["de", "fr", "es", "it", "pt", "nl", "pl", "ru"])
+    saved = []
+    app.set_preference = lambda key, value: saved.append(value)
+    app.asr = _FakeASR("これは長い文章です", language="ja", confidence=0.9)
+    app.asr._asr_config = {"language": ""}
+
+    app._whisper(_audio(5))
+
+    assert saved == [["fr", "es", "it", "pt", "nl", "pl", "ru", "ja"]]
+
+
+def test_short_fragments_are_kept_or_dropped_by_the_allowed_languages(monkeypatch) -> None:
+    app = _auto_app(monkeypatch)
+    app.prefs = Preferences(heard_languages=["de"])
+
+    def drops(text, language, confidence):
+        return app._should_drop_transcript(Transcript(text, language, confidence))
+
+    assert not drops("好的", "zh", 0.1)  # Chinese fragments were always kept
+    assert not drops("OK.", "en", 0.8)
+    assert not drops("Ja.", "de", 0.8)  # learned from earlier dictations
+    assert drops("you", "en", 0.2)  # allowed but unsure
+    assert drops("はい", "ja", 0.99)  # not a language of this user, however sure
+    assert drops("Bye", "is", 0.9)
+    assert not drops("A longer sentence in Icelandic", "is", 0.9)  # the filter is for short fragments
+    app.asr._asr_config = {"language": "ja"}
+    assert not drops("はい", "ja", 0.9)  # chosen in Settings

@@ -13,7 +13,7 @@ from AppKit import NSEvent, NSPasteboard, NSPasteboardTypeString, NSWorkspace
 from PyObjCTools import AppHelper
 import Quartz
 
-from typeless_local import keyboard_layout
+from typeless_local import keyboard_layout, languages
 
 LOGGER = logging.getLogger(__name__)
 
@@ -624,6 +624,7 @@ class GlobalHotkeyMonitor:
         Quartz.CGEventTapEnable(self._tap, True)
         self._watch_mouse()
         keyboard_layout.watch()
+        languages.load_system()  # reads input sources, so here on the main thread, once
         LOGGER.info("Global hotkey monitor started")
 
     def _watch_mouse(self) -> None:

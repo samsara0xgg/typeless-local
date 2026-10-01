@@ -1,6 +1,6 @@
 # 言字 (Yana)
 
-**[Download for macOS](https://github.com/samsara0xgg/typeless-local/releases/download/v0.4.0/Yana-0.4.0.dmg)** (Apple silicon, macOS 13.5+)
+**[Download for macOS](https://github.com/samsara0xgg/typeless-local/releases/download/v0.4.1/Yana-0.4.1.dmg)** (Apple silicon, macOS 13.5+)
 
 > **Limited-time free trial.** Download Yana now and dictate with no API key: a new Mac in the US or Canada gets free refinement to start.
 
@@ -15,7 +15,7 @@ and your key, words and history carry over.
 
 ## Install
 
-[Download Yana-0.4.0.dmg](https://github.com/samsara0xgg/typeless-local/releases/download/v0.4.0/Yana-0.4.0.dmg) (all versions are under
+[Download Yana-0.4.1.dmg](https://github.com/samsara0xgg/typeless-local/releases/download/v0.4.1/Yana-0.4.1.dmg) (all versions are under
 [Releases](https://github.com/samsara0xgg/typeless-local/releases)), open it, and
 drag the app to Applications. The build is signed and notarized by Apple, so it
 opens by double-clicking with no security warnings. If an older `Typlus.app` is
