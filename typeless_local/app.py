@@ -49,6 +49,8 @@ from typeless_local.mac_integration import (
     frontmost_pid,
     has_accessibility_trust,
     paste_text,
+    prepare_paste,
+    focused_text_length,
     press_play_pause,
     request_accessibility_trust,
     set_clipboard_text,
@@ -83,6 +85,8 @@ LONG_PRESS_SECONDS = 0.6
 # A right-Cmd hold this long into its recording is talking, not a slow chord:
 # only then are the speakers muted and the music paused.
 HOLD_CONFIRM_S = 0.6
+# How long a pasted dictation gets to show up in the field before it counts as lost.
+PASTE_CHECK_S = 0.5
 MIN_MIC_STARTUP_SECONDS = 0.75
 # A non-Chinese transcript this short is usually Whisper inventing a word over
 # noise ("you", "Bye."), but it is also how "OK" and "Yes" come out. Whisper's
@@ -1847,11 +1851,26 @@ class TypelessLocalApp:
     def _deliver(self, text: str, raw: str, context: FocusContext, fallback: str, record: SessionRecord) -> None:
         """Paste the text where the caret is, or hand it over in a card when there is nowhere to paste."""
 
-        if context.can_insert_text:
+        where = prepare_paste(context) if context.can_insert_text else "none"
+        if where in ("ok", "blind"):
             LOGGER.info("Pasting refined text into focused app: %s", context.app_name or "unknown")
+            # Measured only where it can mean something: replacing a selection
+            # may leave the length as it was.
+            before = focused_text_length(context.pid) if where == "ok" and not context.selected_text else None
             # The text stays on the clipboard, so a Cmd+V the target app
             # swallowed is recovered with one manual paste.
             paste_text(text)
+            if before is not None and not self._paste_landed(context.pid, before):
+                # Claude and other Electron apps can drop focus from their
+                # composer while the dictation is processed: never say
+                # "inserted" for text that went nowhere.
+                LOGGER.warning("The paste changed nothing in %s; the text is on the clipboard", context.app_name or "unknown")
+                record.was_pasted = False
+                self.state = "idle"
+                self._set_menubar("idle")
+                self._remember(text, context.app_name)
+                self.capsule.show("inserted-unsure")
+                return
             record.was_pasted = True
             LOGGER.info("Dictation inserted %d characters", len(text))
             self.state = "idle"
@@ -1869,15 +1888,28 @@ class TypelessLocalApp:
             return
 
         LOGGER.info(
-            "Focused target is not editable (app=%s role=%s); showing the text to copy",
+            "Nowhere to paste (app=%s role=%s, %s); showing the text to copy",
             context.app_name or "unknown",
             context.focused_role or "unknown",
+            where,
         )
         self._remember(text, context.app_name)
         set_clipboard_text(text)
         self.state = "idle"
         self._set_menubar("idle")
         self.capsule.show("edit-notarget", text=text)
+
+    def _paste_landed(self, pid: int, before: int) -> bool:
+        """Whether the focused field's length changed soon after the Cmd+V."""
+
+        deadline = time.monotonic() + PASTE_CHECK_S
+        while True:
+            now = focused_text_length(pid)
+            if now is None or now != before:
+                return True  # changed, or no longer measurable: not evidence of a lost paste
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
 
     def _keep_recording(self, audio: np.ndarray, sample_rate: int, started: float) -> None:
         """Save this dictation's audio, dropped ones included, when configured to."""

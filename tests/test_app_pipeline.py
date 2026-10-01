@@ -94,6 +94,8 @@ def _mac(monkeypatch):
     _ManualTimer.made = []
     monkeypatch.setattr(app_module.permissions, "microphone_status", lambda: "authorized")
     monkeypatch.setattr(app_module, "frontmost_pid", lambda: TARGET_PID)
+    monkeypatch.setattr(app_module, "prepare_paste", lambda context: "blind")
+    monkeypatch.setattr(app_module, "focused_text_length", lambda pid: None)
     monkeypatch.setattr(app_module, "caret_rect", lambda: None)
     monkeypatch.setattr(app_module, "undo_last_edit", lambda: None)
 
@@ -1778,3 +1780,45 @@ def test_a_slow_chord_only_drops_the_recording_its_hold_started(monkeypatch) -> 
     app._on_hotkey("hold_abort")
     assert app.state == "idle"
     assert app.overlay.shown()[-1] == "cancelled"
+
+
+def _deliver_into_claude(monkeypatch, where, lengths):
+    pasted, copied = [], []
+    monkeypatch.setattr(app_module, "paste_text", pasted.append)
+    monkeypatch.setattr(app_module, "set_clipboard_text", copied.append)
+    monkeypatch.setattr(app_module, "prepare_paste", lambda context: where)
+    monkeypatch.setattr(app_module, "focused_text_length", lambda pid: lengths.pop(0) if lengths else 0)
+    monkeypatch.setattr(app_module, "PASTE_CHECK_S", 0.0)
+    app = _make_app("hello there")
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("Claude", "", can_insert_text=True, pid=TARGET_PID))
+    return app, pasted, copied
+
+
+def test_a_paste_that_changed_nothing_does_not_claim_inserted(monkeypatch) -> None:
+    app, pasted, _ = _deliver_into_claude(monkeypatch, "ok", [0, 0])
+
+    assert pasted == ["Refined text."]
+    assert app.overlay.shown()[-1] == "inserted-unsure"
+
+
+def test_a_paste_that_grew_the_field_says_inserted(monkeypatch) -> None:
+    app, pasted, _ = _deliver_into_claude(monkeypatch, "ok", [0, 12])
+
+    assert pasted == ["Refined text."]
+    assert app.overlay.shown()[-1] == "inserted"
+
+
+@pytest.mark.parametrize("where", ["elsewhere", "lost"])
+def test_no_blind_paste_when_the_text_field_is_gone(monkeypatch, where) -> None:
+    app, pasted, copied = _deliver_into_claude(monkeypatch, where, [])
+
+    assert pasted == []
+    assert copied == ["Refined text."]
+    assert app.overlay.shown()[-1] == "edit-notarget"
+
+
+def test_an_app_with_no_readable_field_is_still_pasted_into(monkeypatch) -> None:
+    app, pasted, _ = _deliver_into_claude(monkeypatch, "blind", [0, 0])
+
+    assert pasted == ["Refined text."]
+    assert app.overlay.shown()[-1] == "inserted"

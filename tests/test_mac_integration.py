@@ -737,3 +737,34 @@ def test_capture_focus_context_leaves_the_field_unread_unless_asked(monkeypatch)
     assert read == []
     assert mac_integration.capture_focus_context(read_before_text=True).before_text == "上文"
     assert read == ["AXTextArea"]
+
+
+def _paste_target(monkeypatch, *, front, focused_is_text, refocus_works=False):
+    """prepare_paste against a fake app whose composer may have lost focus."""
+
+    focused = {"text": focused_is_text}
+    monkeypatch.setattr(mac_integration, "_limit_ax_messaging_timeout", lambda: None)
+    monkeypatch.setattr(mac_integration, "frontmost_pid", lambda: front)
+    monkeypatch.setattr(mac_integration, "_focused_element", lambda pid: "field" if focused["text"] else "web")
+    monkeypatch.setattr(mac_integration, "_is_text_field", lambda element: element == "field")
+
+    def set_value(element, attribute, value):
+        focused["text"] = refocus_works
+
+    monkeypatch.setattr(mac_integration.ApplicationServices, "AXUIElementSetAttributeValue", set_value)
+
+
+def test_prepare_paste_puts_the_caret_back_or_refuses_to_paste_blind(monkeypatch) -> None:
+    composer = mac_integration.FocusContext("Claude", "", can_insert_text=True, pid=7, element="field")
+
+    _paste_target(monkeypatch, front=7, focused_is_text=True)
+    assert mac_integration.prepare_paste(composer) == "ok"
+    _paste_target(monkeypatch, front=7, focused_is_text=False, refocus_works=True)
+    assert mac_integration.prepare_paste(composer) == "ok"
+    _paste_target(monkeypatch, front=7, focused_is_text=False)
+    assert mac_integration.prepare_paste(composer) == "lost"
+    _paste_target(monkeypatch, front=8, focused_is_text=True)
+    assert mac_integration.prepare_paste(composer) == "elsewhere"
+    _paste_target(monkeypatch, front=7, focused_is_text=False)
+    no_field = mac_integration.FocusContext("ChatGPT", "", can_insert_text=True, pid=7)
+    assert mac_integration.prepare_paste(no_field) == "blind"

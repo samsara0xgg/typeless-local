@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
 from typing import Callable
 
@@ -138,6 +138,9 @@ class FocusContext:
     # What is already written just before the caret, so refinement can spell a
     # name or term the way the text above it does. Empty for password fields.
     before_text: str = ""
+    # The focused text element itself, to put the caret back there before the
+    # paste if the app moved focus meanwhile. None when there was no real one.
+    element: object = field(default=None, compare=False, repr=False)
 
 
 # Seconds an AX query may wait on the target app. The default is about six,
@@ -173,6 +176,7 @@ def capture_focus_context(read_before_text: bool = False) -> FocusContext:
     focused_role = ""
     can_insert_text = False
     before_text = ""
+    element = None
 
     if pid:
         try:
@@ -201,6 +205,8 @@ def capture_focus_context(read_before_text: bool = False) -> FocusContext:
                     focused_element,
                     focused_role,
                 )
+                if can_insert_text and focused_role != "AXWebArea":
+                    element = focused_element
                 selection = _copy_ax_attribute(
                     focused_element,
                     ApplicationServices.kAXSelectedTextAttribute,
@@ -230,7 +236,64 @@ def capture_focus_context(read_before_text: bool = False) -> FocusContext:
         can_insert_text=can_insert_text,
         pid=int(pid or 0),
         before_text=before_text,
+        element=element,
     )
+
+
+def _focused_element(pid: int):
+    try:
+        return _copy_ax_attribute(ApplicationServices.AXUIElementCreateApplication(pid), ApplicationServices.kAXFocusedUIElementAttribute)
+    except Exception:
+        return None
+
+
+def _is_text_field(element) -> bool:
+    """A real text field: a whole web page (AXWebArea) does not count."""
+
+    if not element:
+        return False
+    role = str(_copy_ax_attribute(element, ApplicationServices.kAXRoleAttribute) or "")
+    return role != "AXWebArea" and _focused_element_accepts_text(element, role)
+
+
+def prepare_paste(context: FocusContext) -> str:
+    """Make sure the paste will land where the dictation started, just before it is sent.
+
+    "ok": the caret is in a text field of the same app (put back there if the
+    app had moved focus away); "blind": nothing to check against (the app
+    publishes no text field, like ChatGPT) so paste as before; "elsewhere":
+    another app is in front; "lost": the text field is gone and could not be
+    focused again. Only "ok" and "blind" should be pasted into.
+    """
+
+    _limit_ax_messaging_timeout()
+    if context.pid and frontmost_pid() not in (0, context.pid):
+        return "elsewhere"
+    if context.element is None:
+        return "blind"
+    if _is_text_field(_focused_element(context.pid)):
+        return "ok"
+    try:
+        ApplicationServices.AXUIElementSetAttributeValue(context.element, ApplicationServices.kAXFocusedAttribute, True)
+    except Exception as exc:
+        LOGGER.debug("Could not focus the text field again: %s", exc)
+    if _is_text_field(_focused_element(context.pid)):
+        LOGGER.info("The text field had lost focus; focused it again before pasting")
+        return "ok"
+    return "lost"
+
+
+def focused_text_length(pid: int) -> int | None:
+    """How many characters the focused text field holds, or None when it will not say."""
+
+    element = _focused_element(pid) if pid else None
+    if not _is_text_field(element):
+        return None
+    count = _copy_ax_attribute(element, "AXNumberOfCharacters")
+    if isinstance(count, int):
+        return count
+    value = _copy_ax_attribute(element, ApplicationServices.kAXValueAttribute)
+    return len(value) if isinstance(value, str) else None
 
 
 def focused_text_value(pid: int) -> str | None:

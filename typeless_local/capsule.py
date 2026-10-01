@@ -25,6 +25,7 @@ DISMISS_AFTER: dict[str, float] = {
     "inserted-raw-net": 8.0,
     "inserted-raw-key": 8.0,
     "inserted-raw-trial": 8.0,
+    "inserted-unsure": 8.0,
     "empty": 2.4,
     "cancelled": 0.8,
     "undone": 1.2,
