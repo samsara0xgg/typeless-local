@@ -10,7 +10,7 @@ const PANES = [
   ['general', ['通用', 'General'], 'gear', '#8E8E93'],
   ['dictation', ['听写', 'Dictation'], 'wave', '#007AFF'],
   ['keys', ['快捷键', 'Shortcuts'], 'keyboard', '#636366'],
-  ['model', ['润色模型', 'Refinement'], 'sparkles', '#AF52DE'],
+  ['model', ['润色', 'Refinement'], 'sparkles', '#AF52DE'],
   ['vocab', ['词库', 'Vocabulary'], 'book', '#FF9500'],
   ['audio', ['音频', 'Audio'], 'speaker', '#FF3B30'],
   ['usage', ['用量', 'Usage'], 'chart', '#34C759'],
@@ -79,7 +79,7 @@ function dictation() {
     + grp([
       row(L('识别语言', 'Spoken language'), select('language', S.language, LANGS(), L('识别语言', 'Spoken language')),
         L('自动能识别中英混说；固定一种语言会快一点。', 'Automatic handles Chinese and English mixed; one fixed language is a little faster.')),
-      row(L('语音模型', 'Speech model'), `<span class="val">${esc(S.asrModel || '—')} · ${L('本地', 'on this Mac')}</span>`),
+      row(L('语音模型', 'Speech model'), `<span class="val">${L('在这台 Mac 上运行', 'Runs on this Mac')}</span>`),
       row(L('模型下载源', 'Model download'), select('model_source', p.model_source, SOURCES(), L('模型下载源', 'Model download')),
         L('自动：在中国大陆用国内镜像，其他地方用 Hugging Face。只管下载，识别始终在这台 Mac 上。',
           'Automatic uses the China mirror in mainland China and Hugging Face elsewhere. Only for the download; recognition always runs on this Mac.')),
@@ -116,14 +116,14 @@ function keys() {
 }
 
 function model() {
-  // One model for everyone: show which, how fast, and whether it is the trial. Nothing to pick.
+  // One model for everyone, never named: show whose key pays and how fast it is. Nothing to pick.
   const m = S.presets.find(p => p.name === S.active) || {};
-  const how = S.trial.on ? L('免费试用', 'Free trial') : (m.service || '');
-  const modelRow = row(L('润色模型', 'Refinement model'), `<span class="val">${esc(m.model || '—')}${how ? ` · ${esc(how)}` : ''}</span>`,
+  const how = !S.prefs.refine ? L('关闭', 'Off') : S.trial.on ? L('免费试用', 'Free trial') : L(`你的 ${m.service || 'OpenAI'} Key`, `Your ${m.service || 'OpenAI'} key`);
+  const modelRow = row(L('润色', 'Refinement'), `<span class="val">${esc(how)}</span>`,
     m.median ? L(`中位延迟 ${(m.median / 1000).toFixed(1)} 秒`, `Median time ${(m.median / 1000).toFixed(1)} s`) : '');
   const t = UI.test;
   const testLine = !t ? '' : t.busy ? `<span class="val"><span class="spin"></span> ${L('正在发送一次测试请求…', 'Sending a test request…')}</span>`
-    : t.ok ? `<span class="st-ok">${L('已连接', 'Connected')} · ${esc(t.preset)} · ${L(`往返 ${(t.ms / 1000).toFixed(1)} 秒`, `${(t.ms / 1000).toFixed(1)} s round trip`)}</span>`
+    : t.ok ? `<span class="st-ok">${L('已连接', 'Connected')} · ${L(`往返 ${(t.ms / 1000).toFixed(1)} 秒`, `${(t.ms / 1000).toFixed(1)} s round trip`)}</span>`
     : `<span class="st-err">${esc(t.msg || L('连接失败', 'Connection failed'))}</span>`;
   const keyRows = S.keys.map(keyRow);
   const envKeys = S.keys.filter(k => k.where === 'env');
@@ -211,7 +211,11 @@ function usage() {
   const peak = L('最高 ', 'Peak ') + (by === 'cost' ? money(max) : times(max));
   const m = u.month;
   const cacheRate = m.prompt ? Math.round(m.cached / m.prompt * 100) : null;
-  const models = u.models.length ? u.models.map(x => row(esc(x.model),
+  // Every model's refinements as one row: the model is not named in the UI.
+  const sum = k => u.models.reduce((a, x) => a + (x[k] || 0), 0);
+  const all = { refined: sum('refined'), prompt: sum('prompt'), cached: sum('cached'), completion: sum('completion'),
+    cost: u.models.some(x => x.cost == null) && !sum('cost') ? null : sum('cost') };
+  const models = all.refined ? [all].map(x => row(L('润色', 'Refinement'),
     `<span class="val">${L(`${x.refined} 次`, `${x.refined} refinement${x.refined === 1 ? '' : 's'}`)} · ${x.cost == null ? L('没有价格', 'no price') : about(x.cost)}</span>`,
     x.prompt ? L(`输入 ${kilo(x.prompt)} token（缓存 ${kilo(x.cached)}）· 输出 ${kilo(x.completion)}`, `In ${kilo(x.prompt)} tokens (${kilo(x.cached)} cached) · out ${kilo(x.completion)}`)
       : L('这段时间没有记下 token 数', 'No token counts recorded for this period')))
@@ -226,7 +230,7 @@ function usage() {
     + `<div class="grp uchart"><div class="uhead"><b>${L(`每天${what}`, by === 'cost' ? 'Daily spend' : 'Daily dictations')}</b>${seg('usageBy', by, [['cost', L('花费', 'Spend')], ['n', L('次数', 'Count')]])}</div>`
     + `<div class="ubars" role="img" aria-label="${esc(L(`最近 ${u.days} 天每天的${what}`, `Daily ${what}, last ${u.days} days`))}">${bars}</div>`
     + `<div class="uaxis"><span>${dayLabel(u.daily[0].day)}</span><span class="utip" data-rest="${esc(peak)}">${esc(peak)}</span><span>${L('今天', 'Today')}</span></div></div>`
-    + `<div class="grp-l">${L('按模型', 'By model')} · ${lastDays}</div>` + grp(models)
+    + `<div class="grp-l">${L('润色', 'Refinement')} · ${lastDays}</div>` + grp(models)
     + `<p class="note">${esc(note)}</p>`;
 }
 

@@ -115,9 +115,9 @@ def test_idle_menu_follows_the_design() -> None:
     assert items[0].subtitle == "就绪"
     recent = _find(items, "明天下午四点开会")
     assert recent.key == "copy" and recent.subtitle == "2 分钟前 · 备忘录 · 点按复制"
-    # One model for everyone: the row only shows it and opens its settings, no list to pick from.
+    # One model for everyone, never named: the row says whose key pays and opens its settings.
     models = _find(items, "润色与 API Key…")
-    assert models.badge == "gpt-5.6-terra" and models.key == "settings:model" and not models.children
+    assert models.badge == "你的 Key" and models.key == "settings:model" and not models.children
     inputs = _find(items, "输入设备")
     assert inputs.badge == "AirPods"
     assert [(i.title, i.key, i.checked) for i in inputs.children] == [

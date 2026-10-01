@@ -191,9 +191,9 @@ def build_menu(snap: Snapshot, now: float | None = None) -> list[Item]:
         items.append(Item(t("还没有听写", "Nothing dictated yet"), enabled=False))
     items.append(SEPARATOR)
 
-    # One model for everyone (gpt-5.6-terra, or the trial of it); this only opens its settings.
+    # One model for everyone, never named in the UI; this only says whose key pays and opens its settings.
     if snap.refine:
-        status = t("免费试用", "Free trial") if snap.active_preset == "free-trial" else snap.active_preset
+        status = t("免费试用", "Free trial") if snap.active_preset == "free-trial" else t("你的 Key", "Your Key")
     else:
         status = t("关闭", "Off")
     items.append(Item(t("润色与 API Key…", "Refinement and API Key…"), key="settings:model", badge=status, symbol="sparkles"))

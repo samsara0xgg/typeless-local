@@ -54,8 +54,8 @@ def prompt_for_api_key(env_name: str, model: str, *, existing: bool = False) -> 
     )
     alert.setInformativeText_(
         t(
-            f"润色用的是 {model}，它读取 {env_name}。\n\nKey 存在这台 Mac 的钥匙串里，只会发给模型服务商。",
-            f"Refinement uses {model}, which reads {env_name}.\n\n"
+            f"润色读取 {env_name}。\n\nKey 存在这台 Mac 的钥匙串里，只会发给模型服务商。",
+            f"Refinement reads {env_name}.\n\n"
             "The key is kept in this Mac's keychain and only sent to the model's provider.",
         )
     )
