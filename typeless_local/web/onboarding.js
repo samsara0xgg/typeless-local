@@ -1,16 +1,16 @@
-/* The first-run guide: welcome, microphone, Accessibility, API key, speech
-   model, one practice dictation, done. Python sends what is already granted
+/* The first-run guide: welcome, microphone, Accessibility, API key, one
+   practice dictation, one rewrite by voice, done. Python sends what is already granted
    ({t:'state'}) and redraws it whenever a permission changes, so a step that
    is already done shows as done and one being waited on continues by itself. */
 (() => {
 'use strict';
 const { I, esc, $, post, on, env, L, lang } = kit;
 
-const LAST = 5;
+const LAST = 6;
 let S = null;             // what Python last sent
 let step = 0;
 // Per-step progress that only this page knows about.
-const UI = { asked: '', key: null, keyBusy: false, dl: null, practiced: false };
+const UI = { asked: '', key: null, keyBusy: false, dl: null, practiced: false, said: '', rewrote: false };
 let advanceTimer = 0;
 
 const tile = (n, c) => `<div class="sym" style="background:${c}">${I(n)}</div>`;
@@ -140,34 +140,63 @@ function practice() {
   return page(tile('wave', '#FF9500'), L('说一句试试', 'Try it'), lede, box, act);
 }
 
+// Rewriting by voice is the one feature nobody finds alone: their practice
+// sentence comes back selected, and F5 with a spoken request rewrites it.
+const SAMPLE = () => L('明天下午三点开会，记得带电脑。', 'Meeting at three tomorrow, bring your laptop.');
+function rewrite() {
+  const lede = L('选中文字再按 F5，说出想怎么改。下面这句已经选好了。', 'Select text, press F5 and say how to change it. The sentence below is already selected.');
+  const box = `<textarea class="practice" id="rw" aria-label="${L('试着改写这句', 'Try rewriting this')}">${esc(UI.said || SAMPLE())}</textarea>`;
+  const refines = S.key.trial || S.key.has || (UI.key && UI.key.ok);
+  let act;
+  if (UI.rewrote) act = status(L('改好了', 'Rewritten'), 'ok') + next();
+  else if (!S.ax) act = status(L('还没有辅助功能权限，F5 暂时不起作用。', 'No Accessibility permission yet, so F5 does nothing.'), 'err') + btn(L('去授权', 'Grant Permission'), 'goto-a11y') + skip();
+  else if (!refines) act = status(L('改写要用到润色，现在还没有 API Key。', 'Rewriting uses refinement, and there is no API key yet.'), 'err') + skip();
+  else if (!modelReady()) act = spin(L('语音模型下载好就能试，大概还要一会儿', 'You can try once the speech model finishes downloading'))
+    + link(L('先完成设置，稍后再试', 'Finish Setup and Try Later'), 'next');
+  else act = status(L('按 F5，说“翻成英文”，再按一下 F5', 'Press F5, say “translate to Chinese”, then press F5 again')) + skip();
+  return page(tile('pencil', '#FF2D55'), L('改一改试试', 'Rewrite it'), lede, box, act);
+}
+
+const TIPS = () => [
+  ['mic', L('F5 或轻点右 ⌘ 开始、结束；也可以按住 F5 说话，松开就完成', 'F5 or a tap on right ⌘ starts and finishes; or hold F5 and talk')],
+  ['lock', L('连按两下 F5 免手持，适合说长段', 'Double-press F5 to go hands-free for long passages')],
+  ['xmark', L('说错了按 esc 取消', 'Said it wrong? Press esc to cancel')],
+  ['undo', L('插入后，胶囊上可以撤销或修改', 'After inserting, the capsule offers Undo and Edit')],
+  ['pencil', L('选中文字再按 F5，说出要求就能改写', 'Select text, press F5 and say what to change')],
+];
+
 function done() {
+  const tips = `<ul class="tips" aria-label="${L('小技巧', 'Tips')}">${TIPS().map(([i, t]) => `<li>${I(i)}<span>${esc(t)}</span></li>`).join('')}</ul>`;
   return page(icon(), L('一切就绪', 'All set'),
-    L(`${esc(S.name)}会待在菜单栏里。随时按 F5 开始；忘了快捷键，点菜单栏图标就能看到。`,
-      `${esc(S.name)} lives in the menu bar. Press F5 any time; if you forget the shortcut, click the menu bar icon.`),
-    `<p class="note">${L('言字每天会发送一次匿名使用统计：听写了几次、共多少字，只用来了解产品怎么被使用。从不发送听写内容或任何个人信息；可以在 设置 › 历史与隐私 里关掉。',
+    L(`${esc(S.name)}会待在菜单栏里，忘了快捷键点菜单栏图标就能看到。`,
+      `${esc(S.name)} lives in the menu bar; click its icon if you forget a shortcut.`),
+    tips + `<p class="note">${L('言字每天会发送一次匿名使用统计：听写了几次、共多少字，只用来了解产品怎么被使用。从不发送听写内容或任何个人信息；可以在 设置 › 历史与隐私 里关掉。',
       'Once a day the app sends anonymous usage stats (how many dictations and characters) only to learn how it is used. Never your dictated text or anything personal; turn it off in Settings › History & Privacy.')}</p>`,
     btn(L('完成', 'Done'), 'done'));
 }
 
 // The speech model downloads from launch, behind every step (dlLine), rather than as a step of its own.
-const STEPS = [welcome, microphone, accessibility, apiKey, practice, done];
+const STEPS = [welcome, microphone, accessibility, apiKey, practice, rewrite, done];
 
 function draw() {
   if (!S) return;
   const root = $('#onb');
   // Keep what is being typed across a redraw.
-  const typed = { key: $('#key')?.value || '', pr: $('#pr')?.value || '' };
+  const typed = { key: $('#key')?.value || '', pr: $('#pr')?.value || '', rw: $('#rw')?.value };
   const focused = document.activeElement?.id;
   const dots = STEPS.slice(0, LAST).map((_, i) => `<i class="${i === step ? 'on' : i < step ? 'done' : ''}"></i>`).join('');
   root.innerHTML = `<div class="steps" aria-hidden="true">${dots}</div>${STEPS[step]()}${STEPS[step] === done ? '' : dlLine()}`;
-  const key = $('#key'), pr = $('#pr');
+  const key = $('#key'), pr = $('#pr'), rw = $('#rw');
   if (key) key.value = typed.key;
   if (pr) pr.value = typed.pr;
+  if (rw && typed.rw != null) rw.value = typed.rw;
   const again = focused && document.getElementById(focused);
   if (again && !again.disabled) again.focus();
   else if (key && !key.disabled) key.focus();
   else if (pr) pr.focus();
   else root.querySelector('.gbtn.pri:not(:disabled)')?.focus();
+  // A redraw drops the selection, and the rewrite step needs it in place for F5.
+  if (rw && !UI.rewrote) { rw.focus(); rw.select(); }
 }
 
 function go(to) {
@@ -214,7 +243,7 @@ document.addEventListener('click', e => {
 
 document.addEventListener('keydown', e => {
   if (e.key !== 'Enter' || e.isComposing) return;
-  if (e.target.id === 'pr') return;
+  if (e.target.id === 'pr' || e.target.id === 'rw') return;
   if (e.target.id === 'key') { e.preventDefault(); verify(); return; }
   if (e.target.tagName === 'BUTTON') return;
   const primary = $('#onb .gbtn.pri:not(:disabled)');
@@ -223,8 +252,14 @@ document.addEventListener('keydown', e => {
 
 // The practice box is filled by the app's own paste, like any other text field.
 document.addEventListener('input', e => {
+  if (e.target.id === 'rw' && e.target.value.trim() !== (UI.said || SAMPLE()) && !UI.rewrote) {
+    UI.rewrote = true;
+    draw();
+    advanceSoon(5);
+  }
   if (e.target.id === 'pr' && e.target.value.trim() && !UI.practiced) {
     UI.practiced = true;
+    UI.said = e.target.value.trim();
     draw();
     advanceSoon(4);
   }
@@ -238,11 +273,9 @@ on('env', m => {
 on('state', m => {
   const before = S;
   S = m;
-  // Waiting on a permission and it just came through: carry on by itself.
-  if (before && step === 1 && UI.asked === 'mic' && m.mic !== 'not_determined') {
-    UI.asked = '';  // stays on this step: they press Continue themselves
-  }
-  if (before && step === 2 && UI.asked === 'a11y' && m.ax && !before.ax) advanceSoon(2);
+  // A permission came through: the step stays put, they press Continue themselves.
+  if (before && step === 1 && UI.asked === 'mic' && m.mic !== 'not_determined') UI.asked = '';
+  if (before && step === 2 && UI.asked === 'a11y' && m.ax) UI.asked = '';
   draw();
 });
 on('keyResult', m => { UI.keyBusy = false; UI.key = { ok: m.ok, msg: m.msg }; draw(); });
