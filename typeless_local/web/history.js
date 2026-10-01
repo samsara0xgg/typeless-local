@@ -172,7 +172,7 @@ function emptyHTML() {
   if (!D.enabled) {
     return `<div class="hempty">${I('clock')}<b>${L('历史记录已关闭', 'History is off')}</b><span>${L('打开后，每次听写的原文、润色结果和耗时都会保存在这台 Mac 上。', 'Once on, each dictation’s transcript, refined text and timings are kept on this Mac.')}</span><button class="mbtn pri" data-a="settings">${L('打开设置', 'Open Settings')}</button></div>`;
   }
-  return `<div class="hempty">${I('wave')}<b>${L('还没有听写', 'No dictations yet')}</b><span>${L('按 F5 说一句话，它会出现在这里。', 'Press F5 and say something; it shows up here.')}</span></div>`;
+  return `<div class="hempty">${I('wave')}<b>${L('还没有听写', 'No dictations yet')}</b><span>${L('轻点右 ⌘ 说一句话，它会出现在这里。', 'Tap right ⌘ and say something; it shows up here.')}</span></div>`;
 }
 
 function draw() {

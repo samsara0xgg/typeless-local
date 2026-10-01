@@ -100,7 +100,7 @@ def test_idle_menu_follows_the_design() -> None:
     )
     assert _titles(items) == [
         brand.DISPLAY_NAME,
-        "按 F5 或右 ⌘ 开始 · 连按两下锁定",
+        "轻点右 ⌘ 开始 · 连点两下锁定",
         "开始听写",
         "锁定听写",
         "最近一次",
@@ -125,7 +125,7 @@ def test_idle_menu_follows_the_design() -> None:
         ("MacBook Pro 麦克风", "input:MacBook Pro 麦克风", False),
         ("AirPods", "input:AirPods", True),
     ]
-    assert _find(items, "开始听写").shortcut == "F5"
+    assert _find(items, "开始听写").shortcut == ""  # right ⌘ has no menu key equivalent
     assert _find(items, "历史记录…").shortcut == "⌘Y"
     assert _find(items, brand.quit_label()).key == "quit"
 

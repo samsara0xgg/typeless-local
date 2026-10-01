@@ -229,8 +229,11 @@ class _KeyEvent:
         self.at = at
 
 
-def _rcmd_monitor(monkeypatch, events):
-    monitor = mac_integration.GlobalHotkeyMonitor(events.append)
+def _rcmd_monitor(monkeypatch, events, **kwargs):
+    monitor = mac_integration.GlobalHotkeyMonitor(events.append, **kwargs)
+    # The hold timer only fires when a test says the time has passed.
+    monitor.pending = []
+    monkeypatch.setattr(monitor, "_after", lambda delay, fn: monitor.pending.append(fn))
     monkeypatch.setattr(
         mac_integration.Quartz, "CGEventGetIntegerValueField", lambda event, field: event.keycode
     )
@@ -271,14 +274,66 @@ def test_right_cmd_used_as_modifier_does_not_fire(monkeypatch) -> None:
     assert events == []
 
 
-def test_right_cmd_held_longer_than_a_tap_does_not_fire(monkeypatch) -> None:
+def _hold_time_passes(monitor) -> None:
+    for fn in monitor.pending:
+        fn()
+    monitor.pending.clear()
+
+
+def test_right_cmd_held_alone_is_hold_to_talk(monkeypatch) -> None:
     events = []
     monitor = _rcmd_monitor(monkeypatch, events)
 
     _rcmd(monitor, True, at=10.0)
-    _rcmd(monitor, False, at=10.0 + mac_integration.RIGHT_COMMAND_TAP_S + 0.3)
+    _hold_time_passes(monitor)
+    assert events == ["primary_down"] and monitor.last_primary_down_at == 10.0
+    _rcmd(monitor, False, at=12.5)
 
+    assert events == ["primary_down", "primary_up"]
+    assert monitor.last_primary_up_at - monitor.last_primary_down_at == 2.5  # the app reads a hold, not a tap
+
+
+def test_a_key_during_a_right_cmd_hold_makes_it_a_modifier(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events)
+    c_key = _KeyEvent(8, mac_integration.COMMAND_FLAG_MASK)  # a slow Cmd+C
+
+    _rcmd(monitor, True, at=10.0)
+    _hold_time_passes(monitor)
+    result = monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, c_key, None)
+    _rcmd(monitor, False, at=11.0)
+
+    assert result is c_key
+    assert events == ["primary_down", "cancel"]  # the recording it started is dropped, nothing inserted
+
+
+def test_a_stale_hold_timer_does_nothing(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events)
+
+    _rcmd(monitor, True, at=10.0)
+    _rcmd(monitor, False, at=10.1)  # a tap
+    _rcmd(monitor, True, at=10.3)
+    stale = monitor.pending.pop(0)
+    stale()  # the first press's timer, firing during the second press
+
+    assert events == ["primary_down", "primary_up"]
+
+
+def test_f5_passes_through_when_turned_off(monkeypatch) -> None:
+    events = []
+    use_f5 = [False]
+    monitor = _rcmd_monitor(monkeypatch, events, use_f5_fn=lambda: use_f5[0])
+
+    for keycode in mac_integration.PRIMARY_KEYCODES:
+        down, up = _KeyEvent(keycode), _KeyEvent(keycode)
+        assert monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, down, None) is down
+        assert monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyUp, up, None) is up
     assert events == []
+
+    use_f5[0] = True
+    assert monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, _KeyEvent(96), None) is None
+    assert events == ["primary_down"]
 
 
 def test_right_cmd_with_another_modifier_or_a_click_does_not_fire(monkeypatch) -> None:

@@ -36,7 +36,7 @@ STATE_LABEL: dict[str, tuple[str, str]] = {
     "recording": ("正在听写", "Dictating"),
     "processing": ("正在转写和润色…", "Transcribing and refining…"),
 }
-HINT = ("按 F5 或右 ⌘ 开始 · 连按两下锁定", "Press F5 or right ⌘ to start · twice to lock")
+HINT = ("轻点右 ⌘ 开始 · 连点两下锁定", "Tap right ⌘ to start · twice to lock")
 
 # What needs the user, most blocking first: (what is wrong, the menu item that fixes it).
 ISSUES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
@@ -172,9 +172,9 @@ def build_menu(snap: Snapshot, now: float | None = None) -> list[Item]:
 
     idle = snap.state == "idle"
     if snap.state in ("starting", "recording"):
-        items.append(Item(t("结束听写", "Stop Dictation"), key="toggle", shortcut="F5", symbol="stop.circle"))
+        items.append(Item(t("结束听写", "Stop Dictation"), key="toggle", symbol="stop.circle"))
     else:
-        items.append(Item(t("开始听写", "Start Dictation"), key="toggle", shortcut="F5", enabled=idle, symbol="mic"))
+        items.append(Item(t("开始听写", "Start Dictation"), key="toggle", enabled=idle, symbol="mic"))
     items += [
         Item(t("锁定听写", "Locked Dictation"), key="latch", badge=t("右⌘ Space", "Right ⌘ Space"), enabled=idle, symbol="lock"),
         SEPARATOR,

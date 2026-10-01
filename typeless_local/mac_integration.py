@@ -6,6 +6,7 @@ import ctypes
 import ctypes.util
 from dataclasses import dataclass
 import logging
+import threading
 from typing import Callable
 
 import ApplicationServices
@@ -64,8 +65,8 @@ OPTION_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskAlternate", 1 << 19)
 SHIFT_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskShift", 1 << 17)
 # Right Command arrives as a FlagsChanged event with keycode 54 (kVK_RightCommand).
 RIGHT_COMMAND_KEYCODE = 54
-# Held longer than this, right Command was a modifier the user changed their
-# mind about (or held through a Cmd-click), not a tap.
+# Released sooner than this, right Command alone was a tap; held this long
+# alone, it starts hold-to-talk (the same threshold as the app's long press).
 RIGHT_COMMAND_TAP_S = 0.6
 # Mouse down in any button, and the scroll wheel: Cmd-click and Cmd-scroll.
 _MOUSE_WITH_MODIFIER_MASK = (1 << 1) | (1 << 3) | (1 << 25) | (1 << 22)
@@ -455,7 +456,13 @@ HotkeyCallback = Callable[[str], None]
 
 
 class GlobalHotkeyMonitor:
-    """Capture F5 / right-Cmd tap, F5+Space / right-Cmd+Space, and Esc with a Quartz event tap."""
+    """Capture right Cmd (and F5 when asked), right-Cmd+Space / F5+Space, and Esc with a Quartz event tap.
+
+    Right Cmd alone: a tap is a press of the dictation key, and holding it
+    past RIGHT_COMMAND_TAP_S is hold-to-talk until it is let go. Anything else
+    while it is down (a key, a click, a scroll) makes it the Command modifier
+    it also is: nothing happens, and a hold already recording is cancelled.
+    """
 
     def __init__(
         self,
@@ -463,8 +470,12 @@ class GlobalHotkeyMonitor:
         debug_hotkey: bool = False,
         is_active_fn: Callable[[], bool] | None = None,
         watch_keys_fn: Callable[[], bool] | None = None,
+        use_f5_fn: Callable[[], bool] | None = None,
     ) -> None:
         self.callback = callback
+        # F5 is also the system dictation key; when this says no, F5 and the
+        # dictation key pass through to macOS untouched. Asked on every key press.
+        self.use_f5_fn = use_f5_fn
         self.debug_hotkey = debug_hotkey
         # When set, Esc is only swallowed while is_active_fn() is True; otherwise
         # it passes through to the focused app. Without this, the global tap
@@ -484,6 +495,7 @@ class GlobalHotkeyMonitor:
         # not held for long.
         self._rcmd_armed = False
         self._rcmd_down_at = 0.0
+        self._rcmd_holding = False  # held alone past the tap time: hold-to-talk is on
         self._mouse_monitor = None
         # Event-time of the most recent primary down/up, in seconds. Captured
         # from NSEvent.timestamp so the value reflects when macOS generated the
@@ -537,7 +549,29 @@ class GlobalHotkeyMonitor:
             LOGGER.debug("No mouse monitor; a right-Cmd-click may start dictation", exc_info=True)
 
     def _disarm_right_command(self) -> None:
+        """Right Cmd turned out to be a modifier: no tap, and a hold that started recording is dropped."""
+
         self._rcmd_armed = False
+        if self._rcmd_holding:
+            self._rcmd_holding = False
+            self.callback("cancel")
+
+    def _after(self, delay: float, fn: Callable[[], None]) -> None:
+        timer = threading.Timer(delay, fn)
+        timer.daemon = True
+        timer.start()
+
+    def _right_command_held(self, down_at: float) -> None:
+        """Still down, alone, since ``down_at``: start hold-to-talk."""
+
+        if not self._rcmd_armed or self._rcmd_down_at != down_at:
+            return
+        self._rcmd_holding = True
+        self.last_primary_down_at = down_at
+        self.callback("primary_down")
+
+    def _use_f5(self) -> bool:
+        return self.use_f5_fn is None or self.use_f5_fn()
 
     def _create_event_tap(self, location: int, mask: int):
         return Quartz.CGEventTapCreate(
@@ -575,8 +609,14 @@ class GlobalHotkeyMonitor:
         if event_type == Quartz.kCGEventFlagsChanged:
             if keycode == RIGHT_COMMAND_KEYCODE:
                 if Quartz.CGEventGetFlags(event) & COMMAND_FLAG_MASK:
+                    down_at = self._event_time(event)
                     self._rcmd_armed = True
-                    self._rcmd_down_at = self._event_time(event)
+                    self._rcmd_down_at = down_at
+                    self._after(RIGHT_COMMAND_TAP_S, lambda: self._right_command_held(down_at))
+                elif self._rcmd_holding:
+                    self._rcmd_armed = self._rcmd_holding = False
+                    self.last_primary_up_at = self._event_time(event)
+                    self.callback("primary_up")
                 elif self._rcmd_armed:
                     self._rcmd_armed = False
                     now = self._event_time(event)
@@ -589,7 +629,7 @@ class GlobalHotkeyMonitor:
                         self.callback("primary_up")
                 return event  # never swallow a modifier change
             # Shift, Option or Control joined in: a chord, not a tap.
-            self._rcmd_armed = False
+            self._disarm_right_command()
             if self.debug_hotkey and keycode == RIGHT_OPTION_KEYCODE:
                 flags = Quartz.CGEventGetFlags(event)
                 now_down = bool(flags & OPTION_FLAG_MASK)
@@ -601,10 +641,14 @@ class GlobalHotkeyMonitor:
 
         if event_type == Quartz.kCGEventKeyDown:
             if self._rcmd_armed:
-                self._rcmd_armed = False
                 if keycode == SPACE_KEYCODE:
+                    # Right Cmd+Space locks, whether or not the hold had started.
+                    self._rcmd_armed = self._rcmd_holding = False
                     self.callback("hands_free")
                     return None
+                self._disarm_right_command()
+            if keycode in PRIMARY_KEYCODES and not self._use_f5():
+                return event
             if keycode in PRIMARY_KEYCODES:
                 # macOS 26.4 may deliver KeyDown for both 96 and 176 on a single
                 # physical F5 press; only fire primary_down on the first key of
@@ -630,7 +674,7 @@ class GlobalHotkeyMonitor:
                 undo = keycode == keyboard_layout.keycode("z") and flags & COMMAND_FLAG_MASK and not flags & SHIFT_FLAG_MASK
                 self.callback("undo" if undo else "typed")
             return event
-        if event_type == Quartz.kCGEventKeyUp and keycode in PRIMARY_KEYCODES:
+        if event_type == Quartz.kCGEventKeyUp and keycode in PRIMARY_KEYCODES and self._use_f5():
             if keycode in self._primary_down:
                 self._primary_down.discard(keycode)
                 if not self._primary_down:

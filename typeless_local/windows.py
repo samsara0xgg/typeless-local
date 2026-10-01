@@ -629,6 +629,8 @@ class Windows:
                 self.app._start_model_prefetch()
         elif kind == "done":
             try:
+                # Written out so a later launch never takes this for an install from before 0.4.0.
+                self.app.set_preference("f5_hotkey", self.app.prefs.f5_hotkey)
                 self.app.set_preference("onboarding_done", True)
             except Exception:
                 LOGGER.exception("Could not record that onboarding finished")

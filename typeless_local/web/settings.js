@@ -90,29 +90,34 @@ function dictation() {
       row(L('润色', 'Refine'), sw('refine', p.refine, L('润色', 'Refine')), L('去掉口头禅、处理改口、补标点和分段。', 'Removes filler words, applies self-corrections, adds punctuation and paragraphs.')),
       row(L('润色超时或失败时', 'If refinement fails'), `<span class="val">${L('插入原始转写', 'Insert the raw transcript')}</span>`, L('胶囊里可以一键重新润色。', 'The capsule offers to refine it again.')),
       row(L('改写所选文字', 'Rewrite the selection'), sw('rewrite_selection', p.rewrite_selection, L('改写所选文字', 'Rewrite the selection')),
-        L('先选中文字再按 F5，说出要求，例如“改得更正式”“翻成英文”。', 'Select text, press F5 and say what to do, like “make it more formal” or “translate to Chinese”.')),
+        L('先选中文字再轻点右 ⌘，说出要求，例如“改得更正式”“翻成英文”。', 'Select text, tap right ⌘ and say what to do, like “make it more formal” or “translate to Chinese”.')),
       row(L('没有输入框时', 'With no text field'), `<span class="val">${L('显示卡片并复制', 'Show a card and copy')}</span>`,
         L('结果放进可以修改的卡片，同时复制到剪贴板。', 'The text goes into a card you can edit, and onto the clipboard.')),
     ]);
 }
 
 function keys() {
+  const f5 = S.prefs.f5_hotkey;
   const top = ['esc', 'F1', 'F2', 'F3', 'F4', '', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'];
-  const kb = `<div class="kb" aria-hidden="true">${top.map(k => k ? `<i>${k}</i>` : `<i class="hot">${I('mic')}</i>`).join('')}<i class="w2"></i>`
+  const kb = `<div class="kb" aria-hidden="true">${top.map(k => k ? `<i>${k}</i>` : `<i${f5 ? ' class="hot"' : ''}>${I('mic')}</i>`).join('')}<i class="w2"></i>`
     + `<i>fn</i><i>⌃</i><i>⌥</i><i class="w2">⌘</i><i class="w6">space</i><i class="w2 hot">⌘</i><i>⌥</i><i>←→</i></div>`;
-  const conflict = S.f5 ? grp([row(L(`系统听写也在用 ${I('mic')} 键`, `System dictation also uses the ${I('mic')} key`),
+  const conflict = f5 && S.f5 ? row(L(`系统听写也在用 ${I('mic')} 键`, `System dictation also uses the ${I('mic')} key`),
     `<button class="mbtn" data-act="open" data-what="keyboard">${L('打开键盘设置…', 'Open Keyboard Settings…')}</button>`,
-    L('Apple 芯片键盘上 F5 就是听写键，两个都开会互相抢。在键盘设置里把系统听写的快捷键换掉或关闭。',
-      'On Apple keyboards F5 is the dictation key, and the two fight over it. Change or turn off the system dictation shortcut in Keyboard settings.'), 'warnrow')]) : '';
-  const rcmd = L('右 ⌘', 'Right ⌘');
+    L('两个都开会互相抢。在键盘设置里把系统听写的快捷键换掉或关闭，或者关掉上面这个开关。',
+      'The two fight over it. Change or turn off the system dictation shortcut in Keyboard settings, or turn this switch off.'), 'warnrow') : '';
+  const rcmd = `<kbd>${L('右 ⌘', 'Right ⌘')}</kbd>`;
+  const or = f5 ? `<span class="arrow">${L('或', 'or')}</span><kbd>F5</kbd>` : '';
   return head(paneTitle('keys')) + kb
     + grp([
-      row(L('开始 / 结束', 'Start / finish'), `<span class="kbd2"><kbd>F5</kbd><span class="arrow">${L('或', 'or')}</span><kbd>${rcmd}</kbd><span class="arrow">${L('轻点', 'tap')}</span></span>`),
-      row(L('按住说话', 'Hold to talk'), `<span class="kbd2"><span class="arrow">${L('按住', 'hold')}</span><kbd>F5</kbd></span>`, L('按住超过 0.6 秒，松开就完成。', 'Hold for more than 0.6 s; letting go finishes.')),
-      row(L('锁定（免手持）', 'Lock (hands-free)'), `<span class="kbd2"><span class="arrow">${L('连按两下', 'double-press')}</span><kbd>F5</kbd><span class="arrow">·</span><kbd>F5</kbd><kbd>Space</kbd><span class="arrow">·</span><kbd>${rcmd}</kbd><kbd>Space</kbd></span>`),
+      row(L('开始 / 结束', 'Start / finish'), `<span class="kbd2"><span class="arrow">${L('轻点', 'tap')}</span>${rcmd}${or}</span>`),
+      row(L('按住说话', 'Hold to talk'), `<span class="kbd2"><span class="arrow">${L('按住', 'hold')}</span>${rcmd}${or}</span>`, L('按住超过 0.6 秒，松开就完成。', 'Hold for more than 0.6 s; letting go finishes.')),
+      row(L('锁定（免手持）', 'Lock (hands-free)'), `<span class="kbd2"><span class="arrow">${L('连点两下', 'double-tap')}</span>${rcmd}${or}<span class="arrow">·</span>${rcmd}<kbd>Space</kbd></span>`),
       row(L('取消', 'Cancel'), '<span class="kbd2"><kbd>esc</kbd></span>'),
     ])
-    + conflict;
+    + grp([
+      row(L(`也用 F5（${I('mic')} 键）`, `Also use F5 (the ${I('mic')} key)`), sw('f5_hotkey', f5, L('也用 F5', 'Also use F5')),
+        L(`MacBook 上 F5 是系统听写键。打开后${esc(S.name)}会接管它，系统听写就不能用这个键了。`, 'On a MacBook F5 is the system dictation key. When this is on, the app takes it over and system dictation can no longer use it.')),
+    ], conflict);
 }
 
 function model() {

@@ -167,6 +167,7 @@ class TypelessLocalApp:
                 debug_hotkey=config.debug_hotkey,
                 is_active_fn=lambda: self.state != "idle",
                 watch_keys_fn=lambda: self._keys_wanted,
+                use_f5_fn=lambda: self.prefs.f5_hotkey,
             )
 
             self.menubar = MenuBarIcon(on_action=self._on_menu_action, snapshot=self._menu_snapshot)
@@ -881,7 +882,7 @@ class TypelessLocalApp:
         # -[NSApplication run] it is not active yet, so a window can open
         # behind whatever the user is looking at or not come up at all.
         AppHelper.callLater(0.3, self._first_run)
-        LOGGER.info("%s ready. Press F5 to start/stop dictation.", brand.ENGLISH_NAME)
+        LOGGER.info("%s ready. Tap right Cmd to start/stop dictation.", brand.ENGLISH_NAME)
 
     def _start_hotkeys(self) -> bool:
         try:
@@ -1963,8 +1964,8 @@ def _say_already_running(app) -> None:
         app,
         t(f"{brand.DISPLAY_NAME}已经在运行", f"{brand.ENGLISH_NAME} is already running"),
         t(
-            "另一个言字（可能是从源码运行的那个）已经在响应 F5。先退出它，再打开这个。",
-            "Another copy, perhaps one run from source, is already answering F5. Quit it first, then open this one.",
+            "另一个言字（可能是从源码运行的那个）已经在响应快捷键。先退出它，再打开这个。",
+            "Another copy, perhaps one run from source, is already answering the shortcut. Quit it first, then open this one.",
         ),
     )
 

@@ -486,6 +486,7 @@ def test_finishing_the_guide_remembers_it_and_closes(ui) -> None:
     window = ui.windows.onboarding
     ui.windows._onboarding_message({"t": "done"})
     assert ("pref", "onboarding_done", True) in ui.app.calls
+    assert ("pref", "f5_hotkey", False) in ui.app.calls  # a new install is never read as one from before 0.4.0
     assert window.closed
 
 

@@ -1,16 +1,16 @@
 /* The first-run guide: welcome, microphone, Accessibility, API key, one
-   practice dictation, one rewrite by voice, done. Python sends what is already granted
+   practice dictation, done. Python sends what is already granted
    ({t:'state'}) and redraws it whenever a permission changes, so a step that
    is already done shows as done and one being waited on continues by itself. */
 (() => {
 'use strict';
 const { I, esc, $, post, on, env, L, lang } = kit;
 
-const LAST = 6;
+const LAST = 5;
 let S = null;             // what Python last sent
 let step = 0;
 // Per-step progress that only this page knows about.
-const UI = { asked: '', key: null, keyBusy: false, dl: null, practiced: false, said: '', rewrote: false };
+const UI = { asked: '', key: null, keyBusy: false, dl: null, practiced: false };
 let advanceTimer = 0;
 
 const tile = (n, c) => `<div class="sym" style="background:${c}">${I(n)}</div>`;
@@ -34,14 +34,14 @@ const next = () => btn(L('继续', 'Continue'), 'next');
 
 function welcome() {
   return page(icon(), L(`欢迎使用${S.name}`, `Welcome to ${S.name}`),
-    L('按一下 F5，说话，再按一下。整理好的文字会出现在光标所在的地方。接下来的几步只需要一分钟。',
-      'Press F5, speak, press it again. Clean text appears where your cursor is. Setting up takes about a minute.'),
+    L('轻点一下右边的 ⌘，说话，再轻点一下。整理好的文字会出现在光标所在的地方。接下来的几步只需要一分钟。',
+      'Tap the right ⌘ key, speak, tap it again. Clean text appears where your cursor is. Setting up takes about a minute.'),
     langSwitch(), btn(L('开始设置', 'Get Started'), 'next'));
 }
 
 function microphone() {
-  const lede = L('只在你按下 F5 时录音。转写在这台 Mac 上完成，音频不会离开它。',
-    'It only records while you press F5. Transcription happens on this Mac, and the audio never leaves it.');
+  const lede = L('只在你按下右 ⌘ 之后录音。转写在这台 Mac 上完成，音频不会离开它。',
+    'It only records after you tap right ⌘. Transcription happens on this Mac, and the audio never leaves it.');
   const allow = L('允许访问麦克风', 'Allow Microphone');
   let act;
   if (S.mic === 'authorized') act = status(L('已允许', 'Allowed'), 'ok') + next();
@@ -59,7 +59,7 @@ function accessibility() {
   if (S.ax) act = status(UI.asked === 'a11y' ? L('已授权，正在继续', 'Granted, continuing') : L('已授权', 'Granted'), 'ok') + next();
   else if (UI.asked === 'a11y') act = spin(L('正在等待授权…', 'Waiting for permission…')) + btn(L('再次打开系统设置', 'Open System Settings Again'), 'a11y', false);
   else act = btn(L('打开系统设置', 'Open System Settings'), 'a11y');
-  return page(tile('a11y', '#0A84FF'), L(`允许${S.name}响应 F5`, `Let ${S.name} respond to F5`), lede, '', act + later());
+  return page(tile('a11y', '#0A84FF'), L(`允许${S.name}响应右 ⌘`, `Let ${S.name} respond to right ⌘`), lede, '', act + later());
 }
 
 function apiKey() {
@@ -127,42 +127,25 @@ const switchSource = m => m.mirror
 const progressText = (pct, eta) => L(`语音模型下载中 ${pct}%${eta ? ` · 还要${eta}` : ''}`, `Downloading the speech model · ${pct}%${eta ? ` · ${eta} left` : ''}`);
 
 function practice() {
-  const lede = L('点一下下面的框，按 F5 说一句话，说完再按一下 F5。', 'Click the box below, press F5, say a sentence, then press F5 again.');
+  const lede = L('点一下下面的框，轻点右 ⌘ 说一句话，说完再轻点一下。', 'Click the box below, tap right ⌘, say a sentence, then tap it again.');
   const box = `<textarea class="practice" id="pr" placeholder="${L('文字会出现在这里', 'The text appears here')}" aria-label="${L('试着听写一句', 'Try a dictation')}"></textarea>`;
   let act;
   if (UI.practiced) act = status(L('成功了', 'It worked'), 'ok') + next();
-  else if (!S.ax) act = status(L('还没有辅助功能权限，F5 暂时不起作用。', 'No Accessibility permission yet, so F5 does nothing.'), 'err') + btn(L('去授权', 'Grant Permission'), 'goto-a11y') + skip();
+  else if (!S.ax) act = status(L('还没有辅助功能权限，右 ⌘ 暂时不起作用。', 'No Accessibility permission yet, so right ⌘ does nothing.'), 'err') + btn(L('去授权', 'Grant Permission'), 'goto-a11y') + skip();
   else if (UI.dl && UI.dl.error) act = status(L('语音模型下载好才能试，先在下面重试。', 'You can try once the speech model downloads; try again below.'), 'err')
     + link(L('先完成设置，稍后再试', 'Finish Setup and Try Later'), 'next');
   else if (!modelReady()) act = spin(L('语音模型下载好就能试，大概还要一会儿', 'You can try once the speech model finishes downloading'))
     + link(L('先完成设置，稍后再试', 'Finish Setup and Try Later'), 'next');
-  else act = status(L(`按 F5，说“你好，${esc(S.name)}”`, `Press F5 and say “Hello, ${esc(S.name)}”`)) + skip();
+  else act = status(L(`轻点右 ⌘，说“你好，${esc(S.name)}”`, `Tap right ⌘ and say “Hello, ${esc(S.name)}”`)) + skip();
   return page(tile('wave', '#FF9500'), L('说一句试试', 'Try it'), lede, box, act);
 }
 
-// Rewriting by voice is the one feature nobody finds alone: their practice
-// sentence comes back selected, and F5 with a spoken request rewrites it.
-const SAMPLE = () => L('明天下午三点开会，记得带电脑。', 'Meeting at three tomorrow, bring your laptop.');
-function rewrite() {
-  const lede = L('选中文字再按 F5，说出想怎么改。下面这句已经选好了。', 'Select text, press F5 and say how to change it. The sentence below is already selected.');
-  const box = `<textarea class="practice" id="rw" aria-label="${L('试着改写这句', 'Try rewriting this')}">${esc(UI.said || SAMPLE())}</textarea>`;
-  const refines = S.key.trial || S.key.has || (UI.key && UI.key.ok);
-  let act;
-  if (UI.rewrote) act = status(L('改好了', 'Rewritten'), 'ok') + next();
-  else if (!S.ax) act = status(L('还没有辅助功能权限，F5 暂时不起作用。', 'No Accessibility permission yet, so F5 does nothing.'), 'err') + btn(L('去授权', 'Grant Permission'), 'goto-a11y') + skip();
-  else if (!refines) act = status(L('改写要用到润色，现在还没有 API Key。', 'Rewriting uses refinement, and there is no API key yet.'), 'err') + skip();
-  else if (!modelReady()) act = spin(L('语音模型下载好就能试，大概还要一会儿', 'You can try once the speech model finishes downloading'))
-    + link(L('先完成设置，稍后再试', 'Finish Setup and Try Later'), 'next');
-  else act = status(L('按 F5，说“翻成英文”，再按一下 F5', 'Press F5, say “translate to Chinese”, then press F5 again')) + skip();
-  return page(tile('pencil', '#FF2D55'), L('改一改试试', 'Rewrite it'), lede, box, act);
-}
-
 const TIPS = () => [
-  ['mic', L('F5 或轻点右 ⌘ 开始、结束；也可以按住 F5 说话，松开就完成', 'F5 or a tap on right ⌘ starts and finishes; or hold F5 and talk')],
-  ['lock', L('连按两下 F5 免手持，适合说长段', 'Double-press F5 to go hands-free for long passages')],
+  ['mic', L('轻点右 ⌘ 开始、再点一下结束；也可以按住右 ⌘ 说话，松开就完成', 'Tap right ⌘ to start and again to finish, or hold it while you talk')],
+  ['lock', L('连点两下右 ⌘ 免手持，适合说长段', 'Double-tap right ⌘ to go hands-free for long passages')],
   ['xmark', L('说错了按 esc 取消', 'Said it wrong? Press esc to cancel')],
   ['undo', L('插入后，胶囊上可以撤销或修改', 'After inserting, the capsule offers Undo and Edit')],
-  ['pencil', L('选中文字再按 F5，说出要求就能改写', 'Select text, press F5 and say what to change')],
+  ['pencil', L('选中文字再点右 ⌘，说“翻成英文”这类要求就能改写', 'Select text, tap right ⌘ and say something like “make it formal” to rewrite it')],
 ];
 
 function done() {
@@ -176,27 +159,24 @@ function done() {
 }
 
 // The speech model downloads from launch, behind every step (dlLine), rather than as a step of its own.
-const STEPS = [welcome, microphone, accessibility, apiKey, practice, rewrite, done];
+const STEPS = [welcome, microphone, accessibility, apiKey, practice, done];
 
 function draw() {
   if (!S) return;
   const root = $('#onb');
   // Keep what is being typed across a redraw.
-  const typed = { key: $('#key')?.value || '', pr: $('#pr')?.value || '', rw: $('#rw')?.value };
+  const typed = { key: $('#key')?.value || '', pr: $('#pr')?.value || '' };
   const focused = document.activeElement?.id;
   const dots = STEPS.slice(0, LAST).map((_, i) => `<i class="${i === step ? 'on' : i < step ? 'done' : ''}"></i>`).join('');
   root.innerHTML = `<div class="steps" aria-hidden="true">${dots}</div>${STEPS[step]()}${STEPS[step] === done ? '' : dlLine()}`;
-  const key = $('#key'), pr = $('#pr'), rw = $('#rw');
+  const key = $('#key'), pr = $('#pr');
   if (key) key.value = typed.key;
   if (pr) pr.value = typed.pr;
-  if (rw && typed.rw != null) rw.value = typed.rw;
   const again = focused && document.getElementById(focused);
   if (again && !again.disabled) again.focus();
   else if (key && !key.disabled) key.focus();
   else if (pr) pr.focus();
   else root.querySelector('.gbtn.pri:not(:disabled)')?.focus();
-  // A redraw drops the selection, and the rewrite step needs it in place for F5.
-  if (rw && !UI.rewrote) { rw.focus(); rw.select(); }
 }
 
 function go(to) {
@@ -243,7 +223,7 @@ document.addEventListener('click', e => {
 
 document.addEventListener('keydown', e => {
   if (e.key !== 'Enter' || e.isComposing) return;
-  if (e.target.id === 'pr' || e.target.id === 'rw') return;
+  if (e.target.id === 'pr') return;
   if (e.target.id === 'key') { e.preventDefault(); verify(); return; }
   if (e.target.tagName === 'BUTTON') return;
   const primary = $('#onb .gbtn.pri:not(:disabled)');
@@ -252,14 +232,8 @@ document.addEventListener('keydown', e => {
 
 // The practice box is filled by the app's own paste, like any other text field.
 document.addEventListener('input', e => {
-  if (e.target.id === 'rw' && e.target.value.trim() !== (UI.said || SAMPLE()) && !UI.rewrote) {
-    UI.rewrote = true;
-    draw();
-    advanceSoon(5);
-  }
   if (e.target.id === 'pr' && e.target.value.trim() && !UI.practiced) {
     UI.practiced = true;
-    UI.said = e.target.value.trim();
     draw();
     advanceSoon(4);
   }

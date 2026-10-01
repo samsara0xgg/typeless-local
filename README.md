@@ -44,13 +44,14 @@ always wins.
 
 ## Use
 
-- `F5` starts and stops dictation.
-- `F5+Space` starts hands-free dictation.
-- A single right `Cmd` tap does the same as `F5`; right `Cmd+Space` starts
-  hands-free. Right `Cmd` used as a modifier (`Cmd+C`, `Cmd+Tab`) is ignored.
+- Tap right `Cmd` to start dictation and tap it again to finish. Hold it
+  alone for more than 0.6 s to talk while holding; letting go finishes.
+- Double-tap right `Cmd`, or press right `Cmd+Space`, for hands-free dictation.
+- Right `Cmd` used as a modifier (`Cmd+C`, `Cmd+Tab`, `Cmd`-click) does nothing,
+  and a hold that had already started recording is dropped.
+- `F5` (the dictation key on a MacBook) is left to macOS's own dictation unless
+  **Settings › 快捷键 › 也用 F5** is on. Installs set up before 0.4.0 keep it on.
 - `Esc` cancels the active or pending dictation.
-- The menu-bar **润色模型** submenu lists every `llm.presets` entry from the
-  config; picking one switches the refinement model immediately.
 - While recording, playing media is paused and system output is lowered, then
   both are restored.
 - If refinement fails, times out, or its reply is cut off, the raw transcript
@@ -207,7 +208,7 @@ Optional environment variables:
 
 - `TYPELESS_LOCAL_LOG_LEVEL`: Python logging level, default `INFO`.
 - `TYPELESS_LOCAL_DEBUG_HOTKEY`: `1` also uses right `Option` as a trigger
-  when F5 cannot be captured.
+  when right `Cmd` cannot be captured.
 - `TYPELESS_LOCAL_ASR_LANGUAGE`: a fixed Whisper language code. Empty by
   default, so mixed Chinese and English is detected.
 - `TYPELESS_LOCAL_MLX_INITIAL_PROMPT`: a Whisper initial prompt. Empty by
