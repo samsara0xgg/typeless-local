@@ -1963,13 +1963,11 @@ class TypelessLocalApp:
             composer = nearest_composer(context.anchor)
         terminal = getattr(self, "_send_terminal", None)
         terminal_id = terminal.result(timeout=90) if terminal is not None else ""
-        where = ""
         if here and (context.element is not None or (composer is None and context.can_insert_text)):
             where = prepare_paste(context)
-            if where not in ("ok", "blind") and composer is None:
+            if where not in ("ok", "blind"):
                 self._hold_back(text, context, "lost")
                 return
-        if where in ("ok", "blind"):
             before = focused_text_length(context.pid) if where == "ok" and not context.selected_text else None
             paste_text(text)
             if before is not None and not self._paste_landed(context.pid, before):
