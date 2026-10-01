@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib.util
 import inspect
 import logging
 import re
@@ -10,11 +11,33 @@ import sys
 import threading
 import time
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _without_word_timestamps() -> None:
+    """Let mlx_whisper import without numba and scipy.
+
+    The app bundle leaves both out (with llvmlite, about 200 MB): mlx_whisper
+    imports them only for word timestamps, which are never asked for. A stand-in
+    for its timing module takes their place when they are missing.
+    """
+
+    if importlib.util.find_spec("numba") and importlib.util.find_spec("scipy"):
+        return
+
+    def add_word_timestamps(*_args, **_kwargs):
+        raise RuntimeError("word timestamps are not part of this build")
+
+    timing = ModuleType("mlx_whisper.timing")
+    timing.add_word_timestamps = add_word_timestamps
+    sys.modules.setdefault("mlx_whisper.timing", timing)
+
+
+_without_word_timestamps()
 
 _PROMPT_ECHO_RE = re.compile(r"^\s*Common terms:[^\n]*\n", re.IGNORECASE)
 _LOOP_RE = re.compile(r"(.{2,16})\1{2,}")

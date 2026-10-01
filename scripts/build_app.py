@@ -232,23 +232,32 @@ def notarize(target: Path) -> None:
 
 
 def make_dmg(app: Path) -> Path:
-    """A disk image with an Applications shortcut, the usual way to install."""
+    """A disk image that opens on the app, an arrow and Applications, saying to drag one onto the other."""
+
+    import dmgbuild
+
+    from dmg_background import APP_AT, APPLICATIONS_AT, HEIGHT, WIDTH, make_background
 
     dmg = DIST / f"{APP_NAME}-{VERSION}.dmg"
     with tempfile.TemporaryDirectory() as tmp:
-        staging = Path(tmp) / APP_NAME
-        staging.mkdir()
-        shutil.copytree(app, staging / app.name, symlinks=True)
-        (staging / "Applications").symlink_to("/Applications")
-        subprocess.check_call(
-            [
-                "hdiutil", "create",
-                "-volname", APP_NAME,
-                "-srcfolder", str(staging),
-                "-ov", "-format", "UDZO",
-                str(dmg),
-            ]
-        )
+        settings = {
+            "files": [str(app)],
+            "symlinks": {"Applications": "/Applications"},
+            "icon": str(ROOT / "assets" / "AppIcon.icns"),
+            "background": str(make_background(Path(tmp) / "background.tiff")),
+            "window_rect": ((200, 160), (WIDTH, HEIGHT)),
+            "icon_locations": {app.name: APP_AT, "Applications": APPLICATIONS_AT},
+            "icon_size": 128,
+            "text_size": 13,
+            "show_status_bar": False,
+            "show_tab_view": False,
+            "show_toolbar": False,
+            "show_pathbar": False,
+            "show_sidebar": False,
+            "default_view": "icon-view",
+            "format": "ULMO",  # LZMA: the smallest, and readable since macOS 10.15
+        }
+        dmgbuild.build_dmg(str(dmg), APP_NAME, settings=settings)
     return dmg
 
 
@@ -378,7 +387,8 @@ def smoke_test(app: Path) -> None:
     python = app / "Contents" / "MacOS" / "python"
     env = {**os.environ, "PYTHONHOME": str(app / "Contents" / "Resources")}
     code = (
-        "import mlx.core as mx, mlx_whisper, sounddevice, llvmlite.binding\n"
+        "import typeless_local.asr\n"  # stands in for word timestamps before mlx_whisper loads
+        "import mlx.core as mx, mlx_whisper.transcribe, sounddevice\n"
         "assert (mx.array([1.0, 2.0]) * 2).tolist() == [2.0, 4.0]\n"
         "import typeless_local.windows\n"
         "from typeless_local.webview import web_root\n"
@@ -393,24 +403,25 @@ def smoke_test(app: Path) -> None:
     strings = app / "Contents" / "Resources" / "zh-Hans.lproj" / "InfoPlist.strings"
     if not strings.is_file():
         raise SystemExit(f"bundle smoke test failed: {strings.relative_to(app)} is missing, so the app is not called 言字")
-    print("smoke test: mlx computes, mlx_whisper/sounddevice/llvmlite import, the pages and the 言字 name are in")
+    print("smoke test: mlx computes, mlx_whisper/sounddevice import, the pages and the 言字 name are in")
 
 
 def prune_bundle(app: Path) -> None:
-    """Drop test payloads that nothing imports and notarization chokes on.
+    """Drop the second copy of mlx's libraries, about 200 MB nothing loads.
 
-    Apple opens every archive it finds in the bundle. scipy ships .npz test
-    fixtures its unpacker cannot read, and the submission comes back Invalid
-    over a file the app never touches.
+    The mlx package moved out of the bundle zip brings its own lib/, but
+    core.so sits in lib-dynload and loads the copy patch_native_dylibs put
+    next to it.
     """
 
-    lib = app / "Contents" / "Resources" / "lib" / "python3.13"
-    removed = 0
-    for tests_dir in sorted(lib.glob("scipy/**/tests")):
-        if tests_dir.is_dir():
-            shutil.rmtree(tests_dir)
-            removed += 1
-    print(f"pruned {removed} scipy test directories")
+    lib_root = app / "Contents" / "Resources" / "lib" / "python3.13"
+    core = next(iter(sorted(lib_root.rglob("mlx/core*.so"))), None)
+    if core is None:
+        return
+    for libs in sorted(lib_root.rglob("mlx/lib")):
+        if libs.is_dir() and libs != core.parent / "lib":
+            shutil.rmtree(libs)
+            print(f"removed unused {libs.relative_to(app)}")
 
 
 def patch_native_dylibs(app: Path) -> None:

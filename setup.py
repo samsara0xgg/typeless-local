@@ -43,7 +43,7 @@ OPTIONS = {
         "openai",
         "yaml",
         "mlx_whisper",
-        # mlx, llvmlite and _sounddevice_data also carry dylibs, but they
+        # mlx and _sounddevice_data also carry dylibs, but they
         # cannot be listed here: mlx is a namespace package and py2app's
         # collect_packagedirs still uses imp.find_module, which cannot find
         # one. build_app.py moves them out of the bundle zip after the build.
@@ -81,6 +81,14 @@ OPTIONS = {
         "setuptools",
         "pip",
         "wheel",
+        # Only mlx_whisper's PyTorch conversion and word timestamps use these
+        # (about 900 MB); asr.py stands in for the timing module.
+        "torch",
+        "torchgen",
+        "sympy",
+        "numba",
+        "llvmlite",
+        "scipy",
     ],
     "plist": {
         "CFBundleName": brand.ENGLISH_NAME,

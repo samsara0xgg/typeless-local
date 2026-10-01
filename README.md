@@ -186,7 +186,7 @@ or python.org's rather than a uv-standalone one:
 ~/.typlus-build-venv/bin/pip install \
   pyobjc-core pyobjc-framework-Cocoa pyobjc-framework-Quartz \
   pyobjc-framework-ApplicationServices pyobjc-framework-WebKit \
-  numpy sounddevice openai pyyaml mlx-whisper py2app
+  numpy sounddevice openai pyyaml mlx-whisper py2app dmgbuild
 ~/.typlus-build-venv/bin/python scripts/build_app.py
 # Result at dist/Yana.app
 ```
