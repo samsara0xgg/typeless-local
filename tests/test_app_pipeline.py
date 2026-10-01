@@ -996,8 +996,7 @@ def test_download_progress_never_replaces_a_dictation(monkeypatch) -> None:
 
     app._start_model_prefetch()
 
-    assert app.overlay.shown() == ["download", "rec", "download"]
-    assert app.overlay.calls[-1] == ("hide",)  # taken down once the model is in
+    assert app.overlay.shown() == ["download", "rec", "download", "ready"]  # "ready" replaces the progress
     assert app._download is None
 
 

@@ -6,7 +6,7 @@
 'use strict';
 const { I, esc, $, post, on, env, L, lang } = kit;
 
-const LAST = 6;
+const LAST = 5;
 let S = null;             // what Python last sent
 let step = 0;
 // Per-step progress that only this page knows about.
@@ -103,28 +103,28 @@ function trialKey() {
     L('保存在这台 Mac 的钥匙串里。保存后就不再走免费试用。', "It's kept in this Mac's keychain. Once it's saved, the free trial is no longer used."), field, act);
 }
 
-function download() {
+// One slim line under every page while the speech model downloads; failures are fixed from here too.
+const modelReady = () => S.model.ready || !!(UI.dl && UI.dl.done);
+
+function dlLine() {
   const m = S.model;
   const dl = UI.dl || { p: m.p, eta: '', done: m.ready, error: false };
-  const ready = m.ready || dl.done;
-  const big = /large-v3-turbo/.test(m.name);
-  const name = esc(m.name || L('语音识别模型', 'The speech model'));
-  const lede = L(`${name}，${big ? '约 1.5 GB，' : ''}只需要下载一次。可以先关掉窗口，下载会在后台继续。`,
-    `${name}${big ? ' is about 1.5 GB and' : ''} only downloads once. You can close this window; the download carries on in the background.`);
-  const pct = ready ? 100 : Math.round((dl.p || 0) * 100);
-  const bar = `<div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>`;
-  let act;
-  if (ready) act = status(L('已下载', 'Downloaded'), 'ok') + next();
-  else if (dl.error) act = status(L('下载失败，检查一下网络再试。', 'The download failed. Check the network and try again.'), 'err') + btn(L('重试', 'Try Again'), 'download') + switchSource(m) + skip();
-  else if (!m.downloading && !UI.dl) act = status(L('还没有下载，可能是刚才没有网络。', 'Not downloaded yet; the network may have been down.')) + btn(L('开始下载', 'Download'), 'download') + switchSource(m) + skip();
-  else act = status(progressText(pct, dl.eta)) + btn(L('继续', 'Continue'), 'next', true, true) + link(L('在后台继续', 'Continue in Background'), 'next');
-  return page(tile('down', '#34C759'), L('下载语音识别模型', 'Download the speech model'), lede, bar, act);
+  if (m.ready && !UI.dl) return '';
+  let body;
+  if (dl.done || m.ready) body = `<span class="dlok">${I('check')}${L('语音模型已就绪', 'Speech model ready')}</span>`;
+  else if (dl.error || (!m.downloading && !UI.dl)) body = `<span class="st-err">${L('语音模型下载失败', 'Speech model download failed')}</span>`
+    + link(L('重试', 'Try Again'), 'download') + switchSource(m);
+  else {
+    const pct = Math.round((dl.p || 0) * 100);
+    body = `<span class="mbar" aria-hidden="true"><i id="dlb" style="width:${pct}%"></i></span><span id="dlt">${progressText(pct, dl.eta)}</span>`;
+  }
+  return `<div class="dlline">${body}</div>`;
 }
 // Hugging Face does not answer from mainland China; offer the other source when a download failed.
 const switchSource = m => m.mirror
   ? link(L('改从 Hugging Face 下载', 'Download from Hugging Face instead'), 'source', 'huggingface')
   : link(L('改从国内镜像下载', 'Download from the China mirror instead'), 'source', 'mirror');
-const progressText = (pct, eta) => L(`已下载 ${pct}%${eta ? ` · 还要${eta}` : ''}`, `${pct}% downloaded${eta ? ` · ${eta} left` : ''}`);
+const progressText = (pct, eta) => L(`语音模型下载中 ${pct}%${eta ? ` · 还要${eta}` : ''}`, `Downloading the speech model · ${pct}%${eta ? ` · ${eta} left` : ''}`);
 
 function practice() {
   const lede = L('点一下下面的框，按 F5 说一句话，说完再按一下 F5。', 'Click the box below, press F5, say a sentence, then press F5 again.');
@@ -132,6 +132,10 @@ function practice() {
   let act;
   if (UI.practiced) act = status(L('成功了', 'It worked'), 'ok') + next();
   else if (!S.ax) act = status(L('还没有辅助功能权限，F5 暂时不起作用。', 'No Accessibility permission yet, so F5 does nothing.'), 'err') + btn(L('去授权', 'Grant Permission'), 'goto-a11y') + skip();
+  else if (UI.dl && UI.dl.error) act = status(L('语音模型下载好才能试，先在下面重试。', 'You can try once the speech model downloads; try again below.'), 'err')
+    + link(L('先完成设置，稍后再试', 'Finish Setup and Try Later'), 'next');
+  else if (!modelReady()) act = spin(L('语音模型下载好就能试，大概还要一会儿', 'You can try once the speech model finishes downloading'))
+    + link(L('先完成设置，稍后再试', 'Finish Setup and Try Later'), 'next');
   else act = status(L(`按 F5，说“你好，${esc(S.name)}”`, `Press F5 and say “Hello, ${esc(S.name)}”`)) + skip();
   return page(tile('wave', '#FF9500'), L('说一句试试', 'Try it'), lede, box, act);
 }
@@ -145,7 +149,8 @@ function done() {
     btn(L('完成', 'Done'), 'done'));
 }
 
-const STEPS = [welcome, microphone, accessibility, apiKey, download, practice, done];
+// The speech model downloads from launch, behind every step (dlLine), rather than as a step of its own.
+const STEPS = [welcome, microphone, accessibility, apiKey, practice, done];
 
 function draw() {
   if (!S) return;
@@ -154,7 +159,7 @@ function draw() {
   const typed = { key: $('#key')?.value || '', pr: $('#pr')?.value || '' };
   const focused = document.activeElement?.id;
   const dots = STEPS.slice(0, LAST).map((_, i) => `<i class="${i === step ? 'on' : i < step ? 'done' : ''}"></i>`).join('');
-  root.innerHTML = `<div class="steps" aria-hidden="true">${dots}</div>${STEPS[step]()}`;
+  root.innerHTML = `<div class="steps" aria-hidden="true">${dots}</div>${STEPS[step]()}${STEPS[step] === done ? '' : dlLine()}`;
   const key = $('#key'), pr = $('#pr');
   if (key) key.value = typed.key;
   if (pr) pr.value = typed.pr;
@@ -221,7 +226,7 @@ document.addEventListener('input', e => {
   if (e.target.id === 'pr' && e.target.value.trim() && !UI.practiced) {
     UI.practiced = true;
     draw();
-    advanceSoon(5);
+    advanceSoon(4);
   }
 });
 
@@ -243,18 +248,16 @@ on('state', m => {
 on('keyResult', m => { UI.keyBusy = false; UI.key = { ok: m.ok, msg: m.msg }; draw(); });
 on('download', m => {
   UI.dl = m;
-  if (step === 4) {
-    // Only the bar and the line under it change; a full redraw would restart the bar's transition.
-    const bar = $('.bar i'), st = $('#st');
-    if (bar && !m.done && !m.error) {
-      const pct = Math.round(m.p * 100);
-      bar.style.width = pct + '%';
-      bar.parentElement.setAttribute('aria-valuenow', pct);
-      if (st) st.textContent = progressText(pct, m.eta);
-      return;
-    }
-    draw();
+  // Progress only changes the line's text; a finished or failed download redraws the page.
+  const line = $('#dlt');
+  if (line && !m.done && !m.error) {
+    const pct = Math.round(m.p * 100);
+    line.textContent = progressText(pct, m.eta);
+    const fill = $('#dlb');
+    if (fill) fill.style.width = pct + '%';
+    return;
   }
+  draw();
 });
 
 post({ t: 'ready' });

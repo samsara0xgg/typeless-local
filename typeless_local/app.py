@@ -778,6 +778,10 @@ class TypelessLocalApp:
                 self._download = None
                 self._download_progress(1.0, done=True)
                 self._warm_up_asr()
+                with self._lock:
+                    if self.state == "idle" and self.capsule.state in ("hidden", "download"):
+                        # It downloaded while they did something else: say it can be used now.
+                        self.capsule.show("ready", name=brand.display_name())
             except Exception:
                 # The first dictation will download it the slow way; that is a
                 # worse experience, not a broken one, so the app stays up.

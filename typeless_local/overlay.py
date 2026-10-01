@@ -67,7 +67,7 @@ STATES = frozenset({
     "inserted", "inserted-raw-net", "inserted-raw-key", "inserted-raw-trial",
     "edit-notarget", "edit-modify",
     "empty", "mic", "download", "cancelled", "undone", "replaced", "copied",
-    "perm", "notice", "error",
+    "perm", "notice", "ready", "error",
 })
 CARD_STATES = frozenset({"edit-notarget", "edit-modify"})
 ACTIONS = frozenset({

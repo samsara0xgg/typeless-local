@@ -33,6 +33,7 @@ DISMISS_AFTER: dict[str, float] = {
     "mic": 6.0,
     "error": 8.0,
     "notice": 2.6,
+    "ready": 6.0,
     "perm": 12.0,
 }
 INSERTED_STATES = frozenset({"inserted", "inserted-raw-net", "inserted-raw-key", "inserted-raw-trial"})

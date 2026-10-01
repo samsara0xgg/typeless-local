@@ -135,6 +135,15 @@ html.rm .steps i{transition:none}
 .onb .trialcard{display:flex; flex-direction:column; align-items:center; gap:2px; padding:14px 28px; border-radius:14px; background:rgba(52,199,89,.12); color:var(--win-fg)}
 .onb .trialcard b{font-size:34px; font-weight:700; color:#34C759; line-height:1.1}
 .onb .trialcard span{font-size:13px; color:var(--win-fg-2)}
+.onb .dlline{display:flex; justify-content:center; align-items:center; gap:10px; margin-top:14px; min-height:24px; font-size:12px; color:var(--win-fg-2); font-variant-numeric:tabular-nums}
+.onb .dlline .linkbtn{font-size:12px; padding:2px}
+.onb .mbar{width:72px; height:4px; border-radius:2px; background:var(--hover); overflow:hidden; flex:none}
+.onb .mbar i{display:block; height:100%; width:0; background:var(--accent); border-radius:2px; transition:width .6s cubic-bezier(.22,1,.36,1)}
+.onb .dlok{display:inline-flex; align-items:center; gap:5px; color:var(--green); animation:dlok .5s cubic-bezier(.22,1,.36,1)}
+.onb .dlok .i{width:13px; height:13px}
+@keyframes dlok{from{opacity:0; transform:translateY(3px) scale(.96)}to{opacity:1; transform:none}}
+html.rm .onb .mbar i{transition:none}
+html.rm .onb .dlok{animation:none}
 .gbtn.big{height:44px; padding:0 36px; border-radius:22px; font-size:16px; font-weight:600}
 .linkbtn{border:0; background:none; color:var(--accent); font-size:13px; padding:4px}
 .langsw{display:flex; align-items:center; gap:4px; color:var(--win-fg-3); font-size:13px}

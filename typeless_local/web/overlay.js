@@ -156,6 +156,7 @@ function view(st, o) {
     case 'replaced': return [`${CHECK}<span class="lbl">${L('已替换', 'Replaced')} · ${units(o.n)}</span>`, 'pill', [], `${L('已替换', 'Replaced')} ${units(o.n)}`];
     case 'copied': return [`${CHECK}<span class="lbl">${L('已复制到剪贴板', 'Copied to the clipboard')}</span>`, 'pill', [], L('已复制到剪贴板', 'Copied to the clipboard')];
     case 'perm': return [`<span class="lead warn">${I('a11y')}</span><span class="lbl">${L('需要辅助功能权限', 'Needs Accessibility permission')} <span class="sub">· ${L('否则按键传不到言字', 'or Yana never hears the key')}</span></span>`, 'pill', [BUD.perm()], L('需要辅助功能权限', 'Needs Accessibility permission')];
+    case 'ready': return [`${CHECK}<span class="lbl">${L(`${esc(o.name || '言字')}准备好了`, `${esc(o.name || 'Yana')} is ready`)} <span class="sub">· ${L('按 F5 试试', 'press F5 to try it')}</span></span>`, 'pill', [], L('准备好了，按 F5 试试', 'Ready: press F5 to try it')];
     case 'notice': return [`<span class="lead">${I('info')}</span><span class="lbl">${esc(o.msg || '')}</span>`, 'pill', [], o.msg || ''];
     case 'error': return [`<span class="lead err wiggle">${I('warn')}</span><span class="lbl">${L('出错了', 'Something went wrong')}${o.msg ? ` <span class="sub">· ${esc(o.msg)}</span>` : ''}</span>`, 'pill', o.log === false ? [] : [BUD.log()], L('出错了', 'Something went wrong') + (o.msg ? L('，', ': ') + o.msg : '')];
   }
