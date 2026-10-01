@@ -78,7 +78,7 @@ function dictation() {
   return head(paneTitle('dictation'))
     + grp([
       row(L('识别语言', 'Spoken language'), select('language', S.language, LANGS(), L('识别语言', 'Spoken language')),
-        L('自动会听出你说的语言，混着说也行；固定一种语言会快一点。', 'Automatic hears which language you speak, even mixed; one fixed language is a little faster.')),
+        L('自动会听出你说的语言，混着说也行。只说一种语言时才固定它，否则别的语言可能被认错或翻译。', 'Automatic hears which language you speak, even mixed. Fix one only if it is the only language you speak; others may be misheard or translated.')),
       row(L('语音模型', 'Speech model'), `<span class="val">${L('在这台 Mac 上运行', 'Runs on this Mac')}</span>`),
       row(L('模型下载源', 'Model download'), select('model_source', p.model_source, SOURCES(), L('模型下载源', 'Model download')),
         L('自动：在中国大陆用国内镜像，其他地方用 Hugging Face。只管下载，识别始终在这台 Mac 上。',
