@@ -44,7 +44,7 @@ input, textarea{-webkit-user-select:text; user-select:text}
 /* ------------------------------------------------------------ usage pane */
 .ustats{display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; margin-bottom:18px}
 .ustat{background:var(--grp); border-radius:12px; box-shadow:0 0 0 .5px var(--win-sep); padding:12px 14px; display:flex; flex-direction:column; gap:2px; min-width:0}
-.ustat small{font-size:11.5px; color:var(--win-fg-2)}
+.ustat small{font-size:11.5px; color:var(--win-fg-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
 .ustat b{font-size:20px; font-weight:600; font-variant-numeric:tabular-nums}
 .ustat span{font-size:12.5px; color:var(--win-fg-2); font-variant-numeric:tabular-nums}
 .uchart{padding:12px 14px 10px}
@@ -79,7 +79,7 @@ select.pop{appearance:none; -webkit-appearance:none; height:24px; padding:0 26px
 .btnrow.left{justify-content:flex-start; padding-left:0}
 .field{height:26px; border-radius:7px; border:0; background:var(--field); box-shadow:inset 0 0 0 .5px var(--win-sep), 0 .5px 1px rgba(0,0,0,.06); padding:0 9px; font-size:12.5px; min-width:0}
 .field:focus{box-shadow:inset 0 0 0 .5px var(--win-sep), 0 0 0 3px color-mix(in srgb, var(--accent) 40%, transparent)}
-.st-ok{color:var(--green); font-weight:600}
+.st-ok{color:var(--green-text); font-weight:600}
 .st-no{color:var(--orange); font-weight:600}
 .st-err{color:var(--red)}
 .spin{display:inline-block; width:12px; height:12px; border-radius:6px; border:2px solid var(--win-fg-3); border-top-color:var(--accent); animation:spin .8s linear infinite; vertical-align:-2px}
@@ -125,22 +125,23 @@ html.rm .steps i{transition:none}
 .onb .sym{width:84px; height:84px; border-radius:22px; display:grid; place-items:center; color:#fff; margin:6px 0 18px; flex:none; box-shadow:inset 0 1px 0 rgba(255,255,255,.3), 0 10px 24px rgba(0,0,0,.18)}
 .onb .sym .i{width:42px; height:42px; stroke-width:1.6}
 .onb .sym.ico{background:none; box-shadow:none}
-.onb .sym.ico img{width:96px; height:96px}
+.onb .sym.ico{width:64px; height:64px; margin-bottom:12px}
+.onb .sym.ico img{width:64px; height:64px}
 .onb h1{font-size:24px; font-weight:700; margin:0 0 8px}
 .onb .lede{font-size:14px; color:var(--win-fg-2); max-width:30em; margin:0 auto 18px}
 .onb .act{display:flex; flex-direction:column; align-items:center; gap:10px; margin-top:auto; width:100%; padding-top:16px}
 .gbtn{height:34px; padding:0 20px; border-radius:17px; border:0; font-size:14px; font-weight:500; background:var(--hover); color:var(--win-fg)}
 .gbtn.pri{background:var(--accent); color:#fff; box-shadow:inset 0 1px 0 rgba(255,255,255,.3), 0 2px 6px rgba(0,80,200,.25)}
 .gbtn:disabled{opacity:.45}
-.onb .trialcard{display:flex; flex-direction:column; align-items:center; gap:2px; padding:14px 28px; border-radius:14px; background:rgba(52,199,89,.12); color:var(--win-fg)}
-.onb .trialcard b{font-size:34px; font-weight:700; color:#34C759; line-height:1.1}
+.onb .trialcard{display:flex; flex-direction:column; align-items:center; gap:2px; padding:10px 28px; border-radius:14px; background:rgba(52,199,89,.12); color:var(--win-fg)}
+.onb .trialcard b{font-size:34px; font-weight:700; color:var(--green-text); line-height:1.1}
 .onb .trialcard span{font-size:13px; color:var(--win-fg-2)}
-.onb .fine{font-size:12px; color:var(--win-fg-2); margin:10px 0 0; max-width:380px; text-align:center}
+.onb .fine{font-size:12px; color:var(--win-fg-2); margin:8px 0 0; max-width:380px; text-align:center}
 .onb .dlline{display:flex; justify-content:center; align-items:center; gap:10px; margin-top:14px; min-height:24px; font-size:12px; color:var(--win-fg-2); font-variant-numeric:tabular-nums}
 .onb .dlline .linkbtn{font-size:12px; padding:2px}
 .onb .mbar{width:72px; height:4px; border-radius:2px; background:var(--hover); overflow:hidden; flex:none}
 .onb .mbar i{display:block; height:100%; width:0; background:var(--accent); border-radius:2px; transition:width .6s cubic-bezier(.22,1,.36,1)}
-.onb .dlok{display:inline-flex; align-items:center; gap:5px; color:var(--green); animation:dlok .5s cubic-bezier(.22,1,.36,1)}
+.onb .dlok{display:inline-flex; align-items:center; gap:5px; color:var(--green-text); animation:dlok .5s cubic-bezier(.22,1,.36,1)}
 .onb .dlok .i{width:13px; height:13px}
 @keyframes dlok{from{opacity:0; transform:translateY(3px) scale(.96)}to{opacity:1; transform:none}}
 html.rm .onb .mbar i{transition:none}
@@ -151,7 +152,7 @@ html.rm .onb .dlok{animation:none}
 .langsw .linkbtn{color:var(--win-fg-2)}
 .langsw .linkbtn[aria-checked="true"]{color:var(--win-fg); font-weight:600}
 .status{display:inline-flex; align-items:center; gap:8px; font-size:13px; color:var(--win-fg-2); min-height:22px}
-.status.ok{color:var(--green); font-weight:600}
+.status.ok{color:var(--green-text); font-weight:600}
 .status.err{color:var(--red)}
 .fieldline{display:flex; align-items:center; gap:8px; width:min(400px, 100%); margin-bottom:6px}
 .fieldline .svc{height:30px; display:inline-flex; align-items:center; padding:0 10px; border-radius:8px; background:var(--hover); font-size:12.5px; white-space:nowrap}
@@ -231,6 +232,8 @@ html.rt body .hlist{background:var(--win-2) !important}
 .yan.live .s2{transform:scaleX(calc(.82 + var(--lv) * .6))}
 .yan.live .s3{transform:scaleX(calc(.82 + var(--lv) * .45))}
 .yan.live .pill b{transform:scaleY(calc(.6 + var(--lv) * 1.4))}
+/* Peak hold: a thin line under the capsule that marks the loudest moment and sinks slowly. */
+.yan.live::after{content:''; position:absolute; left:30%; width:40%; top:89%; height:3%; border-radius:2px; background:rgba(255,255,255,.85); transform-origin:left center; transform:scaleX(var(--pk, 0)); transition:transform .25s ease-out}
 .yan.live .pill b:nth-child(2), .yan.live .pill b:nth-child(3){transform:scaleY(calc(.6 + var(--lv) * 2))}
 .stage{display:flex; flex-direction:column; align-items:center; flex:none}
 .stage .yan{margin-bottom:12px}
@@ -288,25 +291,32 @@ html.rt body .hlist{background:var(--win-2) !important}
 .onb .reveal{width:min(440px, 100%); margin-top:10px; padding:8px 14px 2px; border-radius:12px; background:color-mix(in srgb, var(--green) 10%, transparent); text-align:left; animation:dlok .45s cubic-bezier(.22,1,.36,1); flex:none}
 .reveal small{display:block; font-size:11px; color:var(--win-fg-2)}
 .reveal .type{font-size:14px; margin:0 0 6px; white-space:normal}
+/* Its last frame keeps what was dropped, struck through, as History shows it. */
+.reveal .type.close span.f{max-width:1.2em; opacity:.55; transform:none; text-decoration:line-through; color:var(--red)}
+.onb .stamp{display:inline-grid; place-items:center; width:20px; height:20px; border-radius:6px; background:#E5484D; color:#fff; font-size:12px; font-weight:700; transform:rotate(-8deg); animation:stamp .4s cubic-bezier(.34,1.56,.64,1)}
+@keyframes stamp{from{transform:scale(1.8) rotate(-20deg); opacity:0}}
+.sr{position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap}
+.onb.enter > *:not(.steps){animation:stepin .18s ease-out}
+@keyframes stepin{from{opacity:0; transform:translateY(4px)}}
 .onb .status.pop{display:inline-flex; align-items:center; gap:5px; animation:pop .45s cubic-bezier(.34,1.56,.64,1)}
 .onb .status.pop .i{width:15px; height:15px}
 @keyframes pop{from{opacity:0; transform:scale(.6)}to{opacity:1; transform:none}}
 
 /* Done: each tip acts out its gesture on a tiny keycap. */
 .tips{list-style:none; margin:0 0 14px; padding:10px 14px; width:min(440px, 100%); border-radius:12px; background:var(--field); box-shadow:inset 0 0 0 .5px var(--win-sep); text-align:left; flex:none}
-.tips li{display:flex; align-items:center; gap:10px; font-size:12.5px; line-height:1.45; color:var(--win-fg-2); padding:3px 0}
+.tips li{display:flex; align-items:center; gap:10px; font-size:12.5px; line-height:1.4; color:var(--win-fg-2); padding:2px 0}
 .gest{position:relative; flex:none; width:30px; height:20px}
 .gest b{display:grid; place-items:center; width:100%; height:100%; border-radius:5px; background:var(--grp-bg); box-shadow:inset 0 0 0 .5px var(--win-sep), 0 1.5px 0 var(--win-sep); font:600 10.5px var(--font); color:var(--accent)}
-.gest.tap b{animation:gtap 2.4s infinite}
-.gest.hold b{animation:ghold 2.4s infinite}
-.gest.dbl b{animation:gdbl 2.4s infinite}
-.gest.sel b{animation:gtap 2.4s .6s infinite}
+.gest.tap b{animation:gtap 2.4s var(--d, 0s) 1 both}
+.gest.hold b{animation:ghold 2.4s var(--d, 0s) 1 both}
+.gest.dbl b{animation:gdbl 2.4s var(--d, 0s) 1 both}
+.gest.sel b{animation:gtap 2.4s calc(var(--d, 0s) + .6s) 1 both}
 .gest.sel::before{content:''; position:absolute; left:-2px; right:-2px; top:-3px; bottom:-3px; border-radius:6px; background:var(--sel); z-index:-1}
 @keyframes gtap{0%,8%,100%{transform:none; background:var(--grp-bg); color:var(--accent)}4%{transform:translateY(1.5px); background:var(--accent); color:#fff}}
 @keyframes ghold{0%,100%{transform:none; background:var(--grp-bg); color:var(--accent)}6%,60%{transform:translateY(1.5px); background:var(--accent); color:#fff}66%{transform:none; background:var(--grp-bg); color:var(--accent)}}
 @keyframes gdbl{0%,6%,14%,100%{transform:none; background:var(--grp-bg); color:var(--accent)}3%,10%{transform:translateY(1.5px); background:var(--accent); color:#fff}}
 
 /* Reduce Motion: every loop holds still on its final frame. */
-html.rm .yan *, html.rm .type span, html.rm .axmock *, html.rm .krow *, html.rm .gest *, html.rm .trialcard, html.rm .reveal, html.rm .status.pop{animation:none !important; transition:none !important}
+html.rm .yan *, html.rm .type span, html.rm .axmock *, html.rm .krow *, html.rm .gest *, html.rm .trialcard, html.rm .reveal, html.rm .status.pop, html.rm .stamp, html.rm .onb.enter > *{animation:none !important; transition:none !important}
 html.rm .axsw.on{background:var(--green)} html.rm .axsw.on::after{transform:translateX(12px)} html.rm .axcur{display:none}
-@media (prefers-reduced-motion: reduce){.yan *, .type span, .axmock *, .krow *, .gest *, .trialcard, .reveal{animation:none !important; transition:none !important}}
+@media (prefers-reduced-motion: reduce){.yan *, .type span, .axmock *, .krow *, .gest *, .trialcard, .reveal, .stamp, .onb.enter > *{animation:none !important; transition:none !important}}

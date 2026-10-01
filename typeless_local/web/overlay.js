@@ -154,7 +154,7 @@ function view(st, o) {
       : [`<span class="lead err wiggle">${I('warn')}</span><span class="lbl">${L('麦克风不可用', 'Microphone unavailable')} <span class="sub">· ${L('可能被其他 App 占用', 'another app may be using it')}</span></span>`, 'pill', [BUD.input()], L('麦克风不可用', 'Microphone unavailable')];
     case 'download': {
       const p = Math.max(0, Math.min(1, +o.p || 0));
-      return [`<span class="pring" style="--p:${p.toFixed(3)}"></span><span class="lbl">${L('语音模型下载中', 'Downloading speech model')} · <span class="pct">${Math.round(p * 100)}%</span><span class="sub eta">${etaText(o.eta)}</span></span>`, 'pill', [], downloadSay(p)];
+      return [`<span class="pring" style="--p:${p.toFixed(3)}"></span><span class="lbl">${L('语音模型下载中', 'Downloading the speech model')} · <span class="pct">${Math.round(p * 100)}%</span><span class="sub eta">${etaText(o.eta)}</span></span>`, 'pill', [], downloadSay(p)];
     }
     case 'cancelled': return [`<span class="lead">${I('xmark')}</span><span class="lbl">${L('已取消', 'Cancelled')}</span>`, 'pill', [], L('已取消', 'Cancelled')];
     case 'undone': return [`<span class="lead">${I('undo')}</span><span class="lbl">${L('已撤销', 'Undone')}</span>`, 'pill', [], L('已撤销', 'Undone')];

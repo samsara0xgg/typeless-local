@@ -805,8 +805,8 @@ class TypelessLocalApp:
             self._download_progress(fraction, _eta_text(fraction, time.monotonic() - started))
             with self._lock:
                 # Only while nothing else is on screen: the progress used to
-                # replace a dictation in the middle of it.
-                if self.state == "idle" and self.capsule.state in ("hidden", "download"):
+                # replace a dictation in the middle of it. The guide shows its own.
+                if self.state == "idle" and self.capsule.state in ("hidden", "download") and not self._guide_open():
                     self._show_download()
 
         def run() -> None:
@@ -818,7 +818,7 @@ class TypelessLocalApp:
                 self._download_progress(1.0, done=True)
                 self._warm_up_asr()
                 with self._lock:
-                    if self.state == "idle" and self.capsule.state in ("hidden", "download"):
+                    if self.state == "idle" and self.capsule.state in ("hidden", "download") and not self._guide_open():
                         # It downloaded while they did something else: say it can be used now.
                         self.capsule.show("ready", name=brand.display_name())
             except Exception:
@@ -832,6 +832,10 @@ class TypelessLocalApp:
                 self.capsule.hide_if("download")
 
         threading.Thread(target=run, daemon=True, name="model-prefetch").start()
+
+    def _guide_open(self) -> bool:
+        windows = getattr(self, "windows", None)
+        return windows is not None and windows._visible("onboarding")
 
     def _download_progress(self, fraction: float, eta: str = "", done: bool = False, error: bool = False) -> None:
         """The guide's progress bar, when it is open."""

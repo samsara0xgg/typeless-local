@@ -672,6 +672,8 @@ class Windows:
     def _set_meter(self, on: bool) -> None:
         """The microphone page's live level: the real input, only while that page is up."""
 
+        if on and self._meter is not None:
+            return  # already listening: the guide asks again after every redraw
         stream, self._meter = self._meter, None
         if stream is not None:
             try:

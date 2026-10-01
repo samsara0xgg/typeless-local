@@ -588,6 +588,8 @@ def test_the_level_meter_opens_the_microphone_only_while_asked(ui, monkeypatch) 
     window = ui.windows.onboarding
 
     ui.windows._onboarding_message({"t": "meter", "on": True})
+    ui.windows._onboarding_message({"t": "meter", "on": True})  # every redraw asks again
+    assert len(streams) == 1
     import numpy as np
 
     streams[0].callback(np.array([[0.0], [0.25], [-0.5]]), 3, None, None)

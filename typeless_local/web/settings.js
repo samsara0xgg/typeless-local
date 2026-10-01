@@ -106,7 +106,8 @@ function keys() {
     L('两个都开会互相抢。在键盘设置里把系统听写的快捷键换掉或关闭，或者关掉上面这个开关。',
       'The two fight over it. Change or turn off the system dictation shortcut in Keyboard settings, or turn this switch off.'), 'warnrow') : '';
   const key = [rc && `<kbd>${L('右 ⌘', 'Right ⌘')}</kbd>`, f5 && '<kbd>F5</kbd>'].filter(Boolean).join(`<span class="arrow">${L('或', 'or')}</span>`);
-  const lock = rc ? `<span class="arrow">·</span><kbd>${L('右 ⌘', 'Right ⌘')}</kbd><kbd>Space</kbd>` : `<span class="arrow">·</span><kbd>F5</kbd><kbd>Space</kbd>`;
+  // Right ⌘ + Space only locks a recording already running (from idle it stays Spotlight), so it is a note, not a shortcut here.
+  const lock = rc ? '' : `<span class="arrow">·</span><kbd>F5</kbd><kbd>Space</kbd>`;
   return head(paneTitle('keys')) + kb
     + grp([
       row(L('开始 / 结束', 'Start / finish'), `<span class="kbd2"><span class="arrow">${L('轻点', 'tap')}</span>${key}</span>`),
@@ -136,7 +137,7 @@ function model() {
   const keyRows = S.keys.map(keyRow);
   const envKeys = S.keys.filter(k => k.where === 'env');
   const migrate = envKeys.length
-    ? `<p class="note">${envKeys.map(k => esc(k.env)).join(L('、', ', '))} ${L('还以明文存在 ~/.typlus/env 里。', 'is still in plain text in ~/.typlus/env.')}<button class="mbtn" data-act="migrate">${L('移到钥匙串', 'Move to Keychain')}</button></p>` : '';
+    ? `<p class="note">${envKeys.map(k => esc(k.env)).join(L('、', ', '))} ${L('还以明文存在旧版的配置文件里。', 'is still in plain text in an old settings file.')}<button class="mbtn" data-act="migrate">${L('移到钥匙串', 'Move to Keychain')}</button></p>` : '';
   const trialNote = !S.trial.on ? '' : `<p class="note">${S.trial.over
       ? L('免费试用已经用完，现在只插入原始转写。填上你自己的 OpenAI API Key 就能继续润色。', 'The free trial is used up, so dictation inserts the raw transcript. Add your own OpenAI API key to keep refining.')
       : L('正在用免费试用：前大约 300 次润色免费。想长期用，填上你自己的 OpenAI API Key，会自动切换过去。', 'You are on the free trial: about the first 300 refinements are free. For the long run, add your own OpenAI API key and it switches over by itself.')}
@@ -226,7 +227,7 @@ function usage() {
   const all = { refined: sum('refined'), prompt: sum('prompt'), cached: sum('cached'), completion: sum('completion'),
     cost: u.models.some(x => x.cost == null) && !sum('cost') ? null : sum('cost') };
   const models = all.refined ? [all].map(x => row(L('润色', 'Refinement'),
-    `<span class="val">${L(`${x.refined} 次`, `${x.refined} refinement${x.refined === 1 ? '' : 's'}`)} · ${x.cost == null ? L('没有价格', 'no price') : about(x.cost)}</span>`,
+    `<span class="val">${L(`${x.refined} 次`, `${x.refined} refinement${x.refined === 1 ? '' : 's'}`)} · ${x.cost == null ? L('没有价格', 'no price') : about(x.cost)}${S.trial && S.trial.on ? L('，免费试用承担', ', covered by the free trial') : ''}</span>`,
     x.prompt ? L(`输入 ${kilo(x.prompt)} token（缓存 ${kilo(x.cached)}）· 输出 ${kilo(x.completion)}`, `In ${kilo(x.prompt)} tokens (${kilo(x.cached)} cached) · out ${kilo(x.completion)}`)
       : L('这段时间没有记下 token 数', 'No token counts recorded for this period')))
     : [row(`<span class="empty">${L('最近 30 天没有润色。', 'No refinements in the last 30 days.')}</span>`, '')];
