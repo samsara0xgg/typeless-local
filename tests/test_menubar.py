@@ -105,7 +105,7 @@ def test_idle_menu_follows_the_design() -> None:
         "锁定听写",
         "最近一次",
         "明天下午四点开会",
-        "润色模型",
+        "润色与 API Key…",
         "输入设备",
         "词库…",
         "历史记录…",
@@ -115,12 +115,9 @@ def test_idle_menu_follows_the_design() -> None:
     assert items[0].subtitle == "就绪"
     recent = _find(items, "明天下午四点开会")
     assert recent.key == "copy" and recent.subtitle == "2 分钟前 · 备忘录 · 点按复制"
-    models = _find(items, "润色模型")
-    assert models.badge == "gpt-5.6-terra"
-    terra, deepseek = models.children[:2]
-    assert terra.checked and terra.badge == "1.2 秒" and terra.key == "preset:gpt-5.6-terra"
-    assert not deepseek.checked and deepseek.badge == "需要 Key"
-    assert models.children[-1].key == "settings:model"
+    # One model for everyone: the row only shows it and opens its settings, no list to pick from.
+    models = _find(items, "润色与 API Key…")
+    assert models.badge == "gpt-5.6-terra" and models.key == "settings:model" and not models.children
     inputs = _find(items, "输入设备")
     assert inputs.badge == "AirPods"
     assert [(i.title, i.key, i.checked) for i in inputs.children] == [
@@ -163,7 +160,8 @@ def test_an_unplugged_device_falls_back_to_the_system_default() -> None:
 
 def test_refine_off_shows_in_the_model_row() -> None:
     items = build_menu(Snapshot(presets=(Preset("a"),), active_preset="a", refine=False))
-    assert _find(items, "润色模型").badge == "关闭"
+    assert _find(items, "润色与 API Key…").badge == "关闭"
+    assert _find(build_menu(Snapshot(active_preset="free-trial")), "润色与 API Key…").badge == "免费试用"
 
 
 def test_perform_passes_the_key_and_swallows_errors() -> None:
@@ -198,6 +196,6 @@ def test_the_menu_speaks_english_when_asked() -> None:
     assert titles[0] == brand.ENGLISH_NAME
     assert items[0].subtitle == "No API key: raw transcripts only"
     assert "Start Dictation" in titles and "Settings…" in titles and f"Quit {brand.ENGLISH_NAME}" in titles
-    model = next(item for item in items if item.title == "Refinement Model")
-    assert model.children[0].badge == "Needs key"
+    model = next(item for item in items if item.title == "Refinement and API Key…")
+    assert model.key == "settings:model"
     assert ago(125) == "2 min ago" and ago(200000) == "2 days ago"

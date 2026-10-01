@@ -191,18 +191,12 @@ def build_menu(snap: Snapshot, now: float | None = None) -> list[Item]:
         items.append(Item(t("还没有听写", "Nothing dictated yet"), enabled=False))
     items.append(SEPARATOR)
 
-    if snap.presets:
-        models = tuple(
-            Item(
-                preset.name,
-                key=f"preset:{preset.name}",
-                checked=preset.name == snap.active_preset,
-                badge=t("需要 Key", "Needs key") if preset.needs_key else _seconds(preset.median_ms),
-            )
-            for preset in snap.presets
-        ) + (SEPARATOR, Item(t("管理模型与 Key…", "Manage Models and Keys…"), key="settings:model"))
-        active = snap.active_preset if snap.refine else t("关闭", "Off")
-        items.append(Item(t("润色模型", "Refinement Model"), badge=active, children=models, symbol="sparkles"))
+    # One model for everyone (gpt-5.6-terra, or the trial of it); this only opens its settings.
+    if snap.refine:
+        status = t("免费试用", "Free trial") if snap.active_preset == "free-trial" else snap.active_preset
+    else:
+        status = t("关闭", "Off")
+    items.append(Item(t("润色与 API Key…", "Refinement and API Key…"), key="settings:model", badge=status, symbol="sparkles"))
     active_input = snap.active_input if snap.active_input in snap.inputs else ""
     inputs = (Item(t(*SYSTEM_DEFAULT), key="input:", checked=not active_input),) + tuple(
         Item(name, key=f"input:{name}", checked=name == active_input) for name in snap.inputs

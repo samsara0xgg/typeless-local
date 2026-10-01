@@ -116,17 +116,15 @@ function keys() {
 }
 
 function model() {
-  const rows = S.presets.map(m => `<tr data-preset="${esc(m.name)}" aria-selected="${m.name === S.active}">
-    <td><span class="rad${m.name === S.active ? ' on' : ''}"></span></td><td>${esc(m.name)}<br><small class="arrow">${esc(m.model)}</small></td>
-    <td>${esc(m.service)}</td><td class="${m.hasKey ? 'st-ok' : 'st-no'}">${m.hasKey ? L('已设置', 'Set') : L('需要 Key', 'Needs key')}</td>
-    <td class="num">${m.median ? secs((m.median / 1000).toFixed(1)) : '—'}</td></tr>`).join('');
+  // One model for everyone: show which, how fast, and whether it is the trial. Nothing to pick.
+  const m = S.presets.find(p => p.name === S.active) || {};
+  const how = S.trial.on ? L('免费试用', 'Free trial') : (m.service || '');
+  const modelRow = row(L('润色模型', 'Refinement model'), `<span class="val">${esc(m.model || '—')}${how ? ` · ${esc(how)}` : ''}</span>`,
+    m.median ? L(`中位延迟 ${(m.median / 1000).toFixed(1)} 秒`, `Median time ${(m.median / 1000).toFixed(1)} s`) : '');
   const t = UI.test;
   const testLine = !t ? '' : t.busy ? `<span class="val"><span class="spin"></span> ${L('正在发送一次测试请求…', 'Sending a test request…')}</span>`
     : t.ok ? `<span class="st-ok">${L('已连接', 'Connected')} · ${esc(t.preset)} · ${L(`往返 ${(t.ms / 1000).toFixed(1)} 秒`, `${(t.ms / 1000).toFixed(1)} s round trip`)}</span>`
     : `<span class="st-err">${esc(t.msg || L('连接失败', 'Connection failed'))}</span>`;
-  const table = S.presets.length
-    ? `<table class="lst"><thead><tr><th></th><th>${L('模型', 'Model')}</th><th>${L('服务', 'Service')}</th><th>Key</th><th class="num">${L('中位延迟', 'Median time')}</th></tr></thead><tbody>${rows}</tbody></table>`
-    : `<div class="row"><span class="empty">${L('配置里没有润色模型。', 'The config has no refinement models.')}</span></div>`;
   const keyRows = S.keys.map(keyRow);
   const envKeys = S.keys.filter(k => k.where === 'env');
   const migrate = envKeys.length
@@ -137,9 +135,8 @@ function model() {
     <button class="mbtn" data-act="open" data-what="openai-keys">${L('去 OpenAI 申请 Key', 'Get a Key from OpenAI')}</button></p>`;
   return head(paneTitle('model')) + trialNote
     + (S.prefs.refine ? '' : `<p class="note">${L('润色已关闭，听写会直接插入原始转写。可以在「听写」里打开。', 'Refinement is off, so dictation inserts the raw transcript. Turn it on under Dictation.')}</p>`)
-    + `<div class="grp">${table}<div class="btnrow">${testLine}<button class="mbtn" data-act="test"${t && t.busy ? ' disabled' : ''}>${L('测试连接', 'Test Connection')}</button></div></div>`
-    + `<div class="grp-l">${L('API Key · 保存在钥匙串', 'API keys · kept in the keychain')}</div>` + grp(keyRows) + migrate
-    + `<p class="note">${L('中位延迟来自最近 50 次润色；关掉历史记录后不再统计。', 'Median time is over the last 50 refinements; it stops updating while history is off.')}</p>`;
+    + `<div class="grp">${modelRow}<div class="btnrow">${testLine}<button class="mbtn" data-act="test"${t && t.busy ? ' disabled' : ''}>${L('测试连接', 'Test Connection')}</button></div></div>`
+    + `<div class="grp-l">${L('API Key · 保存在钥匙串', 'API key · kept in the keychain')}</div>` + grp(keyRows) + migrate;
 }
 
 function keyRow(k) {
@@ -353,8 +350,6 @@ document.addEventListener('click', e => {
   if (tab) { show(tab.dataset.pane); return; }
   const set = e.target.closest('button[data-set]');
   if (set && !set.disabled) { setting(set); return; }
-  const preset = e.target.closest('tr[data-preset]');
-  if (preset && preset.dataset.preset !== S.active) { S.active = preset.dataset.preset; post({ t: 'set', key: 'preset', value: S.active }); draw(); return; }
   const act = e.target.closest('[data-act]');
   if (!act || act.disabled) return;
   const a = act.dataset.act;

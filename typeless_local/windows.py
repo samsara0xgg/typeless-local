@@ -271,6 +271,11 @@ class Windows:
                 where = "env" if env in in_file else ("keychain" if value else "")
                 keys.append({"env": env, "service": service, "hint": keychain.masked(value), "where": where})
 
+        # Only the key the one model in use reads (on the trial, the user's own OpenAI key).
+        active = getattr(config.refine, "preset", "")
+        wanted = trial.OWN_KEY_ENV if active == trial.PRESET else getattr(config.refine, "api_key_env", "")
+        keys = [key for key in keys if key["env"] == wanted]
+
         asr_config = jarvis.get("asr") or {}
         ducker = getattr(app, "audio_ducker", None)
         from typeless_local import devices  # noqa: PLC0415

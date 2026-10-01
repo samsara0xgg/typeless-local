@@ -213,7 +213,7 @@ def test_settings_state_describes_models_keys_and_the_engine(ui, monkeypatch) ->
     assert state["presets"][1]["service"] == "DeepSeek" and state["presets"][1]["hasKey"] is False
     keys = {k["env"]: k for k in state["keys"]}
     assert keys["TEST_KEY_A"]["where"] == "keychain" and keys["TEST_KEY_A"]["hint"] == "sk-…234"
-    assert keys["TEST_KEY_B"]["where"] == "env"
+    assert "TEST_KEY_B" not in keys  # only the key the model in use reads
     assert state["active"] == "mini"
     assert state["language"] == "zh"
     assert state["asrModel"] == "whisper-large-v3-turbo"
