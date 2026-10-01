@@ -18,7 +18,7 @@ const PANES = [
 ];
 const paneTitle = id => L(...PANES.find(p => p[0] === id)[1]);
 const DAYS = v => ({ 30: L('30 天', '30 days'), 90: L('90 天', '90 days'), 365: L('1 年', '1 year'), 0: L('永久', 'Forever') })[v] || L(`${v} 天`, `${v} days`);
-const LANGS = () => [['', L('自动', 'Automatic')], ['zh', '中文'], ['en', 'English']];
+const LANGS = () => [['', L('自动', 'Automatic')], ['zh', '中文'], ['en', 'English'], ['fr', 'Français']];
 // The interface language names itself in both, so it can be found whichever one is showing.
 const UI_LANGS = () => [['auto', L('跟随系统', 'Same as the Mac')], ['zh', '中文'], ['en', 'English']];
 const SOURCES = () => [['auto', L('自动', 'Automatic')], ['huggingface', 'Hugging Face'], ['mirror', L('国内镜像 hf-mirror.com', 'China mirror (hf-mirror.com)')]];

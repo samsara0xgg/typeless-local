@@ -1434,14 +1434,15 @@ def test_language_and_ducking_apply_live_and_persist(monkeypatch, tmp_path) -> N
     app.asr = SimpleNamespace(set_language=languages.append)
 
     app.set_language("en")
+    app.set_language("fr")
     app.set_language("klingon")
     app.set_ducking(False)
 
-    assert languages == ["en", ""]
+    assert languages == ["en", "fr", ""]
     assert app.config.jarvis_config["asr"]["language"] == ""
     assert app.audio_ducker.enabled is False
     assert app.config.jarvis_config["audio_ducking"]["enabled"] is False
-    assert written == [("asr", "language", "en"), ("asr", "language", ""), ("audio_ducking", "enabled", False)]
+    assert written == [("asr", "language", "en"), ("asr", "language", "fr"), ("asr", "language", ""), ("audio_ducking", "enabled", False)]
 
 
 def test_a_new_key_for_the_active_model_replaces_the_client(monkeypatch, tmp_path) -> None:

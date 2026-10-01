@@ -338,7 +338,7 @@ class TypelessLocalApp:
     def set_language(self, language: str) -> None:
         """Recognise ``language`` ("" detects it) from the next dictation on, and persist it."""
 
-        language = language if language in ("zh", "en") else ""
+        language = language if language in ("zh", "en", "fr") else ""
         set_language = getattr(self.asr, "set_language", None)
         if set_language is not None:
             set_language(language)
