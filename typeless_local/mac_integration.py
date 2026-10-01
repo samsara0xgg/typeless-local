@@ -146,11 +146,8 @@ class FocusContext:
     # The focused text element itself, to put the caret back there before the
     # paste if the app moved focus meanwhile. None when there was no real one.
     element: object = field(default=None, compare=False, repr=False)
-    # Its window: is it still the one in front?
+    # Its window, to bring back to the front for a dictation sent from elsewhere.
     window: object = field(default=None, compare=False, repr=False)
-    # What had focus when that was not a text field (a button in Claude's
-    # pane header, say): the composer nearest to it is the one meant.
-    anchor: object = field(default=None, compare=False, repr=False)
 
 
 # Seconds an AX query may wait on the target app. The default is about six,
@@ -187,7 +184,6 @@ def capture_focus_context(read_before_text: bool = False) -> FocusContext:
     can_insert_text = False
     before_text = ""
     element = None
-    anchor = None
     focused_window = None
 
     if pid:
@@ -219,8 +215,6 @@ def capture_focus_context(read_before_text: bool = False) -> FocusContext:
                 )
                 if can_insert_text and focused_role != "AXWebArea":
                     element = focused_element
-                else:
-                    anchor = focused_element
                 selection = _copy_ax_attribute(
                     focused_element,
                     ApplicationServices.kAXSelectedTextAttribute,
@@ -252,7 +246,6 @@ def capture_focus_context(read_before_text: bool = False) -> FocusContext:
         before_text=before_text,
         element=element,
         window=focused_window,
-        anchor=anchor,
     )
 
 
@@ -410,41 +403,6 @@ def _send_button(element):
         button = find(node, 0)
         if button is not None:
             return button
-    return None
-
-
-def _visible_text_areas(node, depth: int = 0, found: list | None = None) -> list:
-    found = [] if found is None else found
-    if depth > 40 or len(found) > 1:
-        return found
-    for child in _copy_ax_attribute(node, ApplicationServices.kAXChildrenAttribute) or []:
-        if _copy_ax_attribute(child, ApplicationServices.kAXRoleAttribute) == "AXTextArea":
-            size = _copy_ax_attribute(child, ApplicationServices.kAXSizeAttribute)
-            unpacked = ApplicationServices.AXValueGetValue(size, ApplicationServices.kAXValueCGSizeType, None) if size is not None else None
-            rect = unpacked[1] if isinstance(unpacked, tuple) else unpacked
-            if rect is not None and rect.width > 0 and rect.height > 0:
-                found.append(child)
-        else:
-            _visible_text_areas(child, depth + 1, found)
-    return found
-
-
-def nearest_composer(anchor):
-    """The one visible text area closest around ``anchor``, or None when there is none or it is ambiguous.
-
-    Claude can show two conversations side by side, each with its composer,
-    while focus sits on a button: the composer in the same pane is the one meant.
-    """
-
-    _limit_ax_messaging_timeout()
-    node = anchor
-    for _ in range(12):
-        node = _copy_ax_attribute(node, ApplicationServices.kAXParentAttribute)
-        if not node:
-            return None
-        areas = _visible_text_areas(node)
-        if areas:
-            return areas[0] if len(areas) == 1 else None
     return None
 
 
