@@ -139,7 +139,7 @@ function model() {
     ? `<p class="note">${envKeys.map(k => esc(k.env)).join(L('、', ', '))} ${L('还以明文存在 ~/.typlus/env 里。', 'is still in plain text in ~/.typlus/env.')}<button class="mbtn" data-act="migrate">${L('移到钥匙串', 'Move to Keychain')}</button></p>` : '';
   const trialNote = !S.trial.on ? '' : `<p class="note">${S.trial.over
       ? L('免费试用已经用完，现在只插入原始转写。填上你自己的 OpenAI API Key 就能继续润色。', 'The free trial is used up, so dictation inserts the raw transcript. Add your own OpenAI API key to keep refining.')
-      : L('正在用免费试用：前大约 400 次润色免费。想长期用，填上你自己的 OpenAI API Key，会自动切换过去。', 'You are on the free trial: about the first 400 refinements are free. For the long run, add your own OpenAI API key and it switches over by itself.')}
+      : L('正在用免费试用：前大约 300 次润色免费。想长期用，填上你自己的 OpenAI API Key，会自动切换过去。', 'You are on the free trial: about the first 300 refinements are free. For the long run, add your own OpenAI API key and it switches over by itself.')}
     <button class="mbtn" data-act="open" data-what="openai-keys">${L('去 OpenAI 申请 Key', 'Get a Key from OpenAI')}</button></p>`;
   return head(paneTitle('model')) + trialNote
     + (S.prefs.refine ? '' : `<p class="note">${L('润色已关闭，听写会直接插入原始转写。可以在「听写」里打开。', 'Refinement is off, so dictation inserts the raw transcript. Turn it on under Dictation.')}</p>`)

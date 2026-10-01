@@ -454,7 +454,8 @@ class Windows:
     def test_preset(self, preset: str) -> tuple[bool, int, str]:
         """One small real request through ``preset``: (worked, round trip ms, why not)."""
 
-        from typeless_local.refine import MissingAPIKey, TextRefiner  # noqa: PLC0415
+        from typeless_local.app import _failure_kind  # noqa: PLC0415
+        from typeless_local.refine import MissingAPIKey, TextRefiner, TrialUnavailable  # noqa: PLC0415
 
         jarvis = getattr(self.app.config, "jarvis_config", {}) or {}
         try:
@@ -462,16 +463,26 @@ class Windows:
             started = time.monotonic()
             result = refiner.refine("嗯，测试一下连接", FocusContext(app_name="", window_title="", selected_text=""))
             ms = int((time.monotonic() - started) * 1000)
+        except TrialUnavailable as exc:
+            why = {
+                "trial_region": t("免费试用只在美国和加拿大提供。", "The free trial is only offered in the US and Canada."),
+                "trial_paused": t("免费试用本月已暂停。", "The free trial is paused this month."),
+            }
+            return False, 0, why.get(exc.code, t("免费试用已经用完了。", "The free trial is used up."))
         except MissingAPIKey:
-            return False, 0, t("还没有这个模型的 API Key。", "There is no API key for this model yet.")
+            return False, 0, t("还没有填 API Key。", "There is no API key yet.")
         except Exception as exc:
             LOGGER.warning("Connection test for %s failed", preset, exc_info=True)
+            kind = _failure_kind(exc)
+            if kind == "credit":
+                return False, 0, t("OpenAI 账户余额用完了，充值后再试。", "Your OpenAI account is out of credit. Add credit and try again.")
             text = str(exc)
-            if "401" in text or "auth" in text.lower() or "api key" in text.lower():
+            if kind == "badkey" or "401" in text:
                 return False, 0, t("API Key 不对，服务拒绝了请求。", "The service rejected the API key.")
-            if "timeout" in type(exc).__name__.lower() or "timed out" in text.lower():
+            if kind == "timeout":
                 return False, 0, t("请求超时，检查一下网络。", "The request timed out. Check the network.")
-            return False, 0, t("连不上：", "Can't connect: ") + (text[:80] or type(exc).__name__)
+            # The raw error can name the model; say only what kind of failure it was.
+            return False, 0, t("连不上服务，检查一下网络后再试。", "Can't reach the service. Check the network and try again.") + f" ({type(exc).__name__})"
         if getattr(result, "fallback", ""):
             return False, ms, t("连上了，但模型没有正常返回。", "Connected, but the model gave no proper answer.")
         return True, ms, ""

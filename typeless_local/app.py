@@ -146,6 +146,7 @@ class TypelessLocalApp:
             self.whisper_prompt = ""
             self.trace = None
         self.prefs = load_preferences(user_paths)
+        self._trial_over = self.prefs.trial_used_up
         if dataclasses.is_dataclass(config):
             self.config = dataclasses.replace(config, max_recording_seconds=self.prefs.max_minutes * 60.0)
 
@@ -457,8 +458,9 @@ class TypelessLocalApp:
         if self.prefs.onboarding_done:
             return
         if self._set_up_already():
-            # Someone who used the app before the guide existed.
+            # Someone who used the app before the guide existed: F5 is what they know.
             self.set_preference("onboarding_done", True)
+            self.set_preference("f5_hotkey", True)
             return
         windows.show_onboarding()
 
@@ -627,11 +629,19 @@ class TypelessLocalApp:
             return "key"
         return _failure_kind(exc)
 
+    def _refine(self, text: str, context, vocab) -> RefineResult:
+        if self.prefs.trial_used_up and getattr(self.config.refine, "preset", "") == trial.PRESET:
+            # The trial server already said this Mac's share is spent: don't ask it again.
+            raise TrialUnavailable("trial_used_up", "")
+        return self.refiner.refine(text, context, vocab=vocab)
+
     def _note_trial(self, fallback: str) -> None:
         """The trial server said no: keep the menu's "enter your own key" up until one is saved."""
 
         if fallback == "trial":
             self._trial_over = True
+            if getattr(self, "_trial_code", "") == "trial_used_up" and not self.prefs.trial_used_up:
+                self.set_preference("trial_used_up", True)
 
     def _show_raw_key(self, fallback: str) -> None:
         self._note_trial(fallback)
@@ -1233,7 +1243,7 @@ class TypelessLocalApp:
     def _rerefine(self, insertion: Insertion, session_id: int) -> None:
         fallback = ""
         try:
-            result = self.refiner.refine(
+            result = self._refine(
                 insertion.raw, self._refine_context(insertion.context), vocab=getattr(self, "vocab", []) or []
             )
             fallback = getattr(result, "fallback", "") or ""
@@ -1769,7 +1779,7 @@ class TypelessLocalApp:
                 LOGGER.info("Starting refinement")
                 refine_start = time.monotonic()
                 try:
-                    refined = self.refiner.refine(transcript.text, self._refine_context(context), vocab=vocab_terms)
+                    refined = self._refine(transcript.text, self._refine_context(context), vocab=vocab_terms)
                 except Exception as exc:
                     # The transcript is already in hand; losing the whole dictation
                     # because the polish step failed is the worst outcome available.
@@ -2146,8 +2156,9 @@ def main() -> None:
     # ~/.typlus/env (or the environment) is used as it is.
     keychain.fill_environ(api_key_names(config))
     trial.ensure_token()
-    if not prefs.onboarding_done and not reach.in_mainland_china() and not os.environ.get(trial.OWN_KEY_ENV):
-        # A new Mac with no key starts on the free trial, so the first dictations are refined.
+    if not prefs.onboarding_done and reach.in_trial_region() and not os.environ.get(trial.OWN_KEY_ENV):
+        # A new US or Canadian Mac with no key starts on the free trial, so the
+        # first dictations are refined; elsewhere the guide asks for a key.
         config = adopt_default_preset(config, trial.PRESET)
     coordinator = TypelessLocalApp(config)
     coordinator.start()

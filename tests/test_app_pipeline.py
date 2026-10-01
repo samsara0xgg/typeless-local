@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import dataclasses
+
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -726,6 +728,27 @@ def test_own_key_out_of_credit_says_so_plainly(monkeypatch) -> None:
     assert app.overlay.calls[-1] == ("show", "inserted-raw-net", {"why": "credit"})
 
 
+def test_a_spent_trial_is_remembered_and_not_asked_again(monkeypatch) -> None:
+    from typeless_local.refine import TrialUnavailable
+
+    monkeypatch.setattr("typeless_local.app.paste_text", lambda text, **kwargs: None)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("hello there")
+    app.asr = _FakeASR("hello there", language="en")
+    app.prefs = Preferences()
+    app.config.refine = SimpleNamespace(preset=app_module.trial.PRESET, model="m", api_key_env="YANA_TRIAL_TOKEN")
+    saved = []
+    app.set_preference = lambda key, value: (saved.append((key, value)), setattr(app, "prefs", dataclasses.replace(app.prefs, **{key: value})))
+    app.refiner = _FailingRefiner(TrialUnavailable("trial_used_up"))
+
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("TextEdit", "Untitled", can_insert_text=True))
+    assert saved == [("trial_used_up", True)]
+
+    app.refiner = _FailingRefiner(AssertionError("the trial server must not be asked again"))
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("TextEdit", "Untitled", can_insert_text=True))
+    assert app.overlay.calls[-1][1] == "inserted-raw-trial"
+
+
 def test_missing_key_pastes_raw_and_offers_to_set_one(monkeypatch) -> None:
     pasted = []
     monkeypatch.setattr("typeless_local.app.paste_text", pasted.append)
@@ -1360,7 +1383,7 @@ def test_first_launch_skips_the_guide_when_everything_is_set_up(monkeypatch) -> 
     app = _windows_app(monkeypatch, {"TEST_KEY_A": "sk-test-aaaaaaaaaaaa1234"})
     app._first_run()
     assert app.windows.calls == []
-    assert app._saved == [("onboarding_done", True)]
+    assert app._saved == [("onboarding_done", True), ("f5_hotkey", True)]
 
 
 def test_the_guide_is_shown_only_once(monkeypatch) -> None:
@@ -1583,7 +1606,7 @@ def test_music_is_left_alone_when_muting_other_sound_is_off(monkeypatch, _media_
     assert _media_keys == []
 
 
-def _main_env(monkeypatch, tmp_path, *, chip: str, china: bool, onboarding_done: bool = False, own_key: bool = False):
+def _main_env(monkeypatch, tmp_path, *, chip: str, china: bool, onboarding_done: bool = False, own_key: bool = False, trial_region: bool = True):
     """Run main() up to the point it builds the app, with nothing real underneath."""
 
     from typeless_local import config as cfg_mod
@@ -1608,6 +1631,7 @@ def _main_env(monkeypatch, tmp_path, *, chip: str, china: bool, onboarding_done:
     monkeypatch.setattr(app_module, "claim_single_instance", lambda config_dir: object())
     monkeypatch.setattr(app_module.reach, "machine", lambda: chip)
     monkeypatch.setattr(app_module.reach, "in_mainland_china", lambda: china)
+    monkeypatch.setattr(app_module.reach, "in_trial_region", lambda: trial_region and not china)
     monkeypatch.setattr(app_module, "_alert", lambda app, title, body: seen.alerts.append(title))
     monkeypatch.setattr(app_module.keychain, "fill_environ", lambda names: None)
     monkeypatch.setattr(
@@ -1643,6 +1667,11 @@ def test_an_install_that_finished_the_guide_keeps_its_model(monkeypatch, tmp_pat
 def test_a_new_install_elsewhere_with_no_key_starts_on_the_free_trial(monkeypatch, tmp_path) -> None:
     (config,) = _main_env(monkeypatch, tmp_path, chip="apple", china=False).built
     assert config.refine.preset == app_module.trial.PRESET
+
+
+def test_a_new_install_outside_the_us_and_canada_is_asked_for_a_key(monkeypatch, tmp_path) -> None:
+    (config,) = _main_env(monkeypatch, tmp_path, chip="apple", china=False, trial_region=False).built
+    assert config.refine.preset != app_module.trial.PRESET
 
 
 def test_a_new_install_with_its_own_key_skips_the_trial(monkeypatch, tmp_path) -> None:

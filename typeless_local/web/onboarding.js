@@ -129,12 +129,14 @@ function apiKey() {
 // On the free trial refinement already works: starting the trial is the big,
 // obvious choice; their own key is tucked behind a link for later.
 function trialKey() {
-  const lede = L('前大约 400 次润色免费，不用填任何东西，现在就能用。之后需要你自己的 OpenAI API Key，到时候会提醒你。',
-    'Your first 400 or so refinements are free, with nothing to fill in. After that you will need your own OpenAI API key; you will be reminded when the time comes.');
+  const lede = L('前大约 300 次润色免费，不用填任何东西，现在就能用。之后需要你自己的 OpenAI API Key，到时候会提醒你。',
+    'Your first 300 or so refinements are free, with nothing to fill in. After that you will need your own OpenAI API key; you will be reminded when the time comes.');
+  const privacy = `<p class="fine">${esc(L('润色时，听写的文字会经言字的服务器转给 OpenAI，不会保存。',
+    'While refining, your dictated text passes through our server to OpenAI and is not stored.'))}</p>`;
   const start = `<button class="gbtn pri big" data-o="next">${esc(L('开始免费试用', 'Start the Free Trial'))}</button>`;
   if (!UI.ownKey && !UI.keyBusy && !UI.key) {
-    const card = `<div class="trialcard${UI.counted ? '' : ' glow'}"><b id="tc">~${UI.counted ? 400 : 0}</b><span>${esc(L('次免费润色，送给你', 'free refinements, on us'))}</span></div>`;
-    return page(tile('key', '#34C759'), L('免费试用已开启', 'Your free trial is on'), lede, card,
+    const card = `<div class="trialcard${UI.counted ? '' : ' glow'}"><b id="tc">~${UI.counted ? 300 : 0}</b><span>${esc(L('次免费润色，送给你', 'free refinements, on us'))}</span></div>`;
+    return page(tile('key', '#34C759'), L('免费试用已开启', 'Your free trial is on'), lede, card + privacy,
       start + link(L('我已经有 OpenAI API Key', 'I already have an OpenAI API key'), 'own-key'));
   }
   const field = `<div class="fieldline"><span class="svc">OpenAI</span>`
@@ -272,11 +274,11 @@ function countUp() {
   const el = $('#tc');
   if (!el || UI.counted) return;
   UI.counted = true;
-  if (reduceMotion()) { el.textContent = '~400'; return; }
+  if (reduceMotion()) { el.textContent = '~300'; return; }
   const start = performance.now();
   const tick = now => {
     const k = Math.min(1, (now - start) / 1100);
-    el.textContent = '~' + Math.round(400 * (1 - Math.pow(1 - k, 3)));
+    el.textContent = '~' + Math.round(300 * (1 - Math.pow(1 - k, 3)));
     if (k < 1) requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);

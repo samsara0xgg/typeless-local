@@ -61,6 +61,32 @@ def in_mainland_china() -> bool:
     return (isinstance(country, str) and country == "CN") or (isinstance(zone, str) and zone in _CHINA_TIME_ZONES)
 
 
+# US and Canadian clocks, for a Mac whose region cannot be read.
+_TRIAL_TIME_ZONE_PREFIXES = ("America/Indiana/", "America/Kentucky/", "America/North_Dakota/")
+_TRIAL_TIME_ZONES = frozenset({
+    "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Phoenix",
+    "America/Anchorage", "America/Juneau", "America/Detroit", "America/Boise", "America/Adak", "Pacific/Honolulu",
+    "America/Toronto", "America/Vancouver", "America/Edmonton", "America/Winnipeg", "America/Halifax",
+    "America/St_Johns", "America/Regina", "America/Moncton", "America/Whitehorse", "America/Yellowknife",
+})
+
+
+def in_trial_region() -> bool:
+    """Where the free trial runs: a US or Canadian Mac. The worker has the final say."""
+
+    try:
+        from Foundation import NSLocale, NSTimeZone  # noqa: PLC0415
+
+        country = NSLocale.currentLocale().countryCode()
+        zone = NSTimeZone.localTimeZone().name()
+    except Exception:
+        return False
+    if isinstance(country, str) and country:
+        return country in ("US", "CA")
+    zone = zone if isinstance(zone, str) else ""
+    return zone in _TRIAL_TIME_ZONES or zone.startswith(_TRIAL_TIME_ZONE_PREFIXES)
+
+
 def model_endpoint(source: str) -> str:
     """Where the speech model downloads from for the ``model_source`` preference."""
 
