@@ -80,6 +80,7 @@ Mode = Literal["tap", "hands_free"]
 DOUBLE_CLICK_SECONDS = 0.4
 # After pressing play/pause, how long to watch for media that started instead of stopping.
 MEDIA_CHECK_S = 0.8
+MAX_UNCLEAR_MEDIA_APPS = 8  # players remembered as unconfirmable; keeps the saved list small
 MEDIA_POLL_S = 0.05
 LONG_PRESS_SECONDS = 0.6
 # A right-Cmd hold this long into its recording is talking, not a slow chord:
@@ -1573,6 +1574,12 @@ class TypelessLocalApp:
             # Only a call is holding output (a class on Zoom): the key would
             # go to a paused music app, or launch Music, and start it.
             return
+        bundles = {pid: devices.bundle_id(pid) for pid in before if not devices.is_call_app(pid)}
+        unclear = set(getattr(getattr(self, "prefs", None), "unclear_media_apps", ()))
+        if all(bundle in unclear for bundle in bundles.values()):
+            # Paused and playing look alike for it, so the key could start it.
+            LOGGER.info("Not pausing %s: its play/pause can't be confirmed", sorted(bundles.values()))
+            return
         press_play_pause()
         deadline = time.monotonic() + MEDIA_CHECK_S
         while time.monotonic() < deadline:
@@ -1589,6 +1596,17 @@ class TypelessLocalApp:
         # ponytail: an ambiguous press is undone (a brief blip at worst); per-process levels would tell for sure.
         LOGGER.info("Could not tell what play/pause did; pressing it again")
         press_play_pause()
+        self._remember_unclear_media(set(bundles.values()))
+
+    def _remember_unclear_media(self, bundles: set[str]) -> None:
+        known = list(getattr(getattr(self, "prefs", None), "unclear_media_apps", ()))
+        merged = (known + sorted(b for b in bundles if b and b not in known))[-MAX_UNCLEAR_MEDIA_APPS:]
+        if merged == known:
+            return
+        try:
+            self.set_preference("unclear_media_apps", merged)
+        except Exception:
+            LOGGER.debug("Could not remember unclear media apps", exc_info=True)
 
     def _resume_media(self) -> None:
         if getattr(self, "_media_paused", False):

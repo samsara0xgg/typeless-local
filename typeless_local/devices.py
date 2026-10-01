@@ -200,14 +200,20 @@ CALL_APPS = frozenset({
 })
 
 
-def is_call_app(pid: int) -> bool:
+def bundle_id(pid: int) -> str:
+    """The app's bundle id, or "" when it has none or can't be read."""
+
     try:
         from AppKit import NSRunningApplication
 
         app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
-        return app is not None and str(app.bundleIdentifier() or "") in CALL_APPS
+        return str(app.bundleIdentifier() or "") if app is not None else ""
     except Exception:
-        return False
+        return ""
+
+
+def is_call_app(pid: int) -> bool:
+    return bundle_id(pid) in CALL_APPS
 
 
 def _responsible_pid(pid: int) -> int:

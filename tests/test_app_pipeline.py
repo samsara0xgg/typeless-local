@@ -1592,6 +1592,40 @@ def test_a_player_that_keeps_output_open_is_put_back_as_it_was(monkeypatch, _med
     assert _media_keys == ["play_pause", "play_pause"]
 
 
+def _unclear_app(monkeypatch, playing: set[int]):
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
+    monkeypatch.setattr(app_module, "MEDIA_CHECK_S", 0.02)
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: set(playing))
+    monkeypatch.setattr(app_module.devices, "bundle_id", lambda pid: {101: "com.netease.163music", 102: "com.other.player"}.get(pid, ""))
+    app = _recording_app()
+    app.prefs = Preferences()
+    app.set_preference = lambda key, value: setattr(app, "prefs", dataclasses.replace(app.prefs, **{key: value}))
+    return app
+
+
+def test_an_unclear_press_remembers_the_player_and_it_is_not_pressed_again(monkeypatch, _media_keys) -> None:
+    app = _unclear_app(monkeypatch, {101})
+
+    app._start_recording("tap")
+    assert _media_keys == ["play_pause", "play_pause"]  # pressed and undone this once
+    assert app.prefs.unclear_media_apps == ["com.netease.163music"]
+    app._finish_recording()
+
+    _media_keys.clear()
+    app._start_recording("tap")
+    app._finish_recording()
+    assert _media_keys == []
+
+
+def test_a_second_player_still_gets_the_press_as_before(monkeypatch, _media_keys) -> None:
+    app = _unclear_app(monkeypatch, {101, 102})
+    app.prefs = Preferences(unclear_media_apps=["com.netease.163music"])
+
+    app._start_recording("tap")
+    assert _media_keys == ["play_pause", "play_pause"]
+    assert app.prefs.unclear_media_apps == ["com.netease.163music", "com.other.player"]
+
+
 def test_only_a_call_holding_output_never_touches_play_pause(monkeypatch, _media_keys) -> None:
     monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
     monkeypatch.setattr(app_module.devices, "playing_apps", lambda: {200})
