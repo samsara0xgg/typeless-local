@@ -153,6 +153,10 @@ class MicrophoneRecorder:
         self._chunks: list[np.ndarray] = []
         self._lock = threading.Lock()
         self._stream = None
+        # Set once CoreAudio has hung opening or closing a stream. Touching
+        # PortAudio again (another open, a device refresh) can hang the caller
+        # for good, so nothing more is tried until the app restarts.
+        self.wedged = False
         self._started_at = 0.0
         self._analyzer = VoiceActivityAnalyzer(sample_rate)
         # Called on the audio thread with each stretch cut at a pause; keep it quick.
@@ -252,6 +256,8 @@ class MicrophoneRecorder:
 
         if self._stream is not None:
             return
+        if self.wedged:
+            raise MicrophoneWedged("the microphone hung earlier; restart the app")
 
         try:
             import sounddevice as sd
@@ -317,7 +323,8 @@ class MicrophoneRecorder:
         with handoff:
             if not done.is_set():
                 opened["abandoned"] = True
-                raise RuntimeError(f"the microphone did not open within {START_WAIT_S:.0f}s")
+                self.wedged = True
+                raise MicrophoneWedged(f"the microphone did not open within {START_WAIT_S:.0f}s")
         if "error" in opened:
             raise opened["error"]
         self._stream = opened["stream"]
@@ -333,6 +340,7 @@ class MicrophoneRecorder:
             threading.Thread(target=_release, args=(stream, released), name="mic-stop", daemon=True).start()
             if not released.wait(STOP_WAIT_S):
                 # ponytail: the stuck stream and its thread are abandoned until the app quits.
+                self.wedged = True
                 LOGGER.warning("Microphone stream did not stop within %.1fs; keeping the audio and moving on", STOP_WAIT_S)
         with self._lock:
             chunks = list(self._chunks)
@@ -343,6 +351,10 @@ class MicrophoneRecorder:
         audio = np.concatenate(chunks, axis=0).astype(np.float32, copy=False)
         LOGGER.info("Microphone recording stopped with %.2fs audio", audio.size / self.sample_rate)
         return audio
+
+
+class MicrophoneWedged(RuntimeError):
+    """CoreAudio hung on this process's microphone; only a restart clears it."""
 
 
 def _release(stream, released: threading.Event) -> None:

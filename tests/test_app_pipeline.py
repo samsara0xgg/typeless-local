@@ -453,6 +453,22 @@ def test_recording_ducks_system_audio_until_finish(monkeypatch) -> None:
     assert app.overlay.shown() == ["starting", "rec", "transcribing"]
 
 
+def test_a_stuck_microphone_fails_fast_and_offers_a_relaunch(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
+    refreshed = []
+    monkeypatch.setattr(app_module.devices, "refresh", lambda: refreshed.append("refresh"))
+    monkeypatch.setattr(app_module.devices, "refresh_if_changed", lambda: refreshed.append("if_changed"))
+    app = _recording_app()
+    app.recorder.fail_start = True
+    app.recorder.wedged = True
+
+    app._start_recording("tap")
+
+    assert refreshed == [], "PortAudio is not touched again while a stream is stuck"
+    assert app.state == "idle"
+    assert app.overlay.calls[-1] == ("show", "mic", {"why": "stuck"})
+
+
 def test_recording_restores_audio_when_microphone_start_fails(monkeypatch) -> None:
     monkeypatch.setattr(
         "typeless_local.app.capture_focus_context",

@@ -123,6 +123,7 @@ def test_a_stream_that_never_stops_does_not_hang_the_dictation(monkeypatch) -> N
 
     assert np.allclose(audio, np.full(800, 0.05, dtype=np.float32))
     assert not recorder.is_recording
+    assert recorder.wedged, "the next start must not touch PortAudio again"
 
 
 def test_voice_activity_analyzer_prefers_vocal_band_over_silence() -> None:
@@ -315,6 +316,12 @@ def test_a_microphone_that_never_opens_fails_the_start_instead_of_hanging(monkey
         assert "did not open" in str(exc)
     else:
         raise AssertionError("start() should have given up")
-    finally:
-        stuck.set()
+    assert recorder.wedged
+    try:
+        recorder.start()  # fails at once, without another wait on CoreAudio
+    except RuntimeError as exc:
+        assert "hung earlier" in str(exc)
+    else:
+        raise AssertionError("a wedged recorder should refuse to start")
+    stuck.set()
     assert not recorder.is_recording

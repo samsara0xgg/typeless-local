@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -261,7 +262,8 @@ class TypelessLocalApp:
         what decides whether the speakers still need ducking.
         """
 
-        devices.refresh_if_changed()
+        if not getattr(getattr(self, "recorder", None), "wedged", False):
+            devices.refresh_if_changed()  # a refresh while a stream is stuck hangs too
         return self._resolve_capture_device()
 
     def _resolve_capture_device(self) -> str:
@@ -540,6 +542,16 @@ class TypelessLocalApp:
             self._fix_issue(arg)
         elif kind == "quit":
             NSApplication.sharedApplication().terminate_(None)
+
+    def _restart(self) -> None:
+        """Quit and open again: the one cure for a microphone CoreAudio hung on."""
+
+        self._run_audio_io(getattr(self.audio_ducker, "restore_all", lambda: None))
+        if getattr(sys, "frozen", False):
+            bundle = Path(sys.executable).resolve().parents[2]
+            # Opened once this process is gone, or the single-instance check refuses it.
+            subprocess.Popen(["/bin/sh", "-c", f'sleep 1.5; /usr/bin/open "{bundle}"'], start_new_session=True)
+        NSApplication.sharedApplication().terminate_(None)
 
     def _fix_issue(self, issue: str) -> None:
         if issue == "perm":
@@ -1137,9 +1149,11 @@ class TypelessLocalApp:
                 self._commit_edit(text)
             elif action == "close":
                 self._end_edit()
-            elif action in ("setkey", "billing", "input", "micperm", "perm", "log"):
+            elif action in ("setkey", "billing", "input", "micperm", "perm", "log", "restart"):
                 self.capsule.hide()
-                if action == "setkey":
+                if action == "restart":
+                    self._restart()
+                elif action == "setkey":
                     self.open_settings("model")
                 elif action == "billing":
                     permissions.open_url(OPENAI_BILLING_URL)
@@ -1352,7 +1366,8 @@ class TypelessLocalApp:
             self._set_menubar("idle")
             self._refresh_issues()
             denied = permissions.microphone_status() in ("denied", "restricted")
-            self.capsule.show("mic", why="denied" if denied else "busy")
+            stuck = getattr(self.recorder, "wedged", False)
+            self.capsule.show("mic", why="denied" if denied else "stuck" if stuck else "busy")
             return
         self._capture_device = capture
         self.focus_context = capture_focus_context(read_before_text=self.prefs.send_before_text)
@@ -1396,6 +1411,8 @@ class TypelessLocalApp:
             self.recorder.start()
             return capture
         except Exception:
+            if getattr(self.recorder, "wedged", False):
+                raise  # retrying would wait on CoreAudio all over again
             LOGGER.warning("Microphone failed to open; re-reading devices and retrying", exc_info=True)
         devices.refresh()
         capture = self._resolve_capture_device()
