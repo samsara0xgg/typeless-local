@@ -143,7 +143,6 @@ function view(st, o) {
     case 'sent': return [`${CHECK}<span class="lbl">${L(`已发送到 ${esc(o.app)}`, `Sent to ${esc(o.app)}`)}</span>`, 'pill', [], L(`已发送到 ${o.app}`, `Sent to ${o.app}`)];
     case 'send-held': {
       const r = { raw: L('润色失败，原始转写没有发送', 'refinement failed; the raw transcript was not sent'), nosend: L(`字已放进 ${o.app}，没能按发送`, `the text is in ${o.app} but Send could not be pressed`),
-        gone: L('原来的对话已经不在屏幕上', 'that conversation is no longer on screen'),
         away: L(`${o.app} 不在前面时没法发送`, `${o.app} cannot be sent to from behind`) }[o.why] || L('找不到原来的输入框', 'the original text box is gone');
       return [`<span class="lead warn">${I('warn')}</span><span class="lbl">${L('没发送 · 已复制，⌘V 粘贴', 'Not sent · copied, press ⌘V')} <span class="sub">· ${esc(r)}</span></span>`, 'pill', [], L(`没发送，${r}。文字已复制，按 ⌘V 粘贴`, `Not sent: ${r}. The text is copied; press Command V`)];
     }
