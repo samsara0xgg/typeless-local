@@ -1,5 +1,7 @@
 # 言字 (Yana)
 
+> **Limited-time free trial.** Download Yana now and dictate with no API key: a new Mac in the US or Canada gets free refinement to start. [Download the latest release](https://github.com/samsara0xgg/typeless-local/releases/latest).
+
 A standalone macOS dictation app: hold a key, talk, and the cleaned-up text is
 pasted into whatever app you were in. Speech recognition runs locally through
 Whisper; only the final tidy-up pass goes to a language model.
