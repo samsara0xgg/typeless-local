@@ -1984,7 +1984,7 @@ class TypelessLocalApp:
         elif composer is not None:
             outcome = send_in_background(composer, text)
             if outcome != "sent":
-                self._hold_back(text, context, "nosend" if outcome == "typed" else "lost")
+                self._hold_back(text, context, {"typed": "nosend", "gone": "gone"}.get(outcome, "lost"))
                 return
         else:
             self._hold_back(text, context, "away" if context.can_insert_text else "lost")

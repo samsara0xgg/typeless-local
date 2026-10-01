@@ -460,7 +460,8 @@ def send_in_background(element, text: str) -> str:
     For chat apps such as Claude's, whose composer takes text through
     accessibility and has a Send button. "sent": the composer emptied after
     the press; "typed": the text went in but there was no Send to press, or it
-    did not take; "failed": the text did not go in.
+    did not take; "gone": the composer no longer exists (Claude drops it when
+    another conversation is opened); "failed": the text did not go in.
     """
 
     _limit_ax_messaging_timeout()
@@ -471,6 +472,9 @@ def send_in_background(element, text: str) -> str:
     except Exception as exc:
         LOGGER.info("Could not write into the composer: %s", exc)
         return "failed"
+    if error == ApplicationServices.kAXErrorInvalidUIElement:
+        LOGGER.info("The composer is gone (its conversation is no longer on screen)")
+        return "gone"
     if error != ApplicationServices.kAXErrorSuccess or not _wait_for(lambda: _value(element) != before, 0.5):
         LOGGER.info("The composer did not take the text (AX error %s)", error)
         return "failed"

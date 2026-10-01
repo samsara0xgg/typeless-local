@@ -1901,3 +1901,9 @@ def test_a_composer_that_lost_focus_in_front_is_written_into_directly(monkeypatc
 
     assert calls == [("background", "composer", "Refined text.")]
     assert app.overlay.shown()[-1] == "sent"
+
+
+def test_a_conversation_closed_meanwhile_says_so(monkeypatch) -> None:
+    app, _ = _send_into(monkeypatch, here=False, element="composer", background="gone")
+
+    assert app.overlay.last()[2]["why"] == "gone"
