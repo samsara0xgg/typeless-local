@@ -6,12 +6,10 @@ import ctypes
 import ctypes.util
 from dataclasses import dataclass, field
 import logging
-import subprocess
-import time
 from typing import Callable
 
 import ApplicationServices
-from AppKit import NSEvent, NSPasteboard, NSPasteboardTypeString, NSRunningApplication, NSWorkspace
+from AppKit import NSEvent, NSPasteboard, NSPasteboardTypeString, NSWorkspace
 from PyObjCTools import AppHelper
 import Quartz
 
@@ -79,9 +77,6 @@ PRIMARY_KEYCODES = frozenset({F5_KEYCODE, DICTATION_KEYCODE})
 RIGHT_OPTION_KEYCODE = 61
 SPACE_KEYCODE = 49
 ESCAPE_KEYCODE = 53
-# Return and the keypad's Enter.
-RETURN_KEYCODE_MAIN = 36
-RETURN_KEYCODES = frozenset({RETURN_KEYCODE_MAIN, 76})
 OPTION_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskAlternate", 1 << 19)
 SHIFT_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskShift", 1 << 17)
 # Right Command arrives as a FlagsChanged event with keycode 54 (kVK_RightCommand).
@@ -146,8 +141,6 @@ class FocusContext:
     # The focused text element itself, to put the caret back there before the
     # paste if the app moved focus meanwhile. None when there was no real one.
     element: object = field(default=None, compare=False, repr=False)
-    # Its window, to bring back to the front for a dictation sent from elsewhere.
-    window: object = field(default=None, compare=False, repr=False)
 
 
 # Seconds an AX query may wait on the target app. The default is about six,
@@ -184,7 +177,6 @@ def capture_focus_context(read_before_text: bool = False) -> FocusContext:
     can_insert_text = False
     before_text = ""
     element = None
-    focused_window = None
 
     if pid:
         try:
@@ -245,7 +237,6 @@ def capture_focus_context(read_before_text: bool = False) -> FocusContext:
         pid=int(pid or 0),
         before_text=before_text,
         element=element,
-        window=focused_window,
     )
 
 
@@ -290,159 +281,6 @@ def prepare_paste(context: FocusContext) -> str:
         LOGGER.info("The text field had lost focus; focused it again before pasting")
         return "ok"
     return "lost"
-
-
-def is_secure_field(context: FocusContext) -> bool:
-    """A password field: never pressed Return in on its owner's behalf."""
-
-    if context.focused_role == "AXSecureTextField":
-        return True
-    try:
-        return context.element is not None and _copy_ax_attribute(context.element, "AXSubrole") == "AXSecureTextField"
-    except Exception:
-        return False
-
-
-def in_front(context: FocusContext) -> bool:
-    """Whether the app, and the window, the dictation started in are still the ones in front."""
-
-    if not context.pid or frontmost_pid() != context.pid:
-        return False
-    if context.window is None:
-        return True
-    try:
-        window = _copy_ax_attribute(ApplicationServices.AXUIElementCreateApplication(context.pid), ApplicationServices.kAXFocusedWindowAttribute)
-    except Exception:
-        return False
-    return window == context.window
-
-
-GHOSTTY_BUNDLE_ID = "com.mitchellh.ghostty"
-# Ghostty (1.3 and later) takes text "as if pasted" and keys into one terminal
-# by its id, in front or not. The first use asks once for permission to
-# control Ghostty.
-_GHOSTTY_FRONT_TERMINAL = (
-    'tell application id "com.mitchellh.ghostty" to get id of focused terminal of selected tab of front window'
-)
-_GHOSTTY_SEND = """on run argv
-  tell application id "com.mitchellh.ghostty"
-    set t to first terminal whose id is (item 1 of argv)
-    input text (item 2 of argv) to t
-    delay 0.2
-    send key "enter" to t
-  end tell
-end run"""
-# Buttons a chat app's composer sends with, by their accessibility name.
-SEND_BUTTON_NAMES = frozenset({"send", "send message", "发送"})
-
-
-def bundle_id(pid: int) -> str:
-    app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid) if pid else None
-    return str(app.bundleIdentifier() or "") if app is not None else ""
-
-
-def _osascript(*args: str, timeout: float) -> str | None:
-    try:
-        result = subprocess.run(["/usr/bin/osascript", *args], capture_output=True, text=True, timeout=timeout)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        LOGGER.info("osascript failed: %s", exc)
-        return None
-    if result.returncode != 0:
-        LOGGER.info("osascript failed: %s", result.stderr.strip())
-        return None
-    return result.stdout.strip()
-
-
-def ghostty_terminal_id() -> str:
-    """The terminal focused in Ghostty's front window, or "". Waits on the permission prompt the first time."""
-
-    return _osascript("-e", _GHOSTTY_FRONT_TERMINAL, timeout=60) or ""
-
-
-def ghostty_send(terminal_id: str, text: str) -> bool:
-    """Paste ``text`` into one Ghostty terminal and press Return there, without bringing it forward."""
-
-    return _osascript("-e", _GHOSTTY_SEND, terminal_id, text, timeout=5) is not None
-
-
-def _value(element) -> str:
-    value = _copy_ax_attribute(element, ApplicationServices.kAXValueAttribute)
-    return value if isinstance(value, str) else ""
-
-
-def _wait_for(check: Callable[[], bool], timeout: float) -> bool:
-    deadline = time.monotonic() + timeout
-    while not check():
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(0.05)
-    return True
-
-
-def _send_button(element):
-    """The enabled Send button closest around a composer, or None."""
-
-    def find(node, depth):
-        if depth > 6:
-            return None
-        for child in _copy_ax_attribute(node, ApplicationServices.kAXChildrenAttribute) or []:
-            if _copy_ax_attribute(child, ApplicationServices.kAXRoleAttribute) == "AXButton":
-                name = str(_copy_ax_attribute(child, ApplicationServices.kAXDescriptionAttribute) or _copy_ax_attribute(child, ApplicationServices.kAXTitleAttribute) or "")
-                if name.strip().lower() in SEND_BUTTON_NAMES:
-                    return child
-            found = find(child, depth + 1)
-            if found is not None:
-                return found
-        return None
-
-    node = element
-    for _ in range(8):
-        node = _copy_ax_attribute(node, ApplicationServices.kAXParentAttribute)
-        if not node:
-            return None
-        button = find(node, 0)
-        if button is not None:
-            return button
-    return None
-
-
-def send_in_background(element, text: str) -> str:
-    """Write ``text`` into a composer of an app that is not in front, then press its Send button.
-
-    For chat apps such as Claude's, whose composer takes text through
-    accessibility and has a Send button. "sent": the composer emptied after
-    the press; "typed": the text went in but there was no Send to press, or it
-    did not take; "failed": the text did not go in.
-    """
-
-    _limit_ax_messaging_timeout()
-    before = _value(element)
-    try:
-        ApplicationServices.AXUIElementSetAttributeValue(element, ApplicationServices.kAXFocusedAttribute, True)
-        error = ApplicationServices.AXUIElementSetAttributeValue(element, ApplicationServices.kAXSelectedTextAttribute, text)
-    except Exception as exc:
-        LOGGER.info("Could not write into the composer: %s", exc)
-        return "failed"
-    if error != ApplicationServices.kAXErrorSuccess or not _wait_for(lambda: _value(element) != before, 0.5):
-        LOGGER.info("The composer did not take the text (AX error %s)", error)
-        return "failed"
-    typed = _value(element)
-    button = None
-
-    def ready() -> bool:
-        nonlocal button
-        button = _send_button(element)
-        return button is not None and _copy_ax_attribute(button, ApplicationServices.kAXEnabledAttribute) is not False
-
-    if not _wait_for(ready, 0.5):
-        LOGGER.info("No Send button to press next to the composer")
-        return "typed"
-    ApplicationServices.AXUIElementPerformAction(button, ApplicationServices.kAXPressAction)
-    return "sent" if _wait_for(lambda: len(_value(element)) < len(typed), 1.5) else "typed"
-
-
-def press_return() -> None:
-    _post_key(RETURN_KEYCODE_MAIN, 0)
 
 
 def focused_text_length(pid: int) -> int | None:
@@ -660,15 +498,11 @@ def undo_last_edit() -> None:
 
 
 def _post_command_key(keycode: int) -> None:
-    _post_key(keycode, Quartz.kCGEventFlagMaskCommand)
-
-
-def _post_key(keycode: int, flags: int) -> None:
     source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
     down = Quartz.CGEventCreateKeyboardEvent(source, keycode, True)
     up = Quartz.CGEventCreateKeyboardEvent(source, keycode, False)
     for event in (down, up):
-        Quartz.CGEventSetFlags(event, flags)
+        Quartz.CGEventSetFlags(event, Quartz.kCGEventFlagMaskCommand)
         try:
             Quartz.CGEventSetIntegerValueField(event, _USER_DATA_FIELD, SYNTHETIC_EVENT_TAG)
         except Exception:
@@ -727,12 +561,8 @@ class GlobalHotkeyMonitor:
         watch_keys_fn: Callable[[], bool] | None = None,
         use_f5_fn: Callable[[], bool] | None = None,
         use_right_command_fn: Callable[[], bool] | None = None,
-        send_fn: Callable[[], bool] | None = None,
     ) -> None:
         self.callback = callback
-        # While this says yes (recording, and the setting is on), Return
-        # finishes the dictation and has it sent; otherwise Return is the app's.
-        self.send_fn = send_fn
         # Off for people whose right Command already switches input sources.
         self.use_right_command_fn = use_right_command_fn
         # F5 is also the system dictation key; when this says no, F5 and the
@@ -925,15 +755,6 @@ class GlobalHotkeyMonitor:
             return event
 
         if event_type == Quartz.kCGEventKeyDown:
-            if keycode in RETURN_KEYCODES and self.send_fn is not None and not self._is_synthetic(event) and self.send_fn():
-                flags = Quartz.CGEventGetFlags(event)
-                # Plain Return, or Return while holding right Cmd to talk; a
-                # Shift+Return or Cmd+Return of some other app's is left alone.
-                command = flags & COMMAND_FLAG_MASK and not (self._rcmd_armed or self._rcmd_holding)
-                if not (flags & _OTHER_MODIFIERS_MASK or command):
-                    self._rcmd_armed = self._rcmd_holding = False
-                    self.callback("send")
-                    return None
             if (self._rcmd_armed or self._rcmd_holding) and not self._is_synthetic(event):
                 if keycode == SPACE_KEYCODE and self.is_active_fn is not None and self.is_active_fn():
                     # Right Cmd+Space locks a recording under way. From idle it

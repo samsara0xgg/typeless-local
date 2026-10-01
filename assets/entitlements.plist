@@ -14,10 +14,6 @@
   <key>com.apple.security.cs.disable-library-validation</key>
   <true/>
 
-  <!-- A dictation finished with Return is sent into Ghostty through its scripting. -->
-  <key>com.apple.security.automation.apple-events</key>
-  <true/>
-
   <!-- Dictation records from the microphone. -->
   <key>com.apple.security.device.audio-input</key>
   <true/>
