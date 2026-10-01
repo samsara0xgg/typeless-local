@@ -1893,3 +1893,11 @@ def test_focus_on_a_button_sends_to_the_composer_next_to_it(monkeypatch) -> None
         app, calls = _send_into(monkeypatch, here=here, anchor="header button", can_insert=False)
         assert calls == [("background", "composer near header button", "Refined text.")]
         assert app.overlay.shown()[-1] == "sent"
+
+
+def test_a_composer_that_lost_focus_in_front_is_written_into_directly(monkeypatch) -> None:
+    monkeypatch.setattr(app_module, "prepare_paste", lambda context: "lost")
+    app, calls = _send_into(monkeypatch, here=True, element="composer")
+
+    assert calls == [("background", "composer", "Refined text.")]
+    assert app.overlay.shown()[-1] == "sent"

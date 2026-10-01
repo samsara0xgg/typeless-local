@@ -293,10 +293,16 @@ def prepare_paste(context: FocusContext) -> str:
         ApplicationServices.AXUIElementSetAttributeValue(context.element, ApplicationServices.kAXFocusedAttribute, True)
     except Exception as exc:
         LOGGER.debug("Could not focus the text field again: %s", exc)
-    if _is_text_field(_focused_element(context.pid)):
-        LOGGER.info("The text field had lost focus; focused it again before pasting")
-        return "ok"
-    return "lost"
+    # Chromium apps (Claude) move focus a moment after being asked to.
+    deadline = time.monotonic() + 0.3
+    while True:
+        if _is_text_field(_focused_element(context.pid)):
+            LOGGER.info("The text field had lost focus; focused it again before pasting")
+            return "ok"
+        if time.monotonic() >= deadline:
+            LOGGER.info("The text field lost focus and could not be focused again")
+            return "lost"
+        time.sleep(0.05)
 
 
 def is_secure_field(context: FocusContext) -> bool:
