@@ -367,6 +367,11 @@ class TypelessLocalApp:
         self._call_ui(self._refresh_issues)
         LOGGER.info("%s saved", env_name)
 
+    def _tell_guide(self, message: dict) -> None:
+        windows = getattr(self, "windows", None)
+        if windows is not None:
+            self._call_ui(windows.guide, message)
+
     def _windows_changed(self, history: bool = False) -> None:
         windows = getattr(self, "windows", None)
         if windows is not None:
@@ -917,6 +922,8 @@ class TypelessLocalApp:
         if action == "undo":
             self._on_user_undo()
             return
+        if action in ("primary_down", "hands_free", "cancel"):
+            self._tell_guide({"t": "hotkey", "a": action})
         with self._lock:
             if action == "cancel":
                 self._cancel()
@@ -1701,6 +1708,9 @@ class TypelessLocalApp:
             record.ended_at = time.time()
             record.latency_total_ms = int((record.ended_at - started) * 1000)
             self._count_dictation(record)
+            if record.raw_asr_text:
+                # The guide's practice page shows what was heard next to what went in.
+                self._tell_guide({"t": "result", "raw": record.raw_asr_text, "text": record.refined_text or record.raw_asr_text})
             trace = getattr(self, "trace", None)
             if trace is not None and prefs.save_history:
                 self._last_trace_id = trace.log(record)

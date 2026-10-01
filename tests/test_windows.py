@@ -520,7 +520,7 @@ def test_settings_exports_diagnostics(ui) -> None:
 PAGES = {
     "settings": ({"ready", "set", "key", "migrate", "test", "vocab", "open", "count", "clear", "geo"}, "_settings_message"),
     "history": ({"ready", "geo", "copy", "delete", "vocab", "open"}, "_history_message"),
-    "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang", "source", "open"}, "_onboarding_message"),
+    "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang", "source", "open", "meter"}, "_onboarding_message"),
 }
 
 
@@ -549,3 +549,54 @@ def test_settings_page_opens_the_panes_python_can_ask_for() -> None:
     source = (web_root() / "settings.js").read_text(encoding="utf-8")
     drawn = set(re.findall(r"\['([a-z]+)', \['[^']+', '[^']+'\], '[a-z]+', '#", source))
     assert drawn == set(windows.SETTINGS_PANES)
+
+
+def test_the_guide_hears_keys_and_results_only_while_open(ui) -> None:
+    ui.windows.guide({"t": "hotkey", "a": "primary_down"})  # never opened: nothing to tell
+    ui.windows.show_onboarding()
+    window = ui.windows.onboarding
+    ui.windows.guide({"t": "result", "raw": "嗯明天开会", "text": "明天开会。"})
+    assert window.last("result") == {"t": "result", "raw": "嗯明天开会", "text": "明天开会。"}
+    window.close()
+    window.sent.clear()
+    ui.windows.guide({"t": "hotkey", "a": "primary_down"})
+    assert window.sent == []
+
+
+def test_the_level_meter_opens_the_microphone_only_while_asked(ui, monkeypatch) -> None:
+    import sys
+
+    streams = []
+
+    class Stream:
+        def __init__(self, callback, **kwargs) -> None:
+            self.callback, self.open = callback, False
+            streams.append(self)
+
+        def start(self) -> None:
+            self.open = True
+
+        def stop(self) -> None:
+            self.open = False
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setitem(sys.modules, "sounddevice", SimpleNamespace(InputStream=Stream))
+    monkeypatch.setattr(permissions, "microphone_status", lambda: "authorized")
+    ui.windows.show_onboarding()
+    window = ui.windows.onboarding
+
+    ui.windows._onboarding_message({"t": "meter", "on": True})
+    import numpy as np
+
+    streams[0].callback(np.array([[0.0], [0.25], [-0.5]]), 3, None, None)
+    assert window.last("level") == {"t": "level", "v": 0.5}
+
+    ui.windows._onboarding_message({"t": "meter", "on": False})
+    assert not streams[0].open
+
+    ui.windows._onboarding_message({"t": "meter", "on": True})
+    window.close()  # the red button: the page never says stop
+    streams[1].callback(np.array([[0.1]]), 1, None, None)
+    assert not streams[1].open  # the next level finds the window gone and lets the microphone go

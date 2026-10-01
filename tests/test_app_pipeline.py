@@ -245,6 +245,19 @@ def test_process_audio_transcribes_refines_and_pastes(monkeypatch) -> None:
     assert app.state == "idle"
 
 
+def test_the_guide_sees_what_was_heard_and_what_went_in(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.paste_text", lambda text: None)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("raw dictation")
+    told = []
+    app.windows = SimpleNamespace(guide=told.append)
+    app._call_ui = lambda callback, *args: callback(*args)
+
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("TextEdit", "", can_insert_text=True))
+
+    assert told == [{"t": "result", "raw": "raw dictation", "text": "Refined text."}]
+
+
 def test_process_audio_joins_stretches_heard_while_talking_with_the_rest(monkeypatch) -> None:
     from concurrent.futures import Future
 

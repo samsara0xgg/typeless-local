@@ -205,7 +205,107 @@ html.rt body .hlist{background:var(--win-2) !important}
   .hlist{margin:8px; max-height:40vh}
 }
 
-/* The last page's tips: a quiet card of one-line hints. */
+/* ---------- the guide's little demonstrations ---------- */
+/* 言, drawn from the icon: a dot and three strokes over a little capsule. */
+.yan{position:relative; width:84px; height:84px; border-radius:22px; flex:none; margin:6px 0 18px; --lv:0;
+  background:linear-gradient(155deg, #FF6A4D, #EA3A36 50%, #B81D33); box-shadow:inset 0 1px 0 rgba(255,255,255,.35), 0 10px 24px rgba(184,29,51,.28)}
+.yan i, .yan .pill{position:absolute; left:50%; background:#fff; border-radius:3px; box-shadow:0 1px 2px rgba(120,0,20,.25)}
+.yan .dot{top:13%; width:12%; height:12%; margin-left:-6%; border-radius:50%}
+.yan .s{height:7%; transform-origin:50% 50%; transition:transform .12s ease-out}
+.yan .s1{top:31%; width:60%; margin-left:-30%}
+.yan .s2{top:43%; width:44%; margin-left:-22%}
+.yan .s3{top:55%; width:44%; margin-left:-22%}
+.yan .pill{top:68%; width:40%; height:17%; margin-left:-20%; border-radius:6px; background:rgba(255,255,255,.28); display:flex; align-items:center; justify-content:center; gap:7%}
+.yan .pill b{width:7%; height:40%; border-radius:2px; background:#fff; transition:transform .12s ease-out}
+.yan.big{width:96px; height:96px; border-radius:25px}
+/* Talking: the strokes ripple like a waveform. */
+.stage.talk .yan .s{animation:ripple .45s ease-in-out infinite alternate}
+.stage.talk .yan .s2{animation-delay:-.15s} .stage.talk .yan .s3{animation-delay:-.3s}
+.stage.talk .yan .pill b{animation:pb .35s ease-in-out infinite alternate}
+.stage.talk .yan .pill b:nth-child(2){animation-delay:-.1s} .stage.talk .yan .pill b:nth-child(3){animation-delay:-.2s} .stage.talk .yan .pill b:nth-child(4){animation-delay:-.05s}
+@keyframes ripple{from{transform:scaleX(.7)}to{transform:scaleX(1.12)}}
+@keyframes pb{from{transform:scaleY(.6)}to{transform:scaleY(1.6)}}
+/* Live: the microphone page moves the strokes with the real input level (--lv, 0..1). */
+.yan.live .s1{transform:scaleX(calc(.82 + var(--lv) * .3))}
+.yan.live .s2{transform:scaleX(calc(.82 + var(--lv) * .6))}
+.yan.live .s3{transform:scaleX(calc(.82 + var(--lv) * .45))}
+.yan.live .pill b{transform:scaleY(calc(.6 + var(--lv) * 1.4))}
+.yan.live .pill b:nth-child(2), .yan.live .pill b:nth-child(3){transform:scaleY(calc(.6 + var(--lv) * 2))}
+.stage{display:flex; flex-direction:column; align-items:center; flex:none}
+.stage .yan{margin-bottom:12px}
+.onb .mhint{font-size:12.5px; color:var(--win-fg-2); margin:-6px 0 0}
+
+/* Type: a line set one character at a time; filler (.f) falls out and the rest close up, additions (.a) are set last. */
+.onb .type{margin:0 0 16px; min-height:1.6em; font-size:16px; line-height:1.6; color:var(--win-fg); white-space:nowrap}
+.type span{display:inline-block; max-width:1.2em; opacity:0; transform:translateY(-10px) scale(.8);
+  transition:opacity .22s, transform .32s cubic-bezier(.34,1.56,.64,1), max-width .4s cubic-bezier(.22,1,.36,1), color .2s}
+.type.set span{opacity:1; transform:none}
+.type span.a{max-width:0; opacity:0}
+.type.drop span.f{opacity:0; transform:translateY(14px) rotate(8deg); color:var(--red); transition-duration:.3s, .38s}
+.type.close span.f{max-width:0}
+.type.close span.a{max-width:1.2em; opacity:1; transform:none; color:var(--accent)}
+
+/* Accessibility: a small System Settings window where the switch gets turned on. */
+.onb .axmock{position:relative; width:300px; margin:2px 0 18px; padding:0 0 8px; border-radius:12px; background:var(--grp); box-shadow:inset 0 0 0 .5px var(--win-sep), 0 10px 28px rgba(18,24,48,.12); text-align:left; overflow:hidden; flex:none}
+.axbar{display:flex; align-items:center; gap:6px; padding:9px 12px; font-size:12px; font-weight:600; color:var(--win-fg)}
+.axbar i{width:9px; height:9px; border-radius:5px; background:var(--win-fg-3); opacity:.5}
+.axbar span{margin-left:8px}
+.axrow{display:flex; align-items:center; gap:9px; margin:0 10px; padding:7px 6px; border-top:.5px solid var(--win-sep); font-size:12.5px; color:var(--win-fg)}
+.axrow.dim{opacity:.45}
+.axrow img, .axic{width:20px; height:20px; border-radius:5px; background:var(--win-fg-3)}
+.axrow img{background:none}
+.axsw{margin-left:auto; width:30px; height:18px; border-radius:9px; background:var(--win-fg-3); position:relative}
+.axsw::after{content:''; position:absolute; top:2px; left:2px; width:14px; height:14px; border-radius:7px; background:#fff; box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.axsw.on{animation:axon 3.6s infinite}
+.axsw.on::after{animation:axknob 3.6s infinite}
+.axcur{position:absolute; width:14px; height:20px; left:150px; top:120px; background:no-repeat center/contain url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 20'%3E%3Cpath d='M1 1v15l4-4 3 7 2.5-1-3-7h5.5z' fill='black' stroke='white' stroke-width='1.2'/%3E%3C/svg%3E"); animation:axcur 3.6s infinite}
+@keyframes axcur{0%{transform:translate(0,0)}35%,62%{transform:translate(123px,-44px)}45%{transform:translate(123px,-44px) scale(.85)}100%{transform:translate(0,0)}}
+@keyframes axon{0%,44%{background:var(--win-fg-3)}48%,92%{background:var(--green)}100%{background:var(--win-fg-3)}}
+@keyframes axknob{0%,44%{transform:none}48%,92%{transform:translateX(12px)}100%{transform:none}}
+.axmock.granted .axsw.on{animation:none; background:var(--green)}
+.axmock.granted .axsw.on::after{animation:none; transform:translateX(12px)}
+.axmock.granted .axcur{display:none}
+
+/* Trial: the count runs up once with a soft glow. */
+.onb .trialcard.glow{animation:glow 1.6s ease-out}
+@keyframes glow{0%{box-shadow:0 0 0 0 rgba(52,199,89,.0)}40%{box-shadow:0 0 0 10px rgba(52,199,89,.18)}100%{box-shadow:0 0 0 0 rgba(52,199,89,0)}}
+.onb .trialcard b{font-variant-numeric:tabular-nums}
+
+/* Practice: the keyboard's bottom row with right ⌘ marked; it lights up when pressed for real. */
+.onb .krow{display:flex; gap:5px; margin:6px 0 18px; flex:none}
+.krow span{display:grid; place-items:center; width:34px; height:34px; border-radius:7px; background:var(--grp); box-shadow:inset 0 0 0 .5px var(--win-sep), 0 2px 0 var(--win-sep); font-size:12px; color:var(--win-fg-3)}
+.krow .w{width:46px}
+.krow .sp{width:150px}
+.krow .rc{position:relative; color:var(--accent); font-size:15px; box-shadow:inset 0 0 0 1.5px var(--accent), 0 2px 0 var(--win-sep)}
+.krow .rc small{position:absolute; top:40px; white-space:nowrap; font-size:11px; color:var(--accent)}
+.krow .rc::before{content:''; position:absolute; inset:-1px; border-radius:8px; box-shadow:0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent); animation:ring 1.8s ease-out infinite}
+@keyframes ring{0%{box-shadow:0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent)}80%,100%{box-shadow:0 0 0 10px color-mix(in srgb, var(--accent) 0%, transparent)}}
+.krow .rc.down{background:var(--accent); color:#fff; animation:press .35s cubic-bezier(.34,1.56,.64,1)}
+.krow .rc.down::before{animation:none}
+@keyframes press{0%{transform:translateY(0)}30%{transform:translateY(3px) scale(.94)}100%{transform:none}}
+.onb .say{font-size:14px; color:var(--win-fg); margin:-10px 0 12px; font-weight:500}
+.onb .reveal{width:min(440px, 100%); margin-top:10px; padding:8px 14px 2px; border-radius:12px; background:color-mix(in srgb, var(--green) 10%, transparent); text-align:left; animation:dlok .45s cubic-bezier(.22,1,.36,1); flex:none}
+.reveal small{display:block; font-size:11px; color:var(--win-fg-2)}
+.reveal .type{font-size:14px; margin:0 0 6px; white-space:normal}
+.onb .status.pop{display:inline-flex; align-items:center; gap:5px; animation:pop .45s cubic-bezier(.34,1.56,.64,1)}
+.onb .status.pop .i{width:15px; height:15px}
+@keyframes pop{from{opacity:0; transform:scale(.6)}to{opacity:1; transform:none}}
+
+/* Done: each tip acts out its gesture on a tiny keycap. */
 .tips{list-style:none; margin:0 0 14px; padding:10px 14px; width:min(440px, 100%); border-radius:12px; background:var(--field); box-shadow:inset 0 0 0 .5px var(--win-sep); text-align:left; flex:none}
-.tips li{display:flex; align-items:flex-start; gap:10px; font-size:12.5px; line-height:1.45; color:var(--win-fg-2); padding:3px 0}
-.tips .i{width:15px; height:15px; flex:none; margin-top:1px; color:var(--accent)}
+.tips li{display:flex; align-items:center; gap:10px; font-size:12.5px; line-height:1.45; color:var(--win-fg-2); padding:3px 0}
+.gest{position:relative; flex:none; width:30px; height:20px}
+.gest b{display:grid; place-items:center; width:100%; height:100%; border-radius:5px; background:var(--grp-bg); box-shadow:inset 0 0 0 .5px var(--win-sep), 0 1.5px 0 var(--win-sep); font:600 10.5px var(--font); color:var(--accent)}
+.gest.tap b{animation:gtap 2.4s infinite}
+.gest.hold b{animation:ghold 2.4s infinite}
+.gest.dbl b{animation:gdbl 2.4s infinite}
+.gest.sel b{animation:gtap 2.4s .6s infinite}
+.gest.sel::before{content:''; position:absolute; left:-2px; right:-2px; top:-3px; bottom:-3px; border-radius:6px; background:var(--sel); z-index:-1}
+@keyframes gtap{0%,8%,100%{transform:none; background:var(--grp-bg); color:var(--accent)}4%{transform:translateY(1.5px); background:var(--accent); color:#fff}}
+@keyframes ghold{0%,100%{transform:none; background:var(--grp-bg); color:var(--accent)}6%,60%{transform:translateY(1.5px); background:var(--accent); color:#fff}66%{transform:none; background:var(--grp-bg); color:var(--accent)}}
+@keyframes gdbl{0%,6%,14%,100%{transform:none; background:var(--grp-bg); color:var(--accent)}3%,10%{transform:translateY(1.5px); background:var(--accent); color:#fff}}
+
+/* Reduce Motion: every loop holds still on its final frame. */
+html.rm .yan *, html.rm .type span, html.rm .axmock *, html.rm .krow *, html.rm .gest *, html.rm .trialcard, html.rm .reveal, html.rm .status.pop{animation:none !important; transition:none !important}
+html.rm .axsw.on{background:var(--green)} html.rm .axsw.on::after{transform:translateX(12px)} html.rm .axcur{display:none}
+@media (prefers-reduced-motion: reduce){.yan *, .type span, .axmock *, .krow *, .gest *, .trialcard, .reveal{animation:none !important; transition:none !important}}

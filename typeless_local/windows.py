@@ -25,7 +25,7 @@ import time
 from typing import Callable
 from urllib.parse import urlparse
 
-from typeless_local import app_version, brand, history, i18n, keychain, login_item, permissions, preferences, reach, trial, usage, vocab
+from typeless_local import app_version, brand, devices, history, i18n, keychain, login_item, permissions, preferences, reach, trial, usage, vocab
 from typeless_local.asr import mlx_whisper_repo
 from typeless_local.config import preset_names, refine_config_for
 from typeless_local.mac_integration import FocusContext, has_accessibility_trust, request_accessibility_trust, set_clipboard_text
@@ -40,6 +40,7 @@ HISTORY_ROWS = 500
 FIXES = 6
 POLL_S = 1.0
 POLL_TIMEOUT_S = 300.0
+METER_EVERY_S = 0.05  # the guide's level meter: twenty updates a second is smooth enough
 _SERVICES = {
     "openai": "OpenAI",
     "deepseek": "DeepSeek",
@@ -122,6 +123,7 @@ class Windows:
         self.onboarding = None
         self._f5_conflict: bool | None = None
         self._polls: set[str] = set()
+        self._meter = None  # the guide's microphone level stream, open only while its page asks
 
     @staticmethod
     def _titles() -> dict[str, str]:
@@ -567,6 +569,7 @@ class Windows:
             "t": "state",
             "name": brand.display_name(),
             "mic": permissions.microphone_status(),
+            "input": getattr(app.config, "input_device", "") or _current_input(),
             "ax": bool(has_accessibility_trust()),
             "key": (
                 # On the free trial the guide offers the user's own OpenAI key, not the trial token.
@@ -637,6 +640,55 @@ class Windows:
             window.close()
         elif kind == "open":
             self._open(str(msg.get("what") or ""))
+        elif kind == "meter":
+            self._set_meter(bool(msg.get("on")))
+
+    def guide(self, message: dict) -> None:
+        """Something the guide reacts to happened elsewhere: a key pressed, a dictation finished."""
+
+        if self._visible("onboarding"):
+            self.onboarding.send(message)
+
+    def _set_meter(self, on: bool) -> None:
+        """The microphone page's live level: the real input, only while that page is up."""
+
+        stream, self._meter = self._meter, None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                LOGGER.debug("Could not close the level stream", exc_info=True)
+        if not on or permissions.microphone_status() != "authorized":
+            return
+        last = [0.0]
+
+        def callback(indata, frames, time_info, status) -> None:
+            now = time.monotonic()
+            if now - last[0] < METER_EVERY_S:
+                return
+            last[0] = now
+            peak = float(abs(indata).max()) if frames else 0.0
+            self.app._call_ui(self._send_level, round(min(1.0, peak), 3))
+
+        try:
+            import sounddevice  # noqa: PLC0415
+
+            stream = sounddevice.InputStream(
+                device=devices.resolve_input_index(getattr(self.app.config, "input_device", "")),
+                channels=1, samplerate=16000, callback=callback,
+            )
+            stream.start()
+        except Exception:
+            LOGGER.warning("No level meter for the guide", exc_info=True)
+            return
+        self._meter = stream
+
+    def _send_level(self, value: float) -> None:
+        if self._visible("onboarding"):
+            self.onboarding.send({"t": "level", "v": value})
+        else:
+            self._set_meter(False)  # closed without saying so: let the microphone go
 
     def _poll(self, name: str, done: Callable[[], bool]) -> None:
         """Watch a permission while the guide waits on it, and redraw when it changes."""
@@ -661,6 +713,13 @@ class Windows:
     def _push_onboarding(self) -> None:
         if self._visible("onboarding"):
             self.onboarding.send(self.onboarding_state())
+
+
+def _current_input() -> str:
+    try:
+        return devices.current_input_device()
+    except Exception:
+        return ""
 
 
 # ------------------------------------------------------------------ AppKit

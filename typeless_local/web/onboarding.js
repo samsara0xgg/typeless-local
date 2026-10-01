@@ -4,14 +4,16 @@
    is already done shows as done and one being waited on continues by itself. */
 (() => {
 'use strict';
-const { I, esc, $, post, on, env, L, lang } = kit;
+const { I, esc, $, $$, post, on, env, L, lang, reduceMotion } = kit;
 
 const LAST = 5;
 let S = null;             // what Python last sent
 let step = 0;
 // Per-step progress that only this page knows about.
-const UI = { asked: '', key: null, keyBusy: false, dl: null, practiced: false };
-let advanceTimer = 0;
+const UI = { asked: '', key: null, keyBusy: false, dl: null, practiced: false, meter: false, counted: false, pressed: false, result: null, revealed: false };
+// Each draw starts the page's little animations afresh; timers from an earlier draw see a stale generation and stop.
+let gen = 0;
+const after = (ms, fn) => { const g = gen; setTimeout(() => { if (g === gen) fn(); }, ms); };
 
 const tile = (n, c) => `<div class="sym" style="background:${c}">${I(n)}</div>`;
 const icon = () => '<div class="sym ico"><img src="appicon.svg" alt=""></div>';
@@ -32,11 +34,45 @@ const later = () => link(L('稍后再说', 'Not Now'), 'next');
 const skip = () => link(L('跳过', 'Skip'), 'next');
 const next = () => btn(L('继续', 'Continue'), 'next');
 
+// The guide's one visual idea comes from the icon: 言 is a dot and strokes
+// over a little capsule. Voice moves the strokes; the strokes become words,
+// set one character at a time like movable type, and the filler falls out.
+const yan = (cls = '') => `<div class="yan ${cls}" aria-hidden="true"><i class="dot"></i><i class="s s1"></i><i class="s s2"></i><i class="s s3"></i>`
+  + '<span class="pill"><b></b><b></b><b></b><b></b></span></div>';
+// A line as single characters; kind 1 is filler (falls out), 2 is added by the refinement.
+const typeLine = (parts, cls = '') => `<p class="type ${cls}" aria-hidden="true">${parts.map(([t, k]) =>
+  [...t].map(ch => `<span class="${k === 1 ? 'f' : k === 2 ? 'a' : ''}">${ch === ' ' ? '&nbsp;' : esc(ch)}</span>`).join('')).join('')}</p>`;
+const DEMO = () => L(
+  [['嗯，', 1], ['那个，', 1], ['明天下午'], ['三点……不对，', 1], ['四点开会'], ['。', 2]],
+  [['Meeting at '], ['um, ', 1], ['three, no, ', 1], ['four'], [' tomorrow'], ['.', 2]]);
+const RCMD = () => L('右 ⌘', 'right ⌘');
+
 function welcome() {
-  return page(icon(), L(`欢迎使用${S.name}`, `Welcome to ${S.name}`),
-    L('轻点一下右边的 ⌘，说话，再轻点一下。整理好的文字会出现在光标所在的地方。接下来的几步只需要一分钟。',
-      'Tap the right ⌘ key, speak, tap it again. Clean text appears where your cursor is. Setting up takes about a minute.'),
+  return page(`<div class="stage">${yan('big')}${typeLine(DEMO(), 'demo')}</div>`, L(`欢迎使用${S.name}`, `Welcome to ${S.name}`),
+    L(`轻点一下右边的 ⌘，说话，再点一下。${esc(S.name)}去掉口头禅、理顺句子，放到光标所在的地方。`,
+      `Tap the right ⌘ key, speak, tap it again. ${esc(S.name)} drops the filler, tidies the sentence and puts it where your cursor is.`),
     langSwitch(), btn(L('开始设置', 'Get Started'), 'next'));
+}
+
+// Characters are set one by one (each with its own delay), then the filler drops and the rest close up.
+function setType(line, then) {
+  const chars = $$('span', line);
+  chars.forEach((c, i) => c.style.transitionDelay = `${i * 45}ms`);
+  line.classList.add('set');
+  after(chars.length * 45 + 350, () => {
+    chars.forEach(c => c.style.transitionDelay = '');
+    line.classList.add('drop');
+    after(380, () => { line.classList.add('close'); if (then) after(500, then); });
+  });
+}
+
+function playWelcome() {
+  const stage = $('.stage'), line = $('.type.demo');
+  if (!stage || !line) return;
+  if (reduceMotion()) { line.className = 'type demo set drop close'; return; }
+  line.className = 'type demo';
+  stage.classList.add('talk');
+  after(900, () => { stage.classList.remove('talk'); setType(line, () => after(1500, playWelcome)); });
 }
 
 function microphone() {
@@ -49,7 +85,11 @@ function microphone() {
   else if (S.mic === 'not_determined') act = btn(allow, 'mic');
   else act = status(L(`之前没有允许。在系统设置里打开${esc(S.name)}，这里会自己继续。`, `It was not allowed earlier. Turn on ${esc(S.name)} in System Settings and this continues by itself.`))
     + btn(L('打开系统设置', 'Open System Settings'), 'mic');
-  return page(tile('mic', '#007AFF'), L('允许使用麦克风', 'Allow the microphone'), lede, '', act + later());
+  // Once allowed, the real input moves the bars, so they can see it hears them.
+  const meter = S.mic !== 'authorized' ? yan('big') : yan('big live');
+  const hint = S.mic !== 'authorized' ? ''
+    : `<p class="mhint">${L('对着它说句话，笔画跟着动就说明听得到', 'Say something to it: if the strokes move, it can hear you')}${S.input ? ` · ${esc(S.input)}` : ''}</p>`;
+  return page(meter, L('允许使用麦克风', 'Allow the microphone'), lede, hint, act + later());
 }
 
 function accessibility() {
@@ -59,7 +99,13 @@ function accessibility() {
   if (S.ax) act = status(UI.asked === 'a11y' ? L('已授权，正在继续', 'Granted, continuing') : L('已授权', 'Granted'), 'ok') + next();
   else if (UI.asked === 'a11y') act = spin(L('正在等待授权…', 'Waiting for permission…')) + btn(L('再次打开系统设置', 'Open System Settings Again'), 'a11y', false);
   else act = btn(L('打开系统设置', 'Open System Settings'), 'a11y');
-  return page(tile('a11y', '#0A84FF'), L(`允许${S.name}响应右 ⌘`, `Let ${S.name} respond to right ⌘`), lede, '', act + later());
+  // A small System Settings window where the switch gets turned on, so they know what to look for.
+  const mock = `<div class="axmock${S.ax ? ' granted' : ''}" aria-hidden="true">
+    <div class="axbar"><i></i><i></i><i></i><span>${L('辅助功能', 'Accessibility')}</span></div>
+    <div class="axrow dim"><span class="axic"></span><span>Terminal</span><span class="axsw"></span></div>
+    <div class="axrow"><img src="appicon.svg" alt=""><span>${esc(S.name)}</span><span class="axsw on"></span></div>
+    <i class="axcur"></i></div>`;
+  return page(mock, L(`允许${S.name}响应右 ⌘`, `Let ${S.name} respond to right ⌘`), lede, '', act + later());
 }
 
 function apiKey() {
@@ -87,7 +133,7 @@ function trialKey() {
     'Your first 400 or so refinements are free, with nothing to fill in. After that you will need your own OpenAI API key; you will be reminded when the time comes.');
   const start = `<button class="gbtn pri big" data-o="next">${esc(L('开始免费试用', 'Start the Free Trial'))}</button>`;
   if (!UI.ownKey && !UI.keyBusy && !UI.key) {
-    const card = `<div class="trialcard"><b>~400</b><span>${esc(L('次免费润色，送给你', 'free refinements, on us'))}</span></div>`;
+    const card = `<div class="trialcard${UI.counted ? '' : ' glow'}"><b id="tc">~${UI.counted ? 400 : 0}</b><span>${esc(L('次免费润色，送给你', 'free refinements, on us'))}</span></div>`;
     return page(tile('key', '#34C759'), L('免费试用已开启', 'Your free trial is on'), lede, card,
       start + link(L('我已经有 OpenAI API Key', 'I already have an OpenAI API key'), 'own-key'));
   }
@@ -126,30 +172,61 @@ const switchSource = m => m.mirror
   : link(L('改从国内镜像下载', 'Download from the China mirror instead'), 'source', 'mirror');
 const progressText = (pct, eta) => L(`语音模型下载中 ${pct}%${eta ? ` · 还要${eta}` : ''}`, `Downloading the speech model · ${pct}%${eta ? ` · ${eta} left` : ''}`);
 
+// The bottom row of a Mac keyboard with right ⌘ marked; it lights up when they press it for real.
+function keyRow() {
+  const cls = UI.pressed ? ' down' : '';
+  return `<div class="krow" aria-hidden="true"><span>fn</span><span>⌃</span><span>⌥</span><span class="w">⌘</span><span class="sp"></span>`
+    + `<span class="w rc${cls}">⌘<small>${esc(RCMD())}</small></span><span>⌥</span></div>`;
+}
+
+// Raw against refined, character by character: what was dropped falls out, what was added is set in.
+function diffParts(raw, text) {
+  const a = [...raw].slice(0, 200), b = [...text].slice(0, 200);
+  const n = a.length, m = b.length;
+  const dp = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+    dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const out = [];
+  let i = 0, j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && a[i] === b[j]) { out.push([a[i]]); i++; j++; }
+    else if (j < m && (i >= n || dp[i][j + 1] >= dp[i + 1][j])) out.push([b[j++], 2]);
+    else out.push([a[i++], 1]);
+  }
+  return out;
+}
+
 function practice() {
-  const lede = L('点一下下面的框，轻点右 ⌘ 说一句话，说完再轻点一下。', 'Click the box below, tap right ⌘, say a sentence, then tap it again.');
+  const lede = L('点一下下面的框，轻点右 ⌘，说完再点一下。试着说：', 'Click the box below, tap right ⌘, speak, then tap it again. Try saying:');
+  const say = `<p class="say">${L('“嗯，那个，明天下午三点开会，记得带电脑”', '“Um, so, meeting tomorrow at three, uh, bring your laptop”')}</p>`;
   const box = `<textarea class="practice" id="pr" placeholder="${L('文字会出现在这里', 'The text appears here')}" aria-label="${L('试着听写一句', 'Try a dictation')}"></textarea>`;
+  const r = UI.result;
+  const reveal = UI.practiced && r && r.raw && r.raw !== r.text
+    ? `<div class="reveal"><small>${L('你说的 → 插入的', 'What you said → what went in')}</small>${typeLine(diffParts(r.raw, r.text), UI.revealed ? 'set drop close' : 'set')}</div>` : '';
   let act;
-  if (UI.practiced) act = status(L('成功了', 'It worked'), 'ok') + next();
+  if (UI.practiced) act = `<span class="status ok pop" id="st">${I('check')}${L('成功了', 'It worked')}</span>` + next();
   else if (!S.ax) act = status(L('还没有辅助功能权限，右 ⌘ 暂时不起作用。', 'No Accessibility permission yet, so right ⌘ does nothing.'), 'err') + btn(L('去授权', 'Grant Permission'), 'goto-a11y') + skip();
   else if (UI.dl && UI.dl.error) act = status(L('语音模型下载好才能试，先在下面重试。', 'You can try once the speech model downloads; try again below.'), 'err')
     + link(L('先完成设置，稍后再试', 'Finish Setup and Try Later'), 'next');
   else if (!modelReady()) act = spin(L('语音模型下载好就能试，大概还要一会儿', 'You can try once the speech model finishes downloading'))
     + link(L('先完成设置，稍后再试', 'Finish Setup and Try Later'), 'next');
-  else act = status(L(`轻点右 ⌘，说“你好，${esc(S.name)}”`, `Tap right ⌘ and say “Hello, ${esc(S.name)}”`)) + skip();
-  return page(tile('wave', '#FF9500'), L('说一句试试', 'Try it'), lede, box, act);
+  else if (UI.pressed) act = status(L('就是这个键。正在听，说完再点一下右 ⌘', 'That’s the one. Listening; tap right ⌘ again when done')) + skip();
+  else act = status(L('轻点键盘右下角的 ⌘', 'Tap the ⌘ at the bottom right of your keyboard')) + skip();
+  return page(keyRow(), L('说一句试试', 'Try it'), lede, say + box + reveal, act);
 }
 
+// Each tip acts out its gesture on a tiny keycap, instead of an icon.
 const TIPS = () => [
-  ['mic', L('轻点右 ⌘ 开始、再点一下结束；也可以按住右 ⌘ 说话，松开就完成', 'Tap right ⌘ to start and again to finish, or hold it while you talk')],
-  ['lock', L('连点两下右 ⌘ 免手持，适合说长段', 'Double-tap right ⌘ to go hands-free for long passages')],
-  ['xmark', L('说错了按 esc 取消', 'Said it wrong? Press esc to cancel')],
-  ['undo', L('插入后，胶囊上可以撤销或修改', 'After inserting, the capsule offers Undo and Edit')],
-  ['pencil', L('选中文字再点右 ⌘，说“翻成英文”这类要求就能改写', 'Select text, tap right ⌘ and say something like “make it formal” to rewrite it')],
+  ['tap', '⌘', L('轻点右 ⌘ 开始，再点一下结束', 'Tap right ⌘ to start, tap again to finish')],
+  ['hold', '⌘', L('按住右 ⌘ 说话，松开就完成', 'Hold right ⌘ while you talk; let go to finish')],
+  ['dbl', '⌘', L('连点两下右 ⌘ 免手持，适合说长段', 'Double-tap right ⌘ to go hands-free for long passages')],
+  ['tap', 'esc', L('说错了按 esc 取消', 'Said it wrong? Press esc to cancel')],
+  ['sel', '⌘', L('选中文字再点右 ⌘，说“翻成英文”这类要求就能改写', 'Select text, tap right ⌘ and say something like “make it formal” to rewrite it')],
 ];
 
 function done() {
-  const tips = `<ul class="tips" aria-label="${L('小技巧', 'Tips')}">${TIPS().map(([i, t]) => `<li>${I(i)}<span>${esc(t)}</span></li>`).join('')}</ul>`;
+  const tips = `<ul class="tips" aria-label="${L('小技巧', 'Tips')}">${TIPS().map(([g, k, t]) =>
+    `<li><span class="gest ${g}" aria-hidden="true"><b>${esc(k)}</b></span><span>${esc(t)}</span></li>`).join('')}</ul>`;
   return page(icon(), L('一切就绪', 'All set'),
     L(`${esc(S.name)}会待在菜单栏里，忘了快捷键点菜单栏图标就能看到。`,
       `${esc(S.name)} lives in the menu bar; click its icon if you forget a shortcut.`),
@@ -177,18 +254,38 @@ function draw() {
   else if (key && !key.disabled) key.focus();
   else if (pr) pr.focus();
   else root.querySelector('.gbtn.pri:not(:disabled)')?.focus();
+  gen++;
+  if (STEPS[step] === welcome) playWelcome();
+  if (STEPS[step] === apiKey && S.key.trial) countUp();
+  const rv = $('.reveal .type');
+  if (rv && !UI.revealed) {
+    UI.revealed = true;
+    if (reduceMotion()) rv.className = 'type set drop close';
+    else after(700, () => { rv.classList.add('drop'); after(380, () => rv.classList.add('close')); });
+  }
+  // The level bars need the microphone open, only while that page is up.
+  const wantMeter = STEPS[step] === microphone && S.mic === 'authorized';
+  if (wantMeter !== UI.meter) { UI.meter = wantMeter; post({ t: 'meter', on: wantMeter }); }
+}
+
+function countUp() {
+  const el = $('#tc');
+  if (!el || UI.counted) return;
+  UI.counted = true;
+  if (reduceMotion()) { el.textContent = '~400'; return; }
+  const start = performance.now();
+  const tick = now => {
+    const k = Math.min(1, (now - start) / 1100);
+    el.textContent = '~' + Math.round(400 * (1 - Math.pow(1 - k, 3)));
+    if (k < 1) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 function go(to) {
-  clearTimeout(advanceTimer);
   step = Math.max(0, Math.min(LAST, to));
   UI.asked = '';
   draw();
-}
-
-function advanceSoon(from) {
-  clearTimeout(advanceTimer);
-  advanceTimer = setTimeout(() => { if (step === from) go(from + 1); }, 900);
 }
 
 function verify() {
@@ -216,7 +313,7 @@ document.addEventListener('click', e => {
   else if (o === 'open-keys') post({ t: 'open', what: 'openai-keys' });
   else if (o === 'own-key') { UI.ownKey = true; draw(); }
   else if (o === 'download') { UI.dl = { p: 0, eta: '', done: false, error: false }; post({ t: 'download' }); draw(); }
-  else if (o === 'done') post({ t: 'done' });
+  else if (o === 'done') { post({ t: 'meter', on: false }); post({ t: 'done' }); }
   else if (o === 'lang') post({ t: 'lang', v: e.target.closest('[data-o]').dataset.v });
   else if (o === 'source') { UI.dl = { p: 0, eta: '', done: false, error: false }; post({ t: 'source', v: e.target.closest('[data-o]').dataset.v }); draw(); }
 });
@@ -234,8 +331,7 @@ document.addEventListener('keydown', e => {
 document.addEventListener('input', e => {
   if (e.target.id === 'pr' && e.target.value.trim() && !UI.practiced) {
     UI.practiced = true;
-    draw();
-    advanceSoon(4);
+    draw();  // stays: the before/after is worth a look, and Continue is theirs
   }
 });
 
@@ -251,6 +347,30 @@ on('state', m => {
   if (before && step === 1 && UI.asked === 'mic' && m.mic !== 'not_determined') UI.asked = '';
   if (before && step === 2 && UI.asked === 'a11y' && m.ax) UI.asked = '';
   draw();
+});
+// The real input level moves the strokes of the big 言 on the microphone page.
+let level = 0;
+on('level', m => {
+  const v = Math.min(1, Math.sqrt(Math.max(0, +m.v || 0)) * 1.6);
+  level = v > level ? v : level * 0.8 + v * 0.2;  // quick to rise, slow to fall
+  const el = $('.yan.live');
+  if (el) el.style.setProperty('--lv', level.toFixed(3));
+});
+// Right ⌘ (or F5) pressed somewhere: on the practice page the key lights up.
+on('hotkey', m => {
+  if (STEPS[step] !== practice || UI.practiced) return;
+  if (m.a === 'primary_down' || m.a === 'hands_free') {
+    UI.pressed = true;
+    const k = $('.krow .rc');
+    if (k) { k.classList.remove('down'); void k.offsetWidth; k.classList.add('down'); }
+    const st = $('#st');
+    if (st) st.textContent = L('就是这个键。正在听，说完再点一下右 ⌘', 'That’s the one. Listening; tap right ⌘ again when done');
+  } else if (m.a === 'cancel') { UI.pressed = false; draw(); }
+});
+// A dictation finished while the guide is open: what was heard, and what went in.
+on('result', m => {
+  UI.result = { raw: String(m.raw || ''), text: String(m.text || '') };
+  if (UI.practiced) draw();
 });
 on('keyResult', m => { UI.keyBusy = false; UI.key = { ok: m.ok, msg: m.msg }; draw(); });
 on('download', m => {
