@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -69,11 +70,15 @@ def resolve_app_root() -> Path:
 def resolve_jarvis_root(app_root: Path | None = None) -> Path:
     """Resolve the Jarvis checkout used only as a dependency source."""
 
+    root = app_root or resolve_app_root()
+    if getattr(sys, "frozen", False):
+        # The built app runs on its vendored copy. A Jarvis checkout on this
+        # Mac would go on sys.path ahead of it and shadow the bundle's modules.
+        return root
     explicit = os.environ.get("JARVIS_PROJECT_ROOT", "").strip()
     if explicit:
         return Path(explicit).expanduser().resolve()
 
-    root = app_root or resolve_app_root()
     sibling = (root.parent / "jarvis").resolve()
     if sibling.exists():
         return sibling

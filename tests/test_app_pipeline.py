@@ -1219,7 +1219,7 @@ def test_refine_off_needs_no_key(monkeypatch) -> None:
     assert app._current_issues() == ()
 
 
-def test_menu_snapshot_reads_presets_devices_and_the_last_dictation(monkeypatch) -> None:
+def test_menu_snapshot_reads_the_model_devices_and_the_last_dictation(monkeypatch) -> None:
     monkeypatch.delenv("TEST_KEY_B", raising=False)
     app = _menu_app(monkeypatch, env={"TEST_KEY_A": "sk-test"})
     monkeypatch.setattr(app_module.devices, "refresh_if_changed", lambda: False)
@@ -1229,7 +1229,6 @@ def test_menu_snapshot_reads_presets_devices_and_the_last_dictation(monkeypatch)
     snap = app._menu_snapshot()
 
     assert snap.state == "idle" and snap.issues == ()
-    assert [(p.name, p.needs_key) for p in snap.presets] == [("mini", False), ("deep", True)]
     assert snap.active_preset == "mini"
     assert snap.inputs == ("MacBook Pro 麦克风",)
     assert (snap.recent.text, snap.recent.app) == ("明天开会", "备忘录")

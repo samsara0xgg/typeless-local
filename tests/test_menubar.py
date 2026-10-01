@@ -8,7 +8,6 @@ from typeless_local.menubar import (
     GLYPH_SIZE,
     LOOK,
     MenuBarIcon,
-    Preset,
     Recent,
     Snapshot,
     ago,
@@ -91,7 +90,6 @@ def test_idle_menu_follows_the_design() -> None:
     items = build_menu(
         Snapshot(
             recent=Recent("明天下午四点开会", app="备忘录", at=1000.0),
-            presets=(Preset("gpt-5.6-terra", median_ms=1240), Preset("deepseek", needs_key=True)),
             active_preset="gpt-5.6-terra",
             inputs=("MacBook Pro 麦克风", "AirPods"),
             active_input="AirPods",
@@ -159,7 +157,7 @@ def test_an_unplugged_device_falls_back_to_the_system_default() -> None:
 
 
 def test_refine_off_shows_in_the_model_row() -> None:
-    items = build_menu(Snapshot(presets=(Preset("a"),), active_preset="a", refine=False))
+    items = build_menu(Snapshot(active_preset="a", refine=False))
     assert _find(items, "润色与 API Key…").badge == "关闭"
     assert _find(build_menu(Snapshot(active_preset="free-trial")), "润色与 API Key…").badge == "免费试用"
 
@@ -191,7 +189,7 @@ def test_the_menu_speaks_english_when_asked() -> None:
     from typeless_local import i18n
 
     i18n.use("en")
-    items = build_menu(Snapshot(issues=("key",), presets=(Preset("mini", needs_key=True),), active_preset="mini"))
+    items = build_menu(Snapshot(issues=("key",), active_preset="mini"))
     titles = [item.title for item in items]
     assert titles[0] == brand.ENGLISH_NAME
     assert items[0].subtitle == "No API key: raw transcripts only"

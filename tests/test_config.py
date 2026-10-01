@@ -266,3 +266,15 @@ def test_a_preset_an_update_removed_falls_back_to_terra(monkeypatch, tmp_path):
     cfg_mod.save_default_preset(cfg_mod.resolve_user_paths(), "gpt-5.6-sol")
     loaded = cfg_mod.load_config()
     assert loaded.refine.preset == "gpt-5.6-terra" and loaded.refine.model == "gpt-5.6-terra"
+
+
+def test_the_built_app_never_reaches_for_a_jarvis_checkout(monkeypatch, tmp_path):
+    import sys
+
+    from typeless_local import config as cfg
+
+    (tmp_path / "jarvis").mkdir()
+    monkeypatch.setenv("JARVIS_PROJECT_ROOT", str(tmp_path / "jarvis"))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    app_root = tmp_path / "app"
+    assert cfg.resolve_jarvis_root(app_root) == app_root

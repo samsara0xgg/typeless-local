@@ -89,6 +89,8 @@ OPTIONS = {
         "numba",
         "llvmlite",
         "scipy",
+        # Syntax highlighting nothing in the app asks for (5 MB).
+        "pygments",
     ],
     "plist": {
         "CFBundleName": brand.ENGLISH_NAME,

@@ -99,7 +99,7 @@ class Item:
     title: str = ""
     key: str = ""  # what choosing it does; "" is not clickable
     kind: str = "item"  # item | header | hint | section | separator
-    shortcut: str = ""  # "F5", "⌘Y", "⌘,", "⌘Q"
+    shortcut: str = ""  # "⌘Y", "⌘,", "⌘Q"
     badge: str = ""  # secondary text at the trailing edge
     subtitle: str = ""
     checked: bool = False
@@ -119,18 +119,10 @@ class Recent:
 
 
 @dataclass(frozen=True)
-class Preset:
-    name: str
-    needs_key: bool = False
-    median_ms: int | None = None
-
-
-@dataclass(frozen=True)
 class Snapshot:
     state: str = "idle"
     issues: tuple[str, ...] = ()
     recent: Recent | None = None
-    presets: tuple[Preset, ...] = ()
     active_preset: str = ""
     inputs: tuple[str, ...] = ()
     active_input: str = ""
@@ -474,7 +466,7 @@ def _place_badge(view, button) -> None:
         LOGGER.debug("Could not place the badge", exc_info=True)
 
 
-_SHORTCUTS = {"F5": ("", 0), "⌘Y": ("y", 1 << 20), "⌘,": (",", 1 << 20), "⌘Q": ("q", 1 << 20)}
+_SHORTCUTS = {"⌘Y": ("y", 1 << 20), "⌘,": (",", 1 << 20), "⌘Q": ("q", 1 << 20)}
 
 
 def _fill(menu, items: list[Item], target) -> None:

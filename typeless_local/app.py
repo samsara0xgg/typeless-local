@@ -61,9 +61,9 @@ from typeless_local.first_run import (
     model_is_cached,
     set_api_key,
 )
-from typeless_local.history import median_refine_ms, purge_older_than, set_sent_text
+from typeless_local.history import purge_older_than, set_sent_text
 from typeless_local.sent_text import SentTextWatcher
-from typeless_local.menubar import MenuBarIcon, Preset, Recent, Snapshot
+from typeless_local.menubar import MenuBarIcon, Recent, Snapshot
 from typeless_local.overlay import FloatingOverlay
 from typeless_local.preferences import Preferences, load_preferences, save_preference
 from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner, TrialUnavailable
@@ -669,21 +669,13 @@ class TypelessLocalApp:
         jarvis = getattr(config, "jarvis_config", {}) or {}
         user_paths = getattr(config, "user_paths", None)
         history = user_paths.trace_db_path if user_paths is not None and self.prefs.save_history else None
-        presets = []
-        for name in preset_names(jarvis):
-            try:
-                refine = refine_config_for(jarvis, name)
-            except Exception:
-                continue
-            median = median_refine_ms(history, refine.model) if history is not None else None
-            presets.append(Preset(name, needs_key=not os.environ.get(refine.api_key_env or ""), median_ms=median))
-        devices.refresh_if_changed()
+        if not getattr(getattr(self, "recorder", None), "wedged", False):
+            devices.refresh_if_changed()
         recent = getattr(self, "_recent", None)
         return Snapshot(
             state=self.state,
             issues=self._refresh_issues(),
             recent=recent,
-            presets=tuple(presets),
             active_preset=config.refine.preset,
             inputs=tuple(devices.list_input_devices()),
             active_input=getattr(config, "input_device", "") or "",

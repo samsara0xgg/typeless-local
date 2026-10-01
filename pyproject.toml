@@ -4,7 +4,7 @@ version = "0.4.0"
 requires-python = ">=3.12"
 
 [project.optional-dependencies]
-build = ["py2app>=0.28"]
+build = ["py2app>=0.28", "dmgbuild>=1.6"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

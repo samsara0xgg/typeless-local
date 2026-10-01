@@ -16,7 +16,7 @@ import tempfile
 WIDTH, HEIGHT = 640, 400
 APP_AT = (170, 175)
 APPLICATIONS_AT = (470, 175)
-ZH = "把言字拖到「应用程序」文件夹，就装好了"
+ZH = "把言字拖到 Applications（应用程序）文件夹，就装好了"
 EN = "Drag Yana onto Applications to install it"
 
 
