@@ -293,6 +293,30 @@ def test_word_list_goes_to_whisper_only_for_chunks_within_one_window() -> None:
     assert app.asr.prompts == ["Common terms: Jarvis, StarTrial.", None]
 
 
+def test_chinese_as_the_spoken_language_asks_whisper_for_simplified() -> None:
+    """Only a forced-Chinese recognizer gets the Simplified hint: Automatic and
+    English must not be pushed toward Chinese."""
+
+    app = _make_app("hi")
+    app.whisper_prompt = "Common terms: Jarvis."
+    for spoken in ("zh", "", "en"):
+        app.asr._asr_config = {"language": spoken}
+        app._hear(np.full(16000 * 10, 0.5, dtype=np.float32))
+    app.asr._asr_config = {}
+    app.whisper_prompt = ""
+    app._hear(np.full(16000 * 10, 0.5, dtype=np.float32))
+    app.asr._asr_config = {"language": "zh"}
+    app._hear(np.full(16000 * 31, 0.5, dtype=np.float32))
+
+    assert app.asr.prompts == [
+        f"{app_module.SIMPLIFIED_HINT} Common terms: Jarvis.",
+        "Common terms: Jarvis.",
+        "Common terms: Jarvis.",
+        None,
+        None,
+    ]
+
+
 def test_process_audio_hands_the_text_over_in_a_card_when_focus_is_not_editable(monkeypatch) -> None:
     """With nowhere to paste, the text still lands on the clipboard by itself.
 

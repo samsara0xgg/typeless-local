@@ -93,6 +93,9 @@ MIN_MIC_STARTUP_SECONDS = 0.75
 # own confidence tells them apart: invented words score low.
 SHORT_FRAGMENT_CHARS = 5
 WHISPER_WINDOW_S = 30
+# Whisper's prompt is text it takes to have come before: Simplified text
+# here keeps a forced-Chinese transcript Simplified.
+SIMPLIFIED_HINT = "以下是普通话的简体中文转录。"
 PREWARM_INTERVAL_S = 3.0
 MIN_SHORT_ENGLISH_CONFIDENCE = 0.4
 # After a card gives the keyboard back, before Cmd+Z is sent: the undo has to
@@ -1677,10 +1680,19 @@ class TypelessLocalApp:
 
     def _whisper(self, audio: np.ndarray) -> Transcript:
         """The user's word list goes into Whisper's prompt only for a chunk that
-        fits one 30 s window: across windows it used to loop on longer speech."""
+        fits one 30 s window: across windows it used to loop on longer speech.
+
+        With Chinese chosen as the spoken language the prompt also starts with a
+        line of Simplified Chinese, so the raw text comes out Simplified even
+        when refinement is off or fails. Automatic and English get no hint."""
 
         sample_rate = int(getattr(self.config, "sample_rate", 16000))
-        prompt = getattr(self, "whisper_prompt", "") if audio.size <= WHISPER_WINDOW_S * sample_rate else ""
+        if audio.size > WHISPER_WINDOW_S * sample_rate:
+            return self.asr.transcribe(audio, initial_prompt=None)
+        prompt = getattr(self, "whisper_prompt", "") or ""
+        spoken = str((getattr(self.asr, "_asr_config", None) or {}).get("language") or "")
+        if spoken == "zh":
+            prompt = f"{SIMPLIFIED_HINT} {prompt}".strip()
         return self.asr.transcribe(audio, initial_prompt=prompt or None)
 
     def _refine_context(self, context: FocusContext) -> FocusContext:
