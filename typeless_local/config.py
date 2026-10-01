@@ -271,15 +271,19 @@ def adopt_default_preset(config: AppConfig, preset: str) -> AppConfig:
     return replace(config, jarvis_config=jarvis_config, refine=_resolve_refine_config(jarvis_config))
 
 
+DEFAULT_PRESET = "gpt-5.6-terra"
+
+
 def _resolve_refine_config(jarvis_config: dict[str, Any], preset_name: str | None = None) -> RefineConfig:
     llm = dict(jarvis_config.get("llm") or {})
     presets = dict(llm.get("presets") or {})
-    preset_name = str(preset_name or llm.get("default_preset") or "fast")
-    if preset_name not in presets and "fast" in presets:
-        preset_name = "fast"
+    preset_name = str(preset_name or llm.get("default_preset") or DEFAULT_PRESET)
+    if preset_name not in presets and DEFAULT_PRESET in presets:
+        # A preset an update removed (or a typo) lands on the one model everyone uses.
+        preset_name = DEFAULT_PRESET
     preset = dict(presets.get(preset_name) or {})
 
-    model = str(preset.get("model") or llm.get("model") or "gpt-5.4-mini")
+    model = str(preset.get("model") or llm.get("model") or DEFAULT_PRESET)
     base_url = preset.get("base_url") or llm.get("base_url") or "https://api.openai.com/v1"
     api_key_env = str(preset.get("api_key_env") or "OPENAI_API_KEY")
     max_tokens = int(preset.get("max_tokens") or llm.get("max_tokens") or 512)

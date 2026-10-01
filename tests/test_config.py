@@ -256,3 +256,13 @@ def test_resolve_jarvis_root_falls_back_without_a_checkout(monkeypatch, tmp_path
     app_root.mkdir(parents=True)
 
     assert resolve_jarvis_root(app_root) == app_root
+
+
+def test_a_preset_an_update_removed_falls_back_to_terra(monkeypatch, tmp_path):
+    """gpt-5.6-sol was taken out in 0.4.0."""
+    from typeless_local import config as cfg_mod
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("JARVIS_PROJECT_ROOT", str(tmp_path))
+    cfg_mod.save_default_preset(cfg_mod.resolve_user_paths(), "gpt-5.6-sol")
+    loaded = cfg_mod.load_config()
+    assert loaded.refine.preset == "gpt-5.6-terra" and loaded.refine.model == "gpt-5.6-terra"
