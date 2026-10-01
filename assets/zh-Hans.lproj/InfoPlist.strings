@@ -1,5 +1,5 @@
 /* The name Finder, the Dock and System Settings show on a Chinese system. */
 CFBundleName = "言字";
 CFBundleDisplayName = "言字";
-NSMicrophoneUsageDescription = "按下 F5 听写时，言字用麦克风录下你说的话。转写在这台 Mac 上完成。";
+NSMicrophoneUsageDescription = "你听写时，言字用麦克风录下你说的话。转写在这台 Mac 上完成。";
 NSAppleEventsUsageDescription = "言字要把整理好的文字放进你正在用的 App。";

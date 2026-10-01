@@ -6,11 +6,11 @@ import ctypes
 import ctypes.util
 from dataclasses import dataclass
 import logging
-import threading
 from typing import Callable
 
 import ApplicationServices
 from AppKit import NSEvent, NSPasteboard, NSPasteboardTypeString, NSWorkspace
+from PyObjCTools import AppHelper
 import Quartz
 
 from typeless_local import keyboard_layout
@@ -49,6 +49,22 @@ def _load_mach_timebase() -> tuple[int, int]:
 _TIMEBASE_NUMER, _TIMEBASE_DENOM = _load_mach_timebase()
 
 
+def _load_secure_input_check() -> Callable[[], bool]:
+    """Carbon's IsSecureEventInputEnabled: True while a password field (or a terminal) hides keys from taps."""
+
+    try:
+        carbon = ctypes.CDLL("/System/Library/Frameworks/Carbon.framework/Carbon")
+        fn = carbon.IsSecureEventInputEnabled
+        fn.restype = ctypes.c_bool
+        return lambda: bool(fn())
+    except Exception:
+        LOGGER.debug("No IsSecureEventInputEnabled; assuming secure input is off", exc_info=True)
+        return lambda: False
+
+
+secure_input_enabled = _load_secure_input_check()
+
+
 def _mach_ticks_to_seconds(ticks: int) -> float:
     return ticks * _TIMEBASE_NUMER / _TIMEBASE_DENOM / 1e9
 
@@ -65,9 +81,18 @@ OPTION_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskAlternate", 1 << 19)
 SHIFT_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskShift", 1 << 17)
 # Right Command arrives as a FlagsChanged event with keycode 54 (kVK_RightCommand).
 RIGHT_COMMAND_KEYCODE = 54
-# Released sooner than this, right Command alone was a tap; held this long
-# alone, it starts hold-to-talk (the same threshold as the app's long press).
-RIGHT_COMMAND_TAP_S = 0.6
+# Held alone this long, right Command starts hold-to-talk; let go sooner, it was a tap.
+RIGHT_COMMAND_HOLD_S = 0.35
+# Right Command's own bit in the event flags (NX_DEVICERCMDKEYMASK): the
+# Command bit alone stays set while left Command is held.
+RIGHT_COMMAND_DEVICE_MASK = 0x10
+# Any of these already down when right Command goes down makes it a chord.
+_OTHER_MODIFIERS_MASK = (
+    getattr(Quartz, "kCGEventFlagMaskShift", 1 << 17)
+    | getattr(Quartz, "kCGEventFlagMaskControl", 1 << 18)
+    | getattr(Quartz, "kCGEventFlagMaskAlternate", 1 << 19)
+    | 0x08  # left Command (NX_DEVICELCMDKEYMASK)
+)
 # Mouse down in any button, and the scroll wheel: Cmd-click and Cmd-scroll.
 _MOUSE_WITH_MODIFIER_MASK = (1 << 1) | (1 << 3) | (1 << 25) | (1 << 22)
 COMMAND_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskCommand", 1 << 20)
@@ -458,10 +483,11 @@ HotkeyCallback = Callable[[str], None]
 class GlobalHotkeyMonitor:
     """Capture right Cmd (and F5 when asked), right-Cmd+Space / F5+Space, and Esc with a Quartz event tap.
 
-    Right Cmd alone: a tap is a press of the dictation key, and holding it
-    past RIGHT_COMMAND_TAP_S is hold-to-talk until it is let go. Anything else
-    while it is down (a key, a click, a scroll) makes it the Command modifier
-    it also is: nothing happens, and a hold already recording is cancelled.
+    Right Cmd alone: a tap is a press of the dictation key (primary_down then
+    primary_up), and holding it past RIGHT_COMMAND_HOLD_S is hold-to-talk
+    (hold_start, then hold_end on release). Anything else while it is down (a
+    key, a click, a scroll) makes it the Command modifier it also is: nothing
+    happens, and a hold under way is reported as hold_abort.
     """
 
     def __init__(
@@ -471,8 +497,11 @@ class GlobalHotkeyMonitor:
         is_active_fn: Callable[[], bool] | None = None,
         watch_keys_fn: Callable[[], bool] | None = None,
         use_f5_fn: Callable[[], bool] | None = None,
+        use_right_command_fn: Callable[[], bool] | None = None,
     ) -> None:
         self.callback = callback
+        # Off for people whose right Command already switches input sources.
+        self.use_right_command_fn = use_right_command_fn
         # F5 is also the system dictation key; when this says no, F5 and the
         # dictation key pass through to macOS untouched. Asked on every key press.
         self.use_f5_fn = use_f5_fn
@@ -516,7 +545,10 @@ class GlobalHotkeyMonitor:
         )
         self._tap = self._create_event_tap(HOTKEY_EVENT_TAP_LOCATION, mask)
         if self._tap is None and HOTKEY_EVENT_TAP_LOCATION != Quartz.kCGSessionEventTap:
-            LOGGER.warning("HID event tap unavailable; falling back to session event tap")
+            # start() is retried every couple of seconds until it works: say it once.
+            if not getattr(self, "_said_no_hid_tap", False):
+                LOGGER.warning("HID event tap unavailable; falling back to session event tap")
+            self._said_no_hid_tap = True
             self._tap = self._create_event_tap(Quartz.kCGSessionEventTap, mask)
         if self._tap is None:
             raise RuntimeError("Could not create global event tap. Grant Accessibility permission.")
@@ -543,35 +575,48 @@ class GlobalHotkeyMonitor:
             return
         try:
             self._mouse_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
-                _MOUSE_WITH_MODIFIER_MASK, lambda event: self._disarm_right_command()
+                _MOUSE_WITH_MODIFIER_MASK, self._on_mouse
             )
         except Exception:
             LOGGER.debug("No mouse monitor; a right-Cmd-click may start dictation", exc_info=True)
 
+    def _on_mouse(self, event) -> None:
+        # A trackpad flick keeps scrolling after the fingers lift; that tail is not a Cmd-scroll.
+        try:
+            if event.type() == 22 and event.momentumPhase() != 0:
+                return
+        except Exception:
+            pass
+        self._disarm_right_command()
+
     def _disarm_right_command(self) -> None:
-        """Right Cmd turned out to be a modifier: no tap, and a hold that started recording is dropped."""
+        """Right Cmd turned out to be a modifier: no tap, and a hold under way is aborted."""
 
         self._rcmd_armed = False
         if self._rcmd_holding:
             self._rcmd_holding = False
-            self.callback("cancel")
+            self.callback("hold_abort")
 
     def _after(self, delay: float, fn: Callable[[], None]) -> None:
-        timer = threading.Timer(delay, fn)
-        timer.daemon = True
-        timer.start()
+        # On the main thread, like the event tap and the mouse monitor, so the
+        # right-Cmd state is only ever touched from one thread.
+        AppHelper.callLater(delay, fn)
 
     def _right_command_held(self, down_at: float) -> None:
         """Still down, alone, since ``down_at``: start hold-to-talk."""
 
         if not self._rcmd_armed or self._rcmd_down_at != down_at:
             return
+        self._rcmd_armed = False
         self._rcmd_holding = True
         self.last_primary_down_at = down_at
-        self.callback("primary_down")
+        self.callback("hold_start")
 
     def _use_f5(self) -> bool:
         return self.use_f5_fn is None or self.use_f5_fn()
+
+    def _use_right_command(self) -> bool:
+        return self.use_right_command_fn is None or self.use_right_command_fn()
 
     def _create_event_tap(self, location: int, mask: int):
         return Quartz.CGEventTapCreate(
@@ -608,25 +653,32 @@ class GlobalHotkeyMonitor:
 
         if event_type == Quartz.kCGEventFlagsChanged:
             if keycode == RIGHT_COMMAND_KEYCODE:
-                if Quartz.CGEventGetFlags(event) & COMMAND_FLAG_MASK:
+                flags = Quartz.CGEventGetFlags(event)
+                if flags & RIGHT_COMMAND_DEVICE_MASK:
+                    # Another modifier already down, keys hidden by Secure
+                    # Input (a password field: right Cmd+V would look like a
+                    # tap), or right Cmd turned off: never armed.
+                    if flags & _OTHER_MODIFIERS_MASK or not self._use_right_command() or secure_input_enabled():
+                        self._rcmd_armed = False
+                        return event
                     down_at = self._event_time(event)
                     self._rcmd_armed = True
                     self._rcmd_down_at = down_at
-                    self._after(RIGHT_COMMAND_TAP_S, lambda: self._right_command_held(down_at))
+                    self._after(RIGHT_COMMAND_HOLD_S, lambda: self._right_command_held(down_at))
                 elif self._rcmd_holding:
-                    self._rcmd_armed = self._rcmd_holding = False
+                    self._rcmd_holding = False
                     self.last_primary_up_at = self._event_time(event)
-                    self.callback("primary_up")
+                    self.callback("hold_end")
                 elif self._rcmd_armed:
+                    # Let go before hold-to-talk began (even if its timer is
+                    # late): a tap. Same timestamp for down and up, so the app
+                    # never reads it as a long press.
                     self._rcmd_armed = False
                     now = self._event_time(event)
-                    if now - self._rcmd_down_at <= RIGHT_COMMAND_TAP_S:
-                        # A tap toggles: same timestamp for down/up so the app
-                        # never reads a long hold as hold-to-talk.
-                        self.last_primary_down_at = now
-                        self.callback("primary_down")
-                        self.last_primary_up_at = now
-                        self.callback("primary_up")
+                    self.last_primary_down_at = now
+                    self.callback("primary_down")
+                    self.last_primary_up_at = now
+                    self.callback("primary_up")
                 return event  # never swallow a modifier change
             # Shift, Option or Control joined in: a chord, not a tap.
             self._disarm_right_command()
@@ -640,9 +692,10 @@ class GlobalHotkeyMonitor:
             return event
 
         if event_type == Quartz.kCGEventKeyDown:
-            if self._rcmd_armed:
-                if keycode == SPACE_KEYCODE:
-                    # Right Cmd+Space locks, whether or not the hold had started.
+            if (self._rcmd_armed or self._rcmd_holding) and not self._is_synthetic(event):
+                if keycode == SPACE_KEYCODE and self.is_active_fn is not None and self.is_active_fn():
+                    # Right Cmd+Space locks a recording under way. From idle it
+                    # stays Cmd+Space (Spotlight, input sources).
                     self._rcmd_armed = self._rcmd_holding = False
                     self.callback("hands_free")
                     return None
@@ -674,7 +727,9 @@ class GlobalHotkeyMonitor:
                 undo = keycode == keyboard_layout.keycode("z") and flags & COMMAND_FLAG_MASK and not flags & SHIFT_FLAG_MASK
                 self.callback("undo" if undo else "typed")
             return event
-        if event_type == Quartz.kCGEventKeyUp and keycode in PRIMARY_KEYCODES and self._use_f5():
+        # A press already under way is released here even if F5 was turned
+        # off meanwhile: left held, every Space would be swallowed.
+        if event_type == Quartz.kCGEventKeyUp and keycode in PRIMARY_KEYCODES and (self._use_f5() or keycode in self._primary_down):
             if keycode in self._primary_down:
                 self._primary_down.discard(keycode)
                 if not self._primary_down:

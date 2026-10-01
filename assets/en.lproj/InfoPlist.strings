@@ -1,5 +1,5 @@
 /* The name Finder, the Dock and System Settings show everywhere else. */
 CFBundleName = "Yana";
 CFBundleDisplayName = "Yana";
-NSMicrophoneUsageDescription = "Yana records audio while you dictate with F5. Transcription runs on this Mac.";
+NSMicrophoneUsageDescription = "Yana records audio while you dictate. Transcription runs on this Mac.";
 NSAppleEventsUsageDescription = "Yana puts the finished text into the app you are typing in.";

@@ -114,9 +114,8 @@ def migrate_legacy_config_dir() -> Path:
 
 
 def resolve_user_paths(app_root: Path | None = None) -> UserPaths:
-    """Return all on-disk paths Typlus touches outside its install."""
+    """Return all on-disk paths the app touches outside its install."""
 
-    home = Path(os.environ.get("HOME") or Path.home()).expanduser()
     config_dir = migrate_legacy_config_dir()
     config_dir.mkdir(parents=True, exist_ok=True)
     root = app_root or resolve_app_root()

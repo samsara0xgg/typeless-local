@@ -57,6 +57,9 @@ class Preferences:
     # F5 is also the system dictation key, so it is left to macOS unless asked
     # for; right Command is the shortcut. Installs from before 0.4.0 keep F5 on.
     f5_hotkey: bool = False
+    # Off for people whose right Command already switches input sources; then
+    # F5 is the shortcut (Settings keeps at least one of the two on).
+    right_command_hotkey: bool = True
     onboarding_done: bool = False
     ui_language: str = "auto"
     model_source: str = "auto"

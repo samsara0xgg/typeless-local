@@ -97,25 +97,28 @@ function dictation() {
 }
 
 function keys() {
-  const f5 = S.prefs.f5_hotkey;
+  const f5 = S.prefs.f5_hotkey, rc = S.prefs.right_command_hotkey !== false;
   const top = ['esc', 'F1', 'F2', 'F3', 'F4', '', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'];
   const kb = `<div class="kb" aria-hidden="true">${top.map(k => k ? `<i>${k}</i>` : `<i${f5 ? ' class="hot"' : ''}>${I('mic')}</i>`).join('')}<i class="w2"></i>`
-    + `<i>fn</i><i>⌃</i><i>⌥</i><i class="w2">⌘</i><i class="w6">space</i><i class="w2 hot">⌘</i><i>⌥</i><i>←→</i></div>`;
+    + `<i>fn</i><i>⌃</i><i>⌥</i><i class="w2">⌘</i><i class="w6">space</i><i class="w2${rc ? ' hot' : ''}">⌘</i><i>⌥</i><i>←→</i></div>`;
   const conflict = f5 && S.f5 ? row(L(`系统听写也在用 ${I('mic')} 键`, `System dictation also uses the ${I('mic')} key`),
     `<button class="mbtn" data-act="open" data-what="keyboard">${L('打开键盘设置…', 'Open Keyboard Settings…')}</button>`,
     L('两个都开会互相抢。在键盘设置里把系统听写的快捷键换掉或关闭，或者关掉上面这个开关。',
       'The two fight over it. Change or turn off the system dictation shortcut in Keyboard settings, or turn this switch off.'), 'warnrow') : '';
-  const rcmd = `<kbd>${L('右 ⌘', 'Right ⌘')}</kbd>`;
-  const or = f5 ? `<span class="arrow">${L('或', 'or')}</span><kbd>F5</kbd>` : '';
+  const key = [rc && `<kbd>${L('右 ⌘', 'Right ⌘')}</kbd>`, f5 && '<kbd>F5</kbd>'].filter(Boolean).join(`<span class="arrow">${L('或', 'or')}</span>`);
+  const lock = rc ? `<span class="arrow">·</span><kbd>${L('右 ⌘', 'Right ⌘')}</kbd><kbd>Space</kbd>` : `<span class="arrow">·</span><kbd>F5</kbd><kbd>Space</kbd>`;
   return head(paneTitle('keys')) + kb
     + grp([
-      row(L('开始 / 结束', 'Start / finish'), `<span class="kbd2"><span class="arrow">${L('轻点', 'tap')}</span>${rcmd}${or}</span>`),
-      row(L('按住说话', 'Hold to talk'), `<span class="kbd2"><span class="arrow">${L('按住', 'hold')}</span>${rcmd}${or}</span>`, L('按住超过 0.6 秒，松开就完成。', 'Hold for more than 0.6 s; letting go finishes.')),
-      row(L('锁定（免手持）', 'Lock (hands-free)'), `<span class="kbd2"><span class="arrow">${L('连点两下', 'double-tap')}</span>${rcmd}${or}<span class="arrow">·</span>${rcmd}<kbd>Space</kbd></span>`),
+      row(L('开始 / 结束', 'Start / finish'), `<span class="kbd2"><span class="arrow">${L('轻点', 'tap')}</span>${key}</span>`),
+      row(L('按住说话', 'Hold to talk'), `<span class="kbd2"><span class="arrow">${L('按住', 'hold')}</span>${key}</span>`, L('按住一会儿就开始录，松开就完成。', 'Recording starts after a moment; letting go finishes.')),
+      row(L('锁定（免手持）', 'Lock (hands-free)'), `<span class="kbd2"><span class="arrow">${L('连点两下', 'double-tap')}</span>${key}${lock}</span>`,
+        rc ? L('录音时按右 ⌘ + 空格也能锁定。', 'While recording, right ⌘ + Space also locks it.') : ''),
       row(L('取消', 'Cancel'), '<span class="kbd2"><kbd>esc</kbd></span>'),
     ])
     + grp([
-      row(L(`也用 F5（${I('mic')} 键）`, `Also use F5 (the ${I('mic')} key)`), sw('f5_hotkey', f5, L('也用 F5', 'Also use F5')),
+      row(L('用右 ⌘ 听写', 'Dictate with right ⌘'), sw('right_command_hotkey', rc, L('用右 ⌘ 听写', 'Dictate with right ⌘'), rc && !f5),
+        L('如果你的右 ⌘ 已经用来切换输入法，关掉它，改用 F5。', 'If right ⌘ already switches your input source, turn this off and use F5.')),
+      row(L(`也用 F5（${I('mic')} 键）`, `Also use F5 (the ${I('mic')} key)`), sw('f5_hotkey', f5, L('也用 F5', 'Also use F5'), f5 && !rc),
         L(`MacBook 上 F5 是系统听写键。打开后${esc(S.name)}会接管它，系统听写就不能用这个键了。`, 'On a MacBook F5 is the system dictation key. When this is on, the app takes it over and system dictation can no longer use it.')),
     ], conflict);
 }
@@ -186,7 +189,9 @@ function audio() {
       L('每次录音都会重新读取设备；选中的设备不在时用系统默认。', 'Read again for every recording; when the chosen device is missing, the system default is used.'))])
     + grp([
       row(L('录音时静音其他声音', 'Mute other sound while recording'), sw('duck', S.duck, L('录音时静音其他声音', 'Mute other sound while recording')),
-        L('使用带回声消除的耳机时自动跳过。录音结束或意外退出后都会恢复。', 'Skipped with an echo-cancelling headset. Sound comes back when recording ends, even after a crash.')),
+        S.duckUnsupported
+          ? L('现在的音箱不让系统调音量，所以没法静音它；正在放的音乐仍会暂停。', 'The current speaker has no volume the system can lower, so it cannot be muted; playing music is still paused.')
+          : L('使用带回声消除的耳机时自动跳过。录音结束或意外退出后都会恢复。', 'Skipped with an echo-cancelling headset. Sound comes back when recording ends, even after a crash.')),
       row(L('静音时在胶囊里提示', 'Show when muted'), sw('show_ducked', S.prefs.show_ducked, L('静音时在胶囊里提示', 'Show when muted')),
         L('显示一个小喇叭斜杠，让你知道音乐停了是谁干的。', 'A small crossed-out speaker, so you know why the music stopped.')),
     ]);

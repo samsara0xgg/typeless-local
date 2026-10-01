@@ -78,6 +78,9 @@ DOUBLE_CLICK_SECONDS = 0.4
 MEDIA_CHECK_S = 0.6
 MEDIA_POLL_S = 0.05
 LONG_PRESS_SECONDS = 0.6
+# A right-Cmd hold this long into its recording is talking, not a slow chord:
+# only then are the speakers muted and the music paused.
+HOLD_CONFIRM_S = 0.6
 MIN_MIC_STARTUP_SECONDS = 0.75
 # A non-Chinese transcript this short is usually Whisper inventing a word over
 # noise ("you", "Bye."), but it is also how "OK" and "Yes" come out. Whisper's
@@ -171,6 +174,7 @@ class TypelessLocalApp:
                 is_active_fn=lambda: self.state != "idle",
                 watch_keys_fn=lambda: self._keys_wanted,
                 use_f5_fn=lambda: self.prefs.f5_hotkey,
+                use_right_command_fn=lambda: self.prefs.right_command_hotkey,
             )
 
             self.menubar = MenuBarIcon(on_action=self._on_menu_action, snapshot=self._menu_snapshot)
@@ -925,11 +929,25 @@ class TypelessLocalApp:
         if action == "undo":
             self._on_user_undo()
             return
-        if action in ("primary_down", "hands_free", "cancel"):
-            self._tell_guide({"t": "hotkey", "a": action})
+        guide = {"hold_start": "primary_down", "hold_abort": "cancel"}.get(action, action)
+        if guide in ("primary_down", "hands_free", "cancel"):
+            self._tell_guide({"t": "hotkey", "a": guide})
         with self._lock:
             if action == "cancel":
                 self._cancel()
+                return
+            if action == "hold_start":
+                self._on_hold_start()
+                return
+            if action == "hold_end":
+                if self._hold_is_current():
+                    self._finish_recording()
+                return
+            if action == "hold_abort":
+                # Right Cmd became a chord: drop the recording only if this
+                # hold started it, never one already running or processing.
+                if self._hold_is_current():
+                    self._cancel()
                 return
             if action == "hands_free":
                 if self.state == "idle":
@@ -961,7 +979,7 @@ class TypelessLocalApp:
         now = self.hotkeys.last_primary_down_at
         self._primary_down_at = now
         gap = now - getattr(self, "_last_short_tap_at", 0.0)
-        LOGGER.info("HOTKEY-DEBUG primary_down now=%.3f last_short_tap=%.3f gap=%.3f state=%s mode=%s", now, getattr(self, "_last_short_tap_at", 0.0), gap, self.state, self.mode)
+        LOGGER.debug("HOTKEY-DEBUG primary_down now=%.3f last_short_tap=%.3f gap=%.3f state=%s mode=%s", now, getattr(self, "_last_short_tap_at", 0.0), gap, self.state, self.mode)
         # A tap cannot land before the one it follows, so a negative gap means
         # the two timestamps came from different clocks rather than that this
         # was a double tap. Treating it as one wedges every later press into
@@ -985,13 +1003,42 @@ class TypelessLocalApp:
         elif self.state == "recording" and self.mode == "hands_free":
             self._finish_recording()
 
+    def _on_hold_start(self) -> None:
+        """Right Cmd held alone: record until it is let go. Only ever starts a recording."""
+
+        if self.state != "idle":
+            return
+        self._start_recording("tap", hold=True)
+        if self.state != "recording":
+            return
+        self._hold_session_id = self._active_session_id
+        self._primary_down_at = self.hotkeys.last_primary_down_at
+        self._holding = True
+        self._show_recording_ui()
+        # Ducking and pausing music wait until the hold has outlasted a quick
+        # chord (Cmd-click, Cmd+C), which would otherwise blip the music.
+        timer = threading.Timer(HOLD_CONFIRM_S, partial(self._on_hold_confirmed, self._active_session_id))
+        timer.daemon = True
+        timer.start()
+
+    def _on_hold_confirmed(self, session_id: int) -> None:
+        with self._lock:
+            if self.state == "recording" and session_id == getattr(self, "_active_session_id", 0):
+                self._duck_for(getattr(self, "_capture_device", "") or "")
+                if getattr(self, "_ducked", False):
+                    self._show_recording_ui()
+
+    def _hold_is_current(self) -> bool:
+        session = getattr(self, "_active_session_id", 0)
+        return self.state in ("starting", "recording") and session == getattr(self, "_hold_session_id", -1)
+
     def _on_primary_up(self) -> None:
         if self.state != "recording" or self.mode != "tap":
             return
 
         up_at = self.hotkeys.last_primary_up_at
         held_for = up_at - getattr(self, "_primary_down_at", 0.0)
-        LOGGER.info("HOTKEY-DEBUG primary_up up_at=%.3f down_at=%.3f held_for=%.3f", up_at, getattr(self, "_primary_down_at", 0.0), held_for)
+        LOGGER.debug("HOTKEY-DEBUG primary_up up_at=%.3f down_at=%.3f held_for=%.3f", up_at, getattr(self, "_primary_down_at", 0.0), held_for)
         if held_for < LONG_PRESS_SECONDS:
             self._last_short_tap_at = up_at
             if getattr(self, "_holding", False):
@@ -1090,10 +1137,12 @@ class TypelessLocalApp:
                 self._commit_edit(text)
             elif action == "close":
                 self._end_edit()
-            elif action in ("setkey", "input", "micperm", "perm", "log"):
+            elif action in ("setkey", "billing", "input", "micperm", "perm", "log"):
                 self.capsule.hide()
                 if action == "setkey":
                     self.open_settings("model")
+                elif action == "billing":
+                    permissions.open_url(OPENAI_BILLING_URL)
                 elif action == "input":
                     self.open_settings("audio")
                 elif action == "micperm":
@@ -1261,7 +1310,7 @@ class TypelessLocalApp:
             if set_sent_text(user_paths.trace_db_path, session_id, text):
                 self._windows_changed(history=True)
 
-    def _start_recording(self, mode: Mode) -> None:
+    def _start_recording(self, mode: Mode, hold: bool = False) -> None:
         if getattr(self, "_download", None) is not None:
             # Nothing to transcribe with until the model is here; say so
             # instead of recording into a wait of several minutes.
@@ -1309,11 +1358,9 @@ class TypelessLocalApp:
         self.focus_context = capture_focus_context(read_before_text=self.prefs.send_before_text)
         if caret:
             self.capsule.set_anchor("caret", caret_rect())
-        duck = self._speakers_need_ducking(capture)
-        if duck:
-            self._run_audio_io(self.audio_ducker.duck)
-            self._run_audio_io(self._pause_media)
-        self._ducked = duck and bool(getattr(self.audio_ducker, "enabled", True))
+        self._ducked = False
+        if not hold:
+            self._duck_for(capture)
         self.state = "recording"
         self._set_menubar("recording")
         self._show_recording_ui()
@@ -1327,6 +1374,15 @@ class TypelessLocalApp:
         executor = getattr(self, "executor", None)
         if warmup is not None and executor is not None:
             executor.submit(warmup)
+
+    def _duck_for(self, capture: str) -> None:
+        """Mute the speakers and pause music for this recording, unless a headset makes it pointless."""
+
+        duck = self._speakers_need_ducking(capture)
+        if duck:
+            self._run_audio_io(self.audio_ducker.duck)
+            self._run_audio_io(self._pause_media)
+        self._ducked = duck and bool(getattr(self.audio_ducker, "enabled", True))
 
     def _start_microphone(self, capture: str) -> str:
         """Open the mic; if it fails, re-read the devices once and try again.
@@ -1896,10 +1952,18 @@ def count_units(text: str) -> int:
     return cjk + len(_LATIN_WORD.findall(text))
 
 
+OPENAI_BILLING_URL = "https://platform.openai.com/settings/organization/billing/overview"
+
+
 def _failure_kind(exc: BaseException) -> str:
-    """How refinement failed, in the capsule's words: "timeout" or "error"."""
+    """How refinement failed, in the capsule's words: "credit", "badkey", "timeout" or "error"."""
 
     name = type(exc).__name__.lower()
+    code = str(getattr(exc, "code", "") or "")
+    if code in {"insufficient_quota", "credit_balance_exhausted"}:
+        return "credit"  # the user's own OpenAI account ran out of money
+    if name == "authenticationerror" or code == "invalid_api_key":
+        return "badkey"
     if "timeout" in name or "timed out" in str(exc).lower():
         return "timeout"
     return "error"

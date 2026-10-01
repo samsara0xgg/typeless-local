@@ -7,7 +7,7 @@ from pathlib import Path
 # default 1000 trips on some transitive imports.
 sys.setrecursionlimit(10000)
 
-from setuptools import setup
+from setuptools import setup  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -104,10 +104,10 @@ OPTIONS = {
         # MLX has no Intel build: never start under Rosetta on Apple silicon.
         "LSRequiresNativeExecution": True,
         "LSArchitecturePriority": ["arm64"],
-        "LSMinimumSystemVersion": "13.0",
+        "LSMinimumSystemVersion": "13.5",
         "NSHighResolutionCapable": True,
         "NSMicrophoneUsageDescription":
-            f"{brand.ENGLISH_NAME} records audio while you dictate with F5.",
+            f"{brand.ENGLISH_NAME} records audio while you dictate.",
         "NSAppleEventsUsageDescription":
             f"{brand.ENGLISH_NAME} puts the finished text into the app you are typing in.",
     },

@@ -72,6 +72,7 @@ const BUD = {
   undo: () => `<button data-act="undo">${I('undo')}<span>${L('撤销', 'Undo')}</span></button>`,
   edit: () => `<button data-act="edit">${I('pencil')}<span>${L('修改', 'Edit')}</span></button>`,
   rerefine: () => `<button class="pri" data-act="rerefine">${I('refresh')}<span>${L('重新润色', 'Refine Again')}</span></button>`,
+  billing: () => `<button class="pri" data-act="billing">${I('key')}<span>${L('去充值…', 'Add Credit…')}</span></button>`,
   setkey: () => `<button class="pri" data-act="setkey">${I('key')}<span>${L('设置 API Key…', 'Set API Key…')}</span></button>`,
   input: () => `<button data-act="input">${I('mic')}<span>${L('选择输入…', 'Choose Input…')}</span></button>`,
   micperm: () => `<button class="pri" data-act="micperm">${I('mic')}<span>${L('打开设置…', 'Open Settings…')}</span></button>`,
@@ -82,6 +83,7 @@ const extendBud = min => `<button data-act="extend">${I('plus')}<span>${L(`延�
 const why = k => ({
   timeout: L('润色超时', 'refinement timed out'), error: L('润色失败', 'refinement failed'),
   truncated: L('润色被截断', 'refinement was cut off'), empty: L('润色没有返回', 'refinement came back empty'),
+  credit: L('OpenAI 账户余额用完了', 'your OpenAI account is out of credit'), badkey: L('API Key 无效', 'the API key was rejected'),
 })[k] || L('润色失败', 'refinement failed');
 const etaText = eta => eta ? ` · ${esc(eta)}` : '';
 // Announced in steps of ten, not on every progress report.
@@ -135,7 +137,7 @@ function view(st, o) {
       const done = o.replaced ? L('已替换所选', 'Replaced selection') : L('已插入', 'Inserted');
       return [`${CHECK}<span class="lbl">${done} · ${units(o.n)}</span>`, 'pill', [BUD.undo(), BUD.edit()], `${done} ${units(o.n)}`];
     }
-    case 'inserted-raw-net': return [`<span class="lead warn wiggle">${I('warn')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${why(o.why)}</span></span>`, 'pill', [BUD.rerefine(), BUD.undo()], `${L('已插入原始转写，', 'Inserted the raw transcript: ')}${why(o.why)}`];
+    case 'inserted-raw-net': return [`<span class="lead warn wiggle">${I('warn')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${why(o.why)}</span></span>`, 'pill', o.why === 'credit' ? [BUD.billing()] : o.why === 'badkey' ? [BUD.setkey()] : [BUD.rerefine(), BUD.undo()], `${L('已插入原始转写，', 'Inserted the raw transcript: ')}${why(o.why)}`];
     case 'inserted-raw-trial': {
       const r = { trial_region: L('免费试用仅限美国和加拿大', 'free trial is US and Canada only'), trial_paused: L('免费试用本月已暂停', 'free trial paused this month') }[o.why] || L('免费试用已用完', 'free trial used up');
       return [`<span class="lead warn">${I('key')}</span><span class="lbl">${L('已插入原始转写', 'Inserted the raw transcript')} <span class="sub">· ${r}</span></span>`, 'pill', [BUD.setkey()], L(`已插入原始转写，${r}，可以填自己的 API Key`, `Inserted the raw transcript: ${r}; add your own API key`)];

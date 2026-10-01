@@ -294,6 +294,7 @@ class Windows:
             "language": str(asr_config.get("language") or ""),
             "asrModel": short_model(mlx_whisper_repo(asr_config)) or str(getattr(app.asr, "model_name", "") or ""),
             "duck": bool(getattr(ducker, "enabled", True)),
+            "duckUnsupported": bool(getattr(ducker, "unsupported", False)),
             "presets": presets,
             "active": getattr(config.refine, "preset", ""),
             "keys": keys,
@@ -383,6 +384,13 @@ class Windows:
                 app.select_model(str(value))
             elif key == "input":
                 app.select_input_device(str(value or ""))
+            elif key in ("f5_hotkey", "right_command_hotkey") and not value:
+                # Never leave the app with no shortcut at all.
+                other = "right_command_hotkey" if key == "f5_hotkey" else "f5_hotkey"
+                if getattr(app.prefs, other):
+                    app.set_preference(key, False)
+                else:
+                    self.refresh()
             else:
                 app.set_preference(key, value)
         except ValueError:

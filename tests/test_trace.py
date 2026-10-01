@@ -90,10 +90,7 @@ def test_log_error_field(tmp_path: Path) -> None:
 
 
 def test_log_does_not_raise_on_io_error(tmp_path: Path) -> None:
-    # Point to a directory that doesn't exist *and* whose parent isn't writable.
-    bad_path = tmp_path / "does-not-exist" / "trace.db"
-    # We DO let DictationTrace try to create the parent dir on first use.
-    # So craft a different failure: make the parent path a file.
+    # DictationTrace creates a missing parent dir, so make the parent a file instead.
     blocker = tmp_path / "trace.db"
     blocker.write_text("not a db", encoding="utf-8")
     nested = blocker / "trace.db"

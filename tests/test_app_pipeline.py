@@ -691,6 +691,24 @@ def test_refine_failure_pastes_the_raw_transcript(monkeypatch) -> None:
     assert app.overlay.calls[-1] == ("show", "inserted-raw-net", {"why": "timeout"})
 
 
+def test_own_key_out_of_credit_says_so_plainly(monkeypatch) -> None:
+    import openai
+
+    monkeypatch.setattr("typeless_local.app.paste_text", lambda text, **kwargs: None)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("hello there")
+    app.asr = _FakeASR("hello there", language="en")
+    response = SimpleNamespace(status_code=429, headers={}, request=None)
+    exc = openai.RateLimitError(
+        "no credits", response=response, body={"code": "credit_balance_exhausted", "type": "insufficient_quota"}
+    )
+    app.refiner = _FailingRefiner(exc)
+
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("TextEdit", "Untitled", can_insert_text=True))
+
+    assert app.overlay.calls[-1] == ("show", "inserted-raw-net", {"why": "credit"})
+
+
 def test_missing_key_pastes_raw_and_offers_to_set_one(monkeypatch) -> None:
     pasted = []
     monkeypatch.setattr("typeless_local.app.paste_text", pasted.append)
@@ -1646,3 +1664,45 @@ def test_saving_an_openai_key_on_the_trial_switches_off_the_trial(monkeypatch, t
     assert app.refiner.config.api_key_env == "OPENAI_API_KEY"
     assert app._trial_over is False
     assert "default_preset: gpt-5.6-terra" in (tmp_path / ".typlus" / "config.yaml").read_text()
+
+
+def test_a_right_cmd_hold_records_until_release_and_ducks_only_once_it_lasts(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
+    timers = []
+    monkeypatch.setattr(app_module.threading, "Timer", lambda delay, fn: SimpleNamespace(
+        daemon=False, start=lambda: timers.append(fn), cancel=lambda: None))
+    app, hotkeys, clock = _hotkey_app(monkeypatch)
+
+    hotkeys.last_primary_down_at = 10.0
+    app._on_hotkey("hold_start")
+    assert app.state == "recording" and app._holding
+    assert app.audio_ducker.calls == []  # a slow Cmd-click must not blip the music
+    for fn in timers:
+        fn()
+    assert app.audio_ducker.calls == ["duck"]
+    app._on_hotkey("hold_end")
+
+    assert app.state == "processing"
+
+
+def test_a_slow_chord_only_drops_the_recording_its_hold_started(monkeypatch) -> None:
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
+    app, hotkeys, clock = _hotkey_app(monkeypatch)
+
+    app._on_hotkey("hands_free")  # a locked recording is running
+    app._on_hotkey("hold_start")  # right Cmd held for a Cmd-click
+    app._on_hotkey("hold_abort")
+    app._on_hotkey("hold_end")
+    assert app.state == "recording" and app.mode == "hands_free"
+
+    app._on_hotkey("hands_free")  # stopped: now processing
+    assert app.state == "processing"
+    app._on_hotkey("hold_start")
+    app._on_hotkey("hold_abort")
+    assert app.state == "processing", "the dictation being transcribed is kept"
+
+    app.state = "idle"
+    app._on_hotkey("hold_start")
+    app._on_hotkey("hold_abort")
+    assert app.state == "idle"
+    assert app.overlay.shown()[-1] == "cancelled"

@@ -176,7 +176,7 @@ def build_menu(snap: Snapshot, now: float | None = None) -> list[Item]:
     else:
         items.append(Item(t("开始听写", "Start Dictation"), key="toggle", enabled=idle, symbol="mic"))
     items += [
-        Item(t("锁定听写", "Locked Dictation"), key="latch", badge=t("右⌘ Space", "Right ⌘ Space"), enabled=idle, symbol="lock"),
+        Item(t("锁定听写", "Locked Dictation"), key="latch", badge=t("右 ⌘ ×2", "Right ⌘ ×2"), enabled=idle, symbol="lock"),
         SEPARATOR,
     ]
 

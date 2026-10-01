@@ -22,6 +22,10 @@ class VolumeSnapshot:
     output_muted: bool
 
 
+class NoVolumeControl(ValueError):
+    """The output device has no software volume (an HDMI or some USB speakers)."""
+
+
 class SystemAudioDucker:
     """Temporarily silence macOS system output and restore it exactly once."""
 
@@ -38,6 +42,8 @@ class SystemAudioDucker:
         self._lock = threading.Lock()
         self._depth = 0
         self._snapshot: VolumeSnapshot | None = None
+        # Set once the current output turns out to have no volume to lower.
+        self.unsupported = False
 
     @classmethod
     def from_config(cls, config: Any) -> SystemAudioDucker:  # noqa: ANN401
@@ -72,6 +78,11 @@ class SystemAudioDucker:
                     end try
                     """
                 )
+            except NoVolumeControl:
+                if not self.unsupported:
+                    LOGGER.info("[audio-ducking] the output device has no volume control; not ducking")
+                self.unsupported = True
+                return False
             except Exception:
                 if snapshot is not None:
                     try:
@@ -83,6 +94,7 @@ class SystemAudioDucker:
                 return False
 
             self._depth = 1
+            self.unsupported = False
             return True
 
     def restore(self) -> None:
@@ -143,6 +155,8 @@ class SystemAudioDucker:
         parts = [part.strip() for part in raw.strip().split(",")]
         if len(parts) != 2:
             raise ValueError(f"unexpected volume settings: {raw!r}")
+        if parts[0] == "missing value":
+            raise NoVolumeControl(raw)
         return VolumeSnapshot(
             output_volume=max(0, min(100, int(float(parts[0])))),
             output_muted=parts[1].lower() == "true",

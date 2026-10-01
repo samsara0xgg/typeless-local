@@ -271,6 +271,9 @@ def prime_input(index: int | None, sample_rate: int) -> None:
     stream.close()
 
 
+_said_missing: set[str] = set()
+
+
 def resolve_input_index(name: str) -> int | None:
     """sounddevice index for ``name``; None means "let the system decide"."""
 
@@ -287,7 +290,9 @@ def resolve_input_index(name: str) -> int | None:
             continue
         if str(device.get("name") or "").strip() == wanted:
             return index
-    LOGGER.warning("Input device %r not present; falling back to system default", wanted)
+    if wanted not in _said_missing:  # asked on every recording: say it once per device
+        _said_missing.add(wanted)
+        LOGGER.warning("Input device %r not present; falling back to system default", wanted)
     return None
 
 
