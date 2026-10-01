@@ -64,7 +64,7 @@ CARET_ROOM = 280.0
 # What the page can draw (web/overlay.js, view()) and the actions it posts back.
 STATES = frozenset({
     "starting", "rec", "transcribing", "refining",
-    "inserted", "inserted-raw-net", "inserted-raw-key", "inserted-raw-trial", "inserted-unsure",
+    "inserted", "inserted-raw-net", "inserted-raw-key", "inserted-raw-trial", "inserted-unsure", "sent", "send-held",
     "edit-notarget", "edit-modify",
     "empty", "mic", "download", "cancelled", "undone", "replaced", "copied",
     "perm", "notice", "ready", "error",

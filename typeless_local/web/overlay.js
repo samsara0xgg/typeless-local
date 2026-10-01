@@ -126,14 +126,26 @@ function recHTML() {
   }
 }
 
+// A dictation finished with Return says where it will be sent.
+function sendTo(o, say) {
+  if (!o.send) return '';
+  return say ? L(`，完成后发送到 ${o.send}`, `, then sent to ${o.send}`) : ` <span class="sub">→ ${esc(o.send)}</span>`;
+}
+
 // [html, kind, buds, what VoiceOver says]
 function view(st, o) {
   switch (st) {
     case 'starting': return [`<span class="solo">${I('mic', 'breathe')}</span>`, 'circle', [], L('正在打开麦克风', 'Opening the microphone')];
     // The last minute buds a 延长 button off the capsule.
     case 'rec': { const [h, say] = recHTML(); return [h, 'pill', S.cd && o.ext > 0 ? [extendBud(o.ext)] : [], say]; }
-    case 'transcribing': return [`<span class="dots"><i></i><i></i><i></i></span><span class="lbl">${L('转写中', 'Transcribing')}</span>`, 'pill', [], L('转写中', 'Transcribing')];
-    case 'refining': return [`<span class="spark">${I('sparkles')}</span><span class="raw shimmer">${esc(tail(o.raw))}</span>`, 'pill', [], L('润色中', 'Refining')];
+    case 'transcribing': return [`<span class="dots"><i></i><i></i><i></i></span><span class="lbl">${L('转写中', 'Transcribing')}${sendTo(o)}</span>`, 'pill', [], L('转写中', 'Transcribing') + sendTo(o, true)];
+    case 'refining': return [`<span class="spark">${I('sparkles')}</span><span class="raw shimmer">${esc(tail(o.raw))}</span>${o.send ? `<span class="lbl">${sendTo(o)}</span>` : ''}`, 'pill', [], L('润色中', 'Refining') + sendTo(o, true)];
+    case 'sent': return [`${CHECK}<span class="lbl">${L(`已发送到 ${esc(o.app)}`, `Sent to ${esc(o.app)}`)}</span>`, 'pill', [], L(`已发送到 ${o.app}`, `Sent to ${o.app}`)];
+    case 'send-held': {
+      const r = { raw: L('润色失败，原始转写没有发送', 'refinement failed; the raw transcript was not sent'), nosend: L(`字已放进 ${o.app}，没能按发送`, `the text is in ${o.app} but Send could not be pressed`),
+        away: L(`${o.app} 不在前面时没法发送`, `${o.app} cannot be sent to from behind`) }[o.why] || L('找不到原来的输入框', 'the original text box is gone');
+      return [`<span class="lead warn">${I('warn')}</span><span class="lbl">${L('没发送 · 已复制，⌘V 粘贴', 'Not sent · copied, press ⌘V')} <span class="sub">· ${esc(r)}</span></span>`, 'pill', [], L(`没发送，${r}。文字已复制，按 ⌘V 粘贴`, `Not sent: ${r}. The text is copied; press Command V`)];
+    }
     case 'inserted': {
       const done = o.replaced ? L('已替换所选', 'Replaced selection') : L('已插入', 'Inserted');
       return [`${CHECK}<span class="lbl">${done} · ${units(o.n)}</span>`, 'pill', [BUD.undo(), BUD.edit()], `${done} ${units(o.n)}`];

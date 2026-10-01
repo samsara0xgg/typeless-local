@@ -117,6 +117,11 @@ function keys() {
       row(L('取消', 'Cancel'), '<span class="kbd2"><kbd>esc</kbd></span>'),
     ])
     + grp([
+      row(L('录音时按回车：说完自动发送', 'Return while recording: finish and send'), sw('send_on_return', S.prefs.send_on_return !== false, L('录音时按回车自动发送', 'Return while recording sends')),
+        L('转写好后在原来的输入框里发送，你可以马上去做别的。走开后只在 Ghostty 和 Claude 里能发送，其他 App 会把文字复制好等你粘贴。润色失败时不会自动发送。',
+          'The text is sent in the box you started in, so you can move on at once. After you leave, only Ghostty and Claude can be sent to; elsewhere the text waits on the clipboard. Nothing is sent when refinement fails.')),
+    ])
+    + grp([
       row(L('用右 ⌘ 听写', 'Dictate with right ⌘'), sw('right_command_hotkey', rc, L('用右 ⌘ 听写', 'Dictate with right ⌘'), rc && !f5),
         L('如果你的右 ⌘ 已经用来切换输入法，关掉它，改用 F5。', 'If right ⌘ already switches your input source, turn this off and use F5.')),
       row(L(`也用 F5（${I('mic')} 键）`, `Also use F5 (the ${I('mic')} key)`), sw('f5_hotkey', f5, L('也用 F5', 'Also use F5'), f5 && !rc),

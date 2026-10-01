@@ -41,18 +41,26 @@ from typeless_local.config import (
     save_user_setting,
 )
 from typeless_local.mac_integration import (
+    GHOSTTY_BUNDLE_ID,
     FocusContext,
     GlobalHotkeyMonitor,
+    bundle_id,
     capture_focus_context,
     caret_rect,
     focused_text_value,
     frontmost_pid,
+    ghostty_send,
+    ghostty_terminal_id,
     has_accessibility_trust,
+    in_front,
+    is_secure_field,
     paste_text,
     prepare_paste,
     focused_text_length,
     press_play_pause,
+    press_return,
     request_accessibility_trust,
+    send_in_background,
     set_clipboard_text,
     undo_last_edit,
 )
@@ -87,6 +95,9 @@ LONG_PRESS_SECONDS = 0.6
 HOLD_CONFIRM_S = 0.6
 # How long a pasted dictation gets to show up in the field before it counts as lost.
 PASTE_CHECK_S = 0.5
+# Between the paste and its Return, so a terminal program takes the paste as
+# one paste rather than as typing with a Return in it.
+SEND_SETTLE_S = 0.25
 MIN_MIC_STARTUP_SECONDS = 0.75
 # A non-Chinese transcript this short is usually Whisper inventing a word over
 # noise ("you", "Bye."), but it is also how "OK" and "Yes" come out. Whisper's
@@ -182,6 +193,7 @@ class TypelessLocalApp:
                 watch_keys_fn=lambda: self._keys_wanted,
                 use_f5_fn=lambda: self.prefs.f5_hotkey,
                 use_right_command_fn=lambda: self.prefs.right_command_hotkey,
+                send_fn=lambda: self.state == "recording" and self.prefs.send_on_return,
             )
 
             self.menubar = MenuBarIcon(on_action=self._on_menu_action, snapshot=self._menu_snapshot)
@@ -973,6 +985,11 @@ class TypelessLocalApp:
             if action == "hold_start":
                 self._on_hold_start()
                 return
+            if action == "send":
+                if self.state == "recording":
+                    self._mark_send()
+                    self._finish_recording()
+                return
             if action == "hold_end":
                 if self._hold_is_current():
                     self._finish_recording()
@@ -1515,7 +1532,7 @@ class TypelessLocalApp:
         self._restore_audio_ducking()
         self._play_sound("Pop")
         self._processing_started_at = time.monotonic()
-        self.capsule.show("transcribing")
+        self.capsule.show("transcribing", **self._send_note())
         stretches, self._stretches = getattr(self, "_stretches", []), []
         heard_until = int(getattr(self.recorder, "heard_until", 0))
         future = self.executor.submit(
@@ -1787,7 +1804,7 @@ class TypelessLocalApp:
             if prefs.refine:
                 step = "refine"
                 if not headless:
-                    self.capsule.show("refining", raw=transcript.text)
+                    self.capsule.show("refining", raw=transcript.text, **self._send_note())
                 LOGGER.info("Starting refinement")
                 refine_start = time.monotonic()
                 try:
@@ -1851,6 +1868,9 @@ class TypelessLocalApp:
     def _deliver(self, text: str, raw: str, context: FocusContext, fallback: str, record: SessionRecord) -> None:
         """Paste the text where the caret is, or hand it over in a card when there is nowhere to paste."""
 
+        if self._sending():
+            self._send(text, raw, context, fallback, record)
+            return
         where = prepare_paste(context) if context.can_insert_text else "none"
         if where in ("ok", "blind"):
             LOGGER.info("Pasting refined text into focused app: %s", context.app_name or "unknown")
@@ -1898,6 +1918,88 @@ class TypelessLocalApp:
         self.state = "idle"
         self._set_menubar("idle")
         self.capsule.show("edit-notarget", text=text)
+
+    def _mark_send(self) -> None:
+        """Return finished this recording: its text is to be sent where it started, wherever they go next."""
+
+        self._send_session = self._active_session_id
+        self._send_terminal = None
+        if bundle_id(self.focus_context.pid) == GHOSTTY_BUNDLE_ID:
+            # Which terminal, asked now while it is still the one in front; off
+            # the keyboard's thread, as the first time waits on a permission prompt.
+            terminal: Future[str] = Future()
+            threading.Thread(target=lambda: terminal.set_result(ghostty_terminal_id()), daemon=True).start()
+            self._send_terminal = terminal
+
+    def _sending(self) -> bool:
+        """Whether the dictation being processed was finished with Return, to be sent."""
+
+        return getattr(self, "_send_session", -1) == getattr(self, "_active_session_id", 0)
+
+    def _send_note(self) -> dict:
+        return {"send": self.focus_context.app_name or "?"} if self._sending() else {}
+
+    def _send(self, text: str, raw: str, context: FocusContext, fallback: str, record: SessionRecord) -> None:
+        """Finished with Return: put the text where the dictation started and send it, never switching apps.
+
+        Still in front: paste and press Return, as they would. Moved on: only
+        a way that works from behind is used, Ghostty's own scripting or
+        writing into the composer and pressing its Send button (Claude); with
+        neither, the text waits on the clipboard. A raw transcript (refinement
+        failed) and a password field are never sent.
+        """
+
+        here = in_front(context)
+        if fallback or not context.can_insert_text or is_secure_field(context):
+            if here:
+                self._send_session = -1
+                self._deliver(text, raw, context, fallback, record)  # pasted as usual, not sent
+            else:
+                self._hold_back(text, context, "raw" if fallback else "lost")
+            return
+        if here:
+            where = prepare_paste(context)
+            if where not in ("ok", "blind"):
+                self._hold_back(text, context, "lost")
+                return
+            before = focused_text_length(context.pid) if where == "ok" and not context.selected_text else None
+            paste_text(text)
+            if before is not None and not self._paste_landed(context.pid, before):
+                self._hold_back(text, context, "lost")
+                return
+            time.sleep(SEND_SETTLE_S)
+            press_return()
+        else:
+            terminal = getattr(self, "_send_terminal", None)
+            terminal_id = terminal.result(timeout=90) if terminal is not None else ""
+            if terminal_id:
+                if not ghostty_send(terminal_id, text):
+                    self._hold_back(text, context, "lost")
+                    return
+            elif context.element is not None:
+                outcome = send_in_background(context.element, text)
+                if outcome != "sent":
+                    self._hold_back(text, context, "nosend" if outcome == "typed" else "lost")
+                    return
+            else:
+                self._hold_back(text, context, "away")
+                return
+        LOGGER.info("Sent %d characters to %s%s", len(text), context.app_name or "unknown", "" if here else " from behind")
+        record.was_pasted = True
+        self.state = "idle"
+        self._set_menubar("idle")
+        self._remember(text, context.app_name)
+        self.capsule.show("sent", app=context.app_name or "")
+
+    def _hold_back(self, text: str, context: FocusContext, why: str) -> None:
+        """Not sent: the text goes on the clipboard and a pill says why, without taking the keyboard."""
+
+        LOGGER.info("Not sending to %s (%s); the text is on the clipboard", context.app_name or "unknown", why)
+        set_clipboard_text(text)
+        self._remember(text, context.app_name)
+        self.state = "idle"
+        self._set_menubar("idle")
+        self.capsule.show("send-held", why=why, app=context.app_name or "")
 
     def _paste_landed(self, pid: int, before: int) -> bool:
         """Whether the focused field's length changed soon after the Cmd+V."""

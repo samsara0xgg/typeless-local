@@ -60,6 +60,8 @@ class Preferences:
     # Off for people whose right Command already switches input sources; then
     # F5 is the shortcut (Settings keeps at least one of the two on).
     right_command_hotkey: bool = True
+    # Return while recording finishes the dictation and sends it where it started.
+    send_on_return: bool = True
     # The trial server said this Mac's free refinements are spent; it is not asked again.
     trial_used_up: bool = False
     onboarding_done: bool = False

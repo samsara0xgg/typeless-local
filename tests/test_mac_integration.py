@@ -768,3 +768,29 @@ def test_prepare_paste_puts_the_caret_back_or_refuses_to_paste_blind(monkeypatch
     _paste_target(monkeypatch, front=7, focused_is_text=False)
     no_field = mac_integration.FocusContext("ChatGPT", "", can_insert_text=True, pid=7)
     assert mac_integration.prepare_paste(no_field) == "blind"
+
+
+def test_return_while_recording_finishes_and_sends(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events, send_fn=lambda: True)
+
+    assert monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, _KeyEvent(36), None) is None
+    shift_return = _KeyEvent(36, mac_integration.SHIFT_FLAG_MASK)
+    assert monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, shift_return, None) is shift_return
+    # Holding right Cmd to talk, Return finishes and sends instead of making a chord.
+    _rcmd(monitor, True)
+    monitor.pending.pop()()
+    held_return = _KeyEvent(36, mac_integration.COMMAND_FLAG_MASK)
+    assert monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, held_return, None) is None
+    _rcmd(monitor, False)
+
+    assert events == ["send", "hold_start", "send"]
+
+
+def test_return_is_the_apps_when_not_recording(monkeypatch) -> None:
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events, send_fn=lambda: False)
+    enter = _KeyEvent(36)
+
+    assert monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, enter, None) is enter
+    assert events == []
