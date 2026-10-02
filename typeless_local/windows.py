@@ -34,7 +34,17 @@ from typeless_local.trace import load_corrections
 
 LOGGER = logging.getLogger(__name__)
 
-SETTINGS_PANES = ("general", "dictation", "keys", "model", "vocab", "audio", "usage", "privacy")
+SETTINGS_PANES = ("general", "dictation", "keys", "model", "vocab", "audio", "usage", "privacy", "about")
+
+
+def _open_urls() -> dict[str, str]:
+    """The only web addresses a page may ask to open, by name."""
+
+    urls = {"releases": brand.RELEASES_URL, "repo": brand.REPO_URL, "github": brand.AUTHOR_GITHUB}
+    urls.update({f"link{i}": url for i, (_, url) in enumerate(brand.AUTHOR_LINKS)})
+    return {name: url for name, url in urls.items() if url.startswith("https://")}
+
+
 SUGGESTIONS = 8
 HISTORY_ROWS = 500
 FIXES = 6
@@ -305,6 +315,7 @@ class Windows:
             "history": {"count": history.count_sessions(db) if db is not None else 0},
             "usage": usage.summary(db, prices(jarvis)) if db is not None and prefs.save_history else None,
             "f5": bool(self._f5_conflict),
+            "author": {"name": brand.AUTHOR_NAME, "github": brand.AUTHOR_GITHUB, "email": brand.author_email(), "links": [list(link) for link in brand.AUTHOR_LINKS]},
         }
 
     def _vocab_state(self) -> dict:
@@ -353,6 +364,10 @@ class Windows:
             self._edit_vocab(window, str(msg.get("op") or ""), str(msg.get("term") or ""))
         elif kind == "open":
             self._open(str(msg.get("what") or ""))
+        elif kind == "feedback":
+            self._send_feedback(window, msg)
+        elif kind == "copy":
+            set_clipboard_text(brand.author_email())
         elif kind == "count":
             days = int(msg.get("days") or 0)
             db = self._db()
@@ -364,6 +379,15 @@ class Windows:
                 removed = history.clear_history(db)
                 LOGGER.info("Cleared %d dictations from the history", removed)
             self.refresh(history=True)
+
+    def _send_feedback(self, window, msg: dict) -> None:
+        message = str(msg.get("message") or "").strip()
+        if not message:
+            return
+        self.app.send_feedback(
+            message, str(msg.get("email") or ""), bool(msg.get("diagnostics")),
+            lambda ok, error: self._later(window, {"t": "feedbackResult", "ok": ok, "msg": error}),
+        )
 
     def _db(self) -> Path | None:
         user_paths = getattr(self.app.config, "user_paths", None)
@@ -542,6 +566,8 @@ class Windows:
             self.show_settings("privacy")
         elif what == "openai-keys":
             permissions.open_url(trial.KEYS_URL)
+        elif what in _open_urls():
+            permissions.open_url(_open_urls()[what])
 
     # ----------------------------------------------------------- history
 

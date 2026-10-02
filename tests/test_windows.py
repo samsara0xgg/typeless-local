@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from typeless_local import devices, history, login_item, permissions, preferences, reach, vocab, webview, windows
+from typeless_local import brand, devices, history, login_item, permissions, preferences, reach, vocab, webview, windows
 from typeless_local.config import UserPaths, refine_config_for
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
 from typeless_local.webview import web_root
@@ -81,6 +81,7 @@ class FakeApp:
         self.audio_ducker = SimpleNamespace(enabled=True)
         self._download = None
         self.calls: list[tuple] = []
+        self.feedback_result = (True, "")
 
     def _call_ui(self, callback, *args, **kwargs) -> None:
         callback(*args, **kwargs)
@@ -113,6 +114,10 @@ class FakeApp:
 
     def export_diagnostics(self) -> None:
         self.calls.append(("diagnostics",))
+
+    def send_feedback(self, message, email, attach, done) -> None:
+        self.calls.append(("feedback", message, email, attach))
+        done(*self.feedback_result)
 
     def _start_model_prefetch(self) -> None:
         self.calls.append(("prefetch",))
@@ -514,11 +519,35 @@ def test_settings_exports_diagnostics(ui) -> None:
     assert ("diagnostics",) in ui.app.calls
 
 
+def test_feedback_goes_to_the_app_and_the_result_comes_back(ui) -> None:
+    window = _open_settings(ui)
+    ui.windows._settings_message({"t": "feedback", "message": " it crashed ", "email": "a@b.co", "diagnostics": True})
+    assert ("feedback", "it crashed", "a@b.co", True) in ui.app.calls
+    assert window.last("feedbackResult") == {"t": "feedbackResult", "ok": True, "msg": ""}
+    ui.app.feedback_result = (False, "offline")
+    ui.windows._settings_message({"t": "feedback", "message": "again"})
+    assert window.last("feedbackResult") == {"t": "feedbackResult", "ok": False, "msg": "offline"}
+    ui.windows._settings_message({"t": "feedback", "message": "  "})  # empty: nothing is sent
+    assert [c for c in ui.app.calls if c[0] == "feedback"] == [("feedback", "it crashed", "a@b.co", True), ("feedback", "again", "", False)]
+
+
+def test_about_state_carries_the_author_and_only_allow_listed_urls_open(ui, monkeypatch) -> None:
+    window = _open_settings(ui)
+    author = window.last("state")["author"]
+    assert author["name"] == brand.AUTHOR_NAME and author["github"] == brand.AUTHOR_GITHUB
+    opened = []
+    monkeypatch.setattr(windows.permissions, "open_url", opened.append)
+    ui.windows._open("releases")
+    ui.windows._open("https://evil.example")
+    assert opened == [brand.RELEASES_URL]
+    assert "about" in windows.SETTINGS_PANES
+
+
 # ----------------------------------------------------------------- pages
 
 
 PAGES = {
-    "settings": ({"ready", "set", "key", "migrate", "test", "vocab", "open", "count", "clear", "geo"}, "_settings_message"),
+    "settings": ({"ready", "set", "key", "migrate", "test", "vocab", "open", "count", "clear", "geo", "feedback", "copy"}, "_settings_message"),
     "history": ({"ready", "geo", "copy", "delete", "vocab", "open"}, "_history_message"),
     "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang", "source", "open", "meter"}, "_onboarding_message"),
 }

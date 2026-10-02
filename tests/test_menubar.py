@@ -108,6 +108,7 @@ def test_idle_menu_follows_the_design() -> None:
         "词库…",
         "历史记录…",
         "设置…",
+        "发送反馈…",
         brand.quit_label(),
     ]
     assert items[0].subtitle == "就绪"
@@ -197,3 +198,7 @@ def test_the_menu_speaks_english_when_asked() -> None:
     model = next(item for item in items if item.title == "Refinement and API Key…")
     assert model.key == "settings:model"
     assert ago(125) == "2 min ago" and ago(200000) == "2 days ago"
+
+
+def test_send_feedback_opens_the_about_pane() -> None:
+    assert _find(build_menu(Snapshot()), "发送反馈…").key == "settings:about"

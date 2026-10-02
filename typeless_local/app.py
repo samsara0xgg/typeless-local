@@ -17,13 +17,13 @@ import threading
 import time
 from types import SimpleNamespace
 import unicodedata
-from typing import Literal
+from typing import Callable, Literal
 
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 import numpy as np
 from PyObjCTools import AppHelper
 
-from typeless_local import app_version, brand, diagnostics, i18n, keyboard_layout, keychain, languages, permissions, reach, trial, usage
+from typeless_local import app_version, brand, diagnostics, feedback, i18n, keyboard_layout, keychain, languages, permissions, reach, trial, usage
 from typeless_local.i18n import t
 from typeless_local.asr import JarvisASR, Transcript, mlx_whisper_repo
 from typeless_local.audio import MicrophoneRecorder, keep_recording, peak_level
@@ -614,13 +614,45 @@ class TypelessLocalApp:
             ) or 0.0
         stats.record(dictations=1, chars=len(text), trial_spend=spend)
 
-    def _stats_url(self) -> str:
+    def _worker_url(self, path: str) -> str:
         try:
             base = refine_config_for(self.config.jarvis_config, trial.PRESET).base_url
         except Exception:
             return ""
         server = trial.server(base)
-        return f"{server}/stats" if server.startswith("https://") and "YOUR-SUBDOMAIN" not in server else ""
+        return f"{server}/{path}" if server.startswith("https://") and "YOUR-SUBDOMAIN" not in server else ""
+
+    def _stats_url(self) -> str:
+        return self._worker_url("stats")
+
+    def send_feedback(self, message: str, email: str, attach: bool, done: Callable[[bool, str], None]) -> None:
+        """Post the About pane's feedback to the Worker from a background thread; ``done(ok, error)`` reports back."""
+
+        url = self._worker_url("feedback")
+        user_paths = getattr(self.config, "user_paths", None)
+        # Gathered here on the calling thread, like export_diagnostics does.
+        summary = self._diagnostic_summary() if attach else None
+        secrets = [os.environ.get(name, "") for name in api_key_names(self.config)]
+        asr_config = (self.config.jarvis_config or {}).get("asr") or {}
+
+        def run() -> None:
+            try:
+                if not url:
+                    raise RuntimeError("no feedback server configured")
+                extra = None
+                if summary is not None and user_paths is not None:
+                    extra = feedback.diagnostics_text(summary, user_paths.log_path, secrets)
+                body = feedback.build(
+                    message, email, version=app_version(), spoken_language=str(asr_config.get("language") or ""),
+                    ui_language=i18n.current(), extra=extra,
+                )
+                feedback.post(url, body)
+                done(True, "")
+            except Exception as exc:
+                LOGGER.info("Feedback not sent (%s)", exc)
+                done(False, t("没有发出去，请检查网络后重试。", "Could not send; check your connection and try again."))
+
+        threading.Thread(target=run, daemon=True, name="feedback").start()
 
     def _send_stats(self) -> None:
         """Once a day: the finished days' counts, from a background thread. Reschedules itself."""

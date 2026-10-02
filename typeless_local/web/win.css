@@ -320,3 +320,12 @@ html.rt body .hlist{background:var(--win-2) !important}
 html.rm .yan *, html.rm .type span, html.rm .axmock *, html.rm .krow *, html.rm .gest *, html.rm .trialcard, html.rm .reveal, html.rm .status.pop, html.rm .stamp, html.rm .onb.enter > *{animation:none !important; transition:none !important}
 html.rm .axsw.on{background:var(--green)} html.rm .axsw.on::after{transform:translateX(12px)} html.rm .axcur{display:none}
 @media (prefers-reduced-motion: reduce){.yan *, .type span, .axmock *, .krow *, .gest *, .trialcard, .reveal, .stamp, .onb.enter > *{animation:none !important; transition:none !important}}
+
+/* ------------------------------------------------------------ about pane */
+.abt{display:flex; align-items:center; gap:14px; padding:14px}
+.abt img{width:56px; height:56px; flex:none}
+.abt div{flex:1; min-width:0}
+.abt b{display:block; font-size:15px}
+.abt small{color:var(--win-fg-2); font-size:12px}
+.fbtext{display:block; width:100%; min-height:110px; resize:vertical; border:0; border-radius:12px 12px 0 0; background:transparent; padding:12px 14px; font-size:13px; line-height:1.5; outline:0; border-bottom:.5px solid var(--win-sep)}
+.fb .row label{display:block; cursor:default}

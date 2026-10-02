@@ -37,3 +37,13 @@ def test_auto_follows_the_macs_language(monkeypatch) -> None:
     monkeypatch.setattr(i18n, "system_language", lambda: "zh")
     assert i18n.use("auto") == "zh"
     assert i18n.use("klingon") == "zh"
+
+
+def test_the_contact_email_comes_from_the_build_not_the_repo(monkeypatch) -> None:
+    from typeless_local import _version
+
+    assert brand.AUTHOR_EMAIL == ""
+    monkeypatch.setattr(_version, "CONTACT_EMAIL", "me@example.com")
+    assert brand.author_email() == "me@example.com"
+    monkeypatch.setattr(_version, "CONTACT_EMAIL", "")
+    assert brand.author_email() == ""

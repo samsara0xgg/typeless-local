@@ -15,6 +15,7 @@ const PANES = [
   ['audio', ['音频', 'Audio'], 'speaker', '#FF3B30'],
   ['usage', ['用量', 'Usage'], 'chart', '#34C759'],
   ['privacy', ['历史与隐私', 'History & Privacy'], 'shield', '#0A84FF'],
+  ['about', ['关于', 'About'], 'info', '#5AC8FA'],
 ];
 const paneTitle = id => L(...PANES.find(p => p[0] === id)[1]);
 const DAYS = v => ({ 30: L('30 天', '30 days'), 90: L('90 天', '90 days'), 365: L('1 年', '1 year'), 0: L('永久', 'Forever') })[v] || L(`${v} 天`, `${v} days`);
@@ -26,7 +27,9 @@ const SOURCES = () => [['auto', L('自动', 'Automatic')], ['huggingface', 'Hugg
 let S = null;            // the state Python sent
 let pane = 'general';
 // What is being edited here and not yet sent.
-const UI = { keyEdit: '', keyBusy: '', keyMsg: {}, test: null, confirm: null, vocabMsg: '', usageBy: '' };
+const UI = { keyEdit: '', keyBusy: '', keyMsg: {}, test: null, confirm: null, vocabMsg: '', usageBy: '', copied: false,
+  // The feedback box: kept here so a redraw or a failed send never loses what was typed.
+  fb: { text: '', email: '', diag: false, status: '', msg: '' } };
 
 /* ---------------- building blocks ---------------- */
 const sw = (key, on_, label, disabled = false) =>
@@ -281,7 +284,31 @@ function privacy() {
     + `<div class="grp" style="background:transparent; box-shadow:none">${c && c.kind === 'clear' ? `<div class="grp">${confirmBox}</div>` : ''}<div class="btnrow left"><button class="mbtn" data-act="open" data-what="data">${I('folder')} ${L('在访达中显示数据', 'Show Data in Finder')}</button><button class="mbtn danger" data-act="clear">${I('trash')} ${L('清除历史…', 'Clear History…')}</button></div></div>`;
 }
 
-const RENDER = { general, dictation, keys, model, vocab, audio, usage, privacy };
+function aboutPane() {
+  const a = S.author, f = UI.fb, sending = f.status === 'sending';
+  const link = (what, label) => `<button class="mbtn" data-act="open" data-what="${what}">${I('link')} ${esc(label)}</button>`;
+  const emailRow = a.email ? row(esc(a.email), `<button class="mbtn" data-act="copyemail">${UI.copied ? L('已复制', 'Copied') : L('复制', 'Copy')}</button>`) : '';
+  const status = f.status === 'sent' ? `<span class="st-ok">${L('已发送，谢谢！', 'Sent, thank you!')}</span>`
+    : f.status === 'failed' ? `<span class="st-err">${esc(f.msg)}</span>` : '';
+  return head(paneTitle('about'))
+    + `<div class="grp"><div class="abt"><img src="appicon.svg" alt=""><div><b>${esc(S.name)}</b><small>${L('版本', 'Version')} ${esc(S.version || '')}</small></div>`
+    + `<button class="mbtn" data-act="open" data-what="releases">${L('检查新版本', 'Check for a new version')}</button></div></div>`
+    + `<div class="grp-l">${L('关于作者', 'About the author')}</div>`
+    + grp([
+      row(`<b>${esc(a.name)}</b>`, ''),
+      `<div class="row"><div class="rl">${L('言字是开源项目。如果你有兴趣一起把它做得更好，欢迎在 GitHub 上提 Issue 或 Pull Request，也欢迎直接联系我。', `${esc(S.name)} is open source. If you’d like to help make it better, issues and pull requests on GitHub are welcome, and so is getting in touch directly.`)}</div></div>`,
+      `<div class="row"><span class="inline">${link('repo', 'GitHub')}${a.github ? link('github', L('作者主页', 'Author profile')) : ''}${a.links.map(([label], i) => link(`link${i}`, label)).join('')}</span></div>`,
+      emailRow,
+    ].filter(Boolean))
+    + `<div class="grp-l">${L('反馈', 'Feedback')}</div>`
+    + `<div class="grp fb"><textarea id="fb-text" class="fbtext" maxlength="4000" placeholder="${L('遇到了什么问题，或者想要什么功能？', 'What went wrong, or what would you like to see?')}" aria-label="${L('反馈内容', 'Feedback')}"${sending ? ' disabled' : ''}>${esc(f.text)}</textarea>`
+    + `<div class="row"><div class="rl">${L('回复邮箱（可选）', 'Reply email (optional)')}</div><input class="field" id="fb-email" type="email" maxlength="200" value="${esc(f.email)}" aria-label="${L('回复邮箱', 'Reply email')}"${sending ? ' disabled' : ''}></div>`
+    + `<div class="row"><label class="rl"><input type="checkbox" id="fb-diag"${f.diag ? ' checked' : ''}${sending ? ' disabled' : ''}> ${L('附上诊断信息', 'Attach diagnostics')}<small>${L('设置概要和最近的日志（已去掉密钥）。日志可能引用少量识别到的词，默认不附。', 'A settings summary and the latest log lines, with keys removed. The log can quote a few recognised words, so it is off by default.')}</small></label></div>`
+    + `<div class="btnrow">${status}<button class="mbtn pri" id="fb-send" data-act="feedback"${sending || !f.text.trim() ? ' disabled' : ''}>${sending ? '<span class="spin"></span>' : L('发送', 'Send')}</button></div></div>`
+    + `<p class="note">${L('随反馈自动发送：App 版本、macOS 版本、Mac 型号、听写语言设置和界面语言。从不包含听写内容。', 'Sent with it: the app version, macOS version, Mac model, the spoken-language setting and the interface language. Never any dictation text.')}</p>`;
+}
+
+const RENDER = { general, dictation, keys, model, vocab, audio, usage, privacy, about: aboutPane };
 
 /* ---------------- drawing ---------------- */
 function drawSide() {
@@ -377,13 +404,24 @@ document.addEventListener('click', e => {
   else if (a === 'word') post({ t: 'vocab', op: 'add', term: act.dataset.term });
   else if (a === 'unword') post({ t: 'vocab', op: 'remove', term: act.dataset.term });
   else if (a === 'reject') post({ t: 'vocab', op: 'reject', term: act.dataset.term });
+  else if (a === 'copyemail') { UI.copied = true; post({ t: 'copy' }); draw(); }
+  else if (a === 'feedback') sendFeedback();
   else if (a === 'clear') { UI.confirm = { kind: 'clear', n: S.history.count }; draw(); }
   else if (a === 'cancelconfirm') { UI.confirm = null; draw(); }
   else if (a === 'confirmdays') { const d = UI.confirm.days; UI.confirm = null; S.prefs.history_days = d; post({ t: 'set', key: 'history_days', value: d }); draw(); }
   else if (a === 'confirmclear') { UI.confirm = null; post({ t: 'clear' }); draw(); }
 });
 
+document.addEventListener('input', e => {
+  if (e.target.id === 'fb-text') {
+    UI.fb.text = e.target.value;
+    const send = document.getElementById('fb-send');
+    if (send) send.disabled = !UI.fb.text.trim();
+  } else if (e.target.id === 'fb-email') UI.fb.email = e.target.value;
+});
+
 document.addEventListener('change', e => {
+  if (e.target.id === 'fb-diag') { UI.fb.diag = e.target.checked; return; }
   const el = e.target.closest('select[data-set]');
   if (el) setting(el);
 });
@@ -397,8 +435,19 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); saveKey(e.target.id.slice(4)); }
     if (e.key === 'Escape') { e.preventDefault(); UI.keyEdit = ''; draw(); }
   } else if (e.key === 'Escape' && UI.confirm) { UI.confirm = null; draw(); }
-  else if ((e.metaKey || e.ctrlKey) && /^[1-8]$/.test(e.key)) { e.preventDefault(); show(PANES[+e.key - 1][0]); }
+  else if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) { e.preventDefault(); show(PANES[+e.key - 1][0]); }
 });
+
+function sendFeedback() {
+  const f = UI.fb;
+  if (!f.text.trim()) return;
+  if (f.email.trim() && !/^\S+@\S+\.\S+$/.test(f.email.trim())) {
+    f.status = 'failed'; f.msg = L('回复邮箱看起来不对，改一下或清空再发。', 'That reply email does not look right; fix it or clear it.'); draw(); return;
+  }
+  f.status = 'sending';
+  post({ t: 'feedback', message: f.text, email: f.email.trim(), diagnostics: f.diag });
+  draw();
+}
 
 function saveKey(envName) {
   const f = document.getElementById(`key-${envName}`);
@@ -423,6 +472,13 @@ on('keyResult', m => {
   UI.keyBusy = '';
   UI.keyMsg[m.env] = { ok: m.ok, text: m.msg };
   if (m.ok) UI.keyEdit = '';
+  draw();
+});
+on('feedbackResult', m => {
+  const f = UI.fb;
+  f.status = m.ok ? 'sent' : 'failed';
+  f.msg = m.msg || '';
+  if (m.ok) f.text = '';  // kept on failure so nothing is lost
   draw();
 });
 on('testResult', m => { UI.test = m; draw(); });

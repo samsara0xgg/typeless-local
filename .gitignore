@@ -27,3 +27,4 @@ worker/.wrangler/
 worker/.dev.vars
 worker/node_modules/
 worker/.admin-token
+worker/.contact-email
