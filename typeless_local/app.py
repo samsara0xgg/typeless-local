@@ -2033,12 +2033,15 @@ class TypelessLocalApp:
         if not english:
             return
         record.english = json.dumps(english, ensure_ascii=False)
-        insertion = self._insertion
-        # Not if the dictation was undone, typed over, or a new one has begun.
-        if self.state != "idle" or session_id != getattr(self, "_active_session_id", 0) or insertion is None:
+        # Not once a new dictation has begun. Typing after the paste is fine:
+        # only the swap needs the paste still intact.
+        if self.state != "idle" or session_id != getattr(self, "_active_session_id", 0):
+            LOGGER.info("English card skipped: a new dictation has begun")
             return
+        LOGGER.info("Showing the English card")
+        swap = self._insertion is not None and record.raw_asr_language == "en"
         self.capsule.show(
-            "english", use=record.raw_asr_language == "en" and english["en"].strip() != (record.refined_text or "").strip(), en=english["en"], phrases=english["phrases"]
+            "english", use=swap and english["en"].strip() != (record.refined_text or "").strip(), en=english["en"], phrases=english["phrases"]
         )
 
     def _deliver(self, text: str, raw: str, context: FocusContext, fallback: str, record: SessionRecord) -> None:
