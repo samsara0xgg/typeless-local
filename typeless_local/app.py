@@ -72,7 +72,7 @@ from typeless_local.preferences import Preferences, load_preferences, save_prefe
 from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner, TrialUnavailable
 from typeless_local.stats import DailyStats
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
-from typeless_local.vocab import as_initial_prompt, learn_term, load_user_terms, load_vocab, write_starter_file
+from typeless_local.vocab import as_initial_prompt, learn_term, load_vocab, whisper_terms, write_starter_file
 from typeless_local.windows import Windows, install_main_menu, learned_fixes, prices
 
 LOGGER = logging.getLogger(__name__)
@@ -147,7 +147,7 @@ class TypelessLocalApp:
         if user_paths is not None:
             write_starter_file(user_paths.vocab_path)
             self.vocab = load_vocab(user_paths.vocab_path)
-            self.whisper_prompt = as_initial_prompt(load_user_terms(user_paths.vocab_path))
+            self.whisper_prompt = as_initial_prompt(whisper_terms(user_paths.vocab_path))
             self.trace = DictationTrace(user_paths.trace_db_path)
             self.daily_stats = DailyStats(user_paths.config_dir / "stats.json", app_version())
         else:
@@ -261,7 +261,7 @@ class TypelessLocalApp:
         if user_paths is None:
             return
         self.vocab = load_vocab(user_paths.vocab_path)
-        self.whisper_prompt = as_initial_prompt(load_user_terms(user_paths.vocab_path))
+        self.whisper_prompt = as_initial_prompt(whisper_terms(user_paths.vocab_path))
         LOGGER.info("Reloaded vocab: %d terms", len(self.vocab))
 
     def _select_capture_device(self) -> str:

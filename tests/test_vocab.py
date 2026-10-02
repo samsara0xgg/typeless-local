@@ -161,3 +161,11 @@ def test_learn_unlearn_round_trip_and_auto_save_keeps_learned(tmp_path: Path) ->
     sections = vocab._load_sections(path)
     assert sections["user"] == [] and sections["learned"] == [] and sections["rejected"] == ["merge"]
     assert vocab.learn_term(path, "merge", "默制") is False
+
+
+def test_whisper_terms_put_the_newest_learned_word_first(tmp_path: Path) -> None:
+    path = tmp_path / "vocab.yaml"
+    vocab.save_user_terms(path, ["Jarvis", "Typlus"])
+    vocab.learn_term(path, "merge", "默制")
+    vocab.learn_term(path, "Jev", "Jeff")
+    assert vocab.whisper_terms(path) == ["Jev", "merge", "Jarvis", "Typlus"]

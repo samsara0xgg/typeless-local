@@ -69,6 +69,14 @@ def load_user_terms(path: Path) -> list[str]:
     return _load_sections(Path(path))["user"]
 
 
+def whisper_terms(path: Path) -> list[str]:
+    """The `user:` terms for Whisper's prompt, newest learned first, so a capped prompt cuts old words, not new fixes."""
+
+    sections = _load_sections(Path(path))
+    learned = [e["term"] for e in reversed(sections["learned"]) if e["term"] in sections["user"]]
+    return list(dict.fromkeys(learned + sections["user"]))
+
+
 def load_rejected(path: Path) -> list[str]:
     """Return the case-preserved list of terms the extractor must skip."""
 
