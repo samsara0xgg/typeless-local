@@ -534,7 +534,7 @@ def test_feedback_goes_to_the_app_and_the_result_comes_back(ui) -> None:
 def test_about_state_carries_the_author_and_only_allow_listed_urls_open(ui, monkeypatch) -> None:
     window = _open_settings(ui)
     author = window.last("state")["author"]
-    assert author["name"] == brand.AUTHOR_NAME and author["github"] == brand.AUTHOR_GITHUB
+    assert author["name"] == brand.AUTHOR_NAME == "Allen Shi" and author["github"] == brand.AUTHOR_GITHUB and "email" not in author
     opened = []
     monkeypatch.setattr(windows.permissions, "open_url", opened.append)
     ui.windows._open("releases")
@@ -547,7 +547,7 @@ def test_about_state_carries_the_author_and_only_allow_listed_urls_open(ui, monk
 
 
 PAGES = {
-    "settings": ({"ready", "set", "key", "migrate", "test", "vocab", "open", "count", "clear", "geo", "feedback", "copy"}, "_settings_message"),
+    "settings": ({"ready", "set", "key", "migrate", "test", "vocab", "open", "count", "clear", "geo", "feedback"}, "_settings_message"),
     "history": ({"ready", "geo", "copy", "delete", "vocab", "open"}, "_history_message"),
     "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang", "source", "open", "meter"}, "_onboarding_message"),
 }

@@ -315,7 +315,7 @@ class Windows:
             "history": {"count": history.count_sessions(db) if db is not None else 0},
             "usage": usage.summary(db, prices(jarvis)) if db is not None and prefs.save_history else None,
             "f5": bool(self._f5_conflict),
-            "author": {"name": brand.AUTHOR_NAME, "github": brand.AUTHOR_GITHUB, "email": brand.author_email(), "links": [list(link) for link in brand.AUTHOR_LINKS]},
+            "author": {"name": brand.AUTHOR_NAME, "github": brand.AUTHOR_GITHUB, "links": [list(link) for link in brand.AUTHOR_LINKS]},
         }
 
     def _vocab_state(self) -> dict:
@@ -366,8 +366,6 @@ class Windows:
             self._open(str(msg.get("what") or ""))
         elif kind == "feedback":
             self._send_feedback(window, msg)
-        elif kind == "copy":
-            set_clipboard_text(brand.author_email())
         elif kind == "count":
             days = int(msg.get("days") or 0)
             db = self._db()

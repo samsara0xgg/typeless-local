@@ -27,7 +27,7 @@ const SOURCES = () => [['auto', L('自动', 'Automatic')], ['huggingface', 'Hugg
 let S = null;            // the state Python sent
 let pane = 'general';
 // What is being edited here and not yet sent.
-const UI = { keyEdit: '', keyBusy: '', keyMsg: {}, test: null, confirm: null, vocabMsg: '', usageBy: '', copied: false,
+const UI = { keyEdit: '', keyBusy: '', keyMsg: {}, test: null, confirm: null, vocabMsg: '', usageBy: '',
   // The feedback box: kept here so a redraw or a failed send never loses what was typed.
   fb: { text: '', email: '', diag: false, status: '', msg: '' } };
 
@@ -287,7 +287,6 @@ function privacy() {
 function aboutPane() {
   const a = S.author, f = UI.fb, sending = f.status === 'sending';
   const link = (what, label) => `<button class="mbtn" data-act="open" data-what="${what}">${I('link')} ${esc(label)}</button>`;
-  const emailRow = a.email ? row(esc(a.email), `<button class="mbtn" data-act="copyemail">${UI.copied ? L('已复制', 'Copied') : L('复制', 'Copy')}</button>`) : '';
   const status = f.status === 'sent' ? `<span class="st-ok">${L('已发送，谢谢！', 'Sent, thank you!')}</span>`
     : f.status === 'failed' ? `<span class="st-err">${esc(f.msg)}</span>` : '';
   return head(paneTitle('about'))
@@ -296,10 +295,9 @@ function aboutPane() {
     + `<div class="grp-l">${L('关于作者', 'About the author')}</div>`
     + grp([
       row(`<b>${esc(a.name)}</b>`, ''),
-      `<div class="row"><div class="rl">${L('言字是开源项目。如果你有兴趣一起把它做得更好，欢迎在 GitHub 上提 Issue 或 Pull Request，也欢迎直接联系我。', `${esc(S.name)} is open source. If you’d like to help make it better, issues and pull requests on GitHub are welcome, and so is getting in touch directly.`)}</div></div>`,
+      `<div class="row"><div class="rl">${L('言字是开源项目。如果你有兴趣一起把它做得更好，欢迎在 GitHub 上提 Issue 或 Pull Request，也欢迎通过下面的反馈框联系我。', `${esc(S.name)} is open source. If you’d like to help make it better, issues and pull requests on GitHub are welcome, and so is a note through the feedback box below.`)}</div></div>`,
       `<div class="row"><span class="inline">${link('repo', 'GitHub')}${a.github ? link('github', L('作者主页', 'Author profile')) : ''}${a.links.map(([label], i) => link(`link${i}`, label)).join('')}</span></div>`,
-      emailRow,
-    ].filter(Boolean))
+    ])
     + `<div class="grp-l">${L('反馈', 'Feedback')}</div>`
     + `<div class="grp fb"><textarea id="fb-text" class="fbtext" maxlength="4000" placeholder="${L('遇到了什么问题，或者想要什么功能？', 'What went wrong, or what would you like to see?')}" aria-label="${L('反馈内容', 'Feedback')}"${sending ? ' disabled' : ''}>${esc(f.text)}</textarea>`
     + `<div class="row"><div class="rl">${L('回复邮箱（可选）', 'Reply email (optional)')}</div><input class="field" id="fb-email" type="email" maxlength="200" value="${esc(f.email)}" aria-label="${L('回复邮箱', 'Reply email')}"${sending ? ' disabled' : ''}></div>`
@@ -404,7 +402,6 @@ document.addEventListener('click', e => {
   else if (a === 'word') post({ t: 'vocab', op: 'add', term: act.dataset.term });
   else if (a === 'unword') post({ t: 'vocab', op: 'remove', term: act.dataset.term });
   else if (a === 'reject') post({ t: 'vocab', op: 'reject', term: act.dataset.term });
-  else if (a === 'copyemail') { UI.copied = true; post({ t: 'copy' }); draw(); }
   else if (a === 'feedback') sendFeedback();
   else if (a === 'clear') { UI.confirm = { kind: 'clear', n: S.history.count }; draw(); }
   else if (a === 'cancelconfirm') { UI.confirm = null; draw(); }

@@ -62,22 +62,9 @@ def quit_label(name: str | None = None) -> str:
 
 
 # The author's details live here and nowhere else; the About pane shows what is filled in.
-AUTHOR_NAME = "yilun"
+AUTHOR_NAME = "Allen Shi"
 AUTHOR_GITHUB = "https://github.com/samsara0xgg"
-AUTHOR_EMAIL = ""  # not in the public repo: the build bakes the address in as _version.CONTACT_EMAIL
 AUTHOR_LINKS: tuple[tuple[str, str], ...] = ()  # (label, url) pairs
 REPO_URL = "https://github.com/samsara0xgg/typeless-local"
 RELEASES_URL = f"{REPO_URL}/releases/latest"
 
-
-def author_email() -> str:
-    """The contact address: the one above, else what the build baked into _version.py."""
-
-    if AUTHOR_EMAIL:
-        return AUTHOR_EMAIL
-    try:
-        from typeless_local._version import CONTACT_EMAIL  # noqa: PLC0415
-
-        return str(CONTACT_EMAIL or "")
-    except ImportError:
-        return ""

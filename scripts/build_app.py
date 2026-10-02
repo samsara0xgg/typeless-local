@@ -58,19 +58,11 @@ def short_hash() -> str:
         return "unknown"
 
 
-def contact_email() -> str:
-    """The About pane's contact address: kept out of the public repo, so from the env or a gitignored file."""
-
-    path = ROOT / "worker" / ".contact-email"
-    return os.environ.get("YANA_CONTACT_EMAIL") or (path.read_text(encoding="utf-8").strip() if path.exists() else "")
-
-
 def bake_version() -> None:
     h = short_hash()
     VERSION_FILE.write_text(
         f'"""Build-time version marker. Overwritten by scripts/build_app.py."""\n\n'
-        f'VERSION = "{VERSION}+{h}"\n'
-        f'CONTACT_EMAIL = {contact_email()!r}\n',
+        f'VERSION = "{VERSION}+{h}"\n',
         encoding="utf-8",
     )
     print(f"baked version: {VERSION}+{h}")
