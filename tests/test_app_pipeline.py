@@ -2043,3 +2043,27 @@ def test_a_hand_fix_before_sending_is_learned_into_the_vocabulary(tmp_path) -> N
     assert vocab.load_user_terms(tmp_path / "v.yaml") == ["merge"] and reloads == [1]
     app._store_sent_text(1, "还没有默制是吧？", "还没有merge是吧？")  # a repeat fix counts again, the word is not repeated
     assert vocab.load_user_terms(tmp_path / "v.yaml") == ["merge"] and reloads == [1, 1]
+
+
+def test_english_practice_pastes_at_the_marker_once_then_shows_the_card(monkeypatch) -> None:
+    pasted = []
+    monkeypatch.setattr("typeless_local.app.paste_text", pasted.append)
+    monkeypatch.setattr("typeless_local.app.set_clipboard_text", lambda text: None)
+    app = _make_app("我想明天下午和你开个会讨论一下这个项目的进度")
+    app.asr = _FakeASR("我想明天下午和你开个会讨论一下这个项目的进度", language="zh")
+    app.prefs = Preferences(english_practice=True)
+    card = {"en": "Hello, world.", "phrases": [{"en": "Hello", "zh": "你好"}]}
+
+    def refine(text, context, vocab=None, language="", english=False, on_text=None):
+        assert english and not pasted
+        on_text("你好，世界。")
+        assert pasted == ["你好，世界。"]  # pasted before refine returned
+        return RefineResult(text="你好，世界。", raw_text=text, model="m", english=card)
+
+    app.refiner.refine = refine
+
+    app._process_audio(np.ones(16000, dtype=np.float32), FocusContext("Slack", "#general", can_insert_text=True))
+
+    assert pasted == ["你好，世界。"]
+    assert app.overlay.shown() == ["refining", "inserted", "english"]
+    assert app.capsule.data["en"] == "Hello, world." and app.capsule.data["use"] is False

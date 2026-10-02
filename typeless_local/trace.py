@@ -41,7 +41,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   cached_tokens INTEGER,
   completion_tokens INTEGER,
   sent_text TEXT,
-  before_text TEXT
+  before_text TEXT,
+  english TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_started_at ON sessions(started_at);
 
@@ -83,6 +84,8 @@ ADDED_COLUMNS = (
     ("sent_text", "TEXT"),
     # The text before the caret that refinement was given as context.
     ("before_text", "TEXT"),
+    # English practice: JSON {"en": ..., "phrases": [{"en": ..., "zh": ...}]}, NULL when off.
+    ("english", "TEXT"),
 )
 
 
@@ -113,6 +116,7 @@ class SessionRecord:
     cached_tokens: int = 0
     completion_tokens: int = 0
     before_text: str = ""
+    english: str | None = None
 
 
 _INSERT_SQL = """
@@ -123,7 +127,7 @@ INSERT INTO sessions (
   vocab_terms_used, hotwords_count,
   latency_asr_ms, latency_refine_ms, latency_total_ms,
   asr_model, refine_model, app_version, error,
-  prompt_tokens, cached_tokens, completion_tokens, before_text
+  prompt_tokens, cached_tokens, completion_tokens, before_text, english
 ) VALUES (
   :started_at, :ended_at, :audio_duration_s, :audio_rms, :audio_sample_rate,
   :raw_asr_text, :raw_asr_language, :raw_asr_confidence,
@@ -131,7 +135,7 @@ INSERT INTO sessions (
   :vocab_terms_used, :hotwords_count,
   :latency_asr_ms, :latency_refine_ms, :latency_total_ms,
   :asr_model, :refine_model, :app_version, :error,
-  :prompt_tokens, :cached_tokens, :completion_tokens, :before_text
+  :prompt_tokens, :cached_tokens, :completion_tokens, :before_text, :english
 )
 """
 

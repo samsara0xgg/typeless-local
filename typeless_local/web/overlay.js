@@ -100,6 +100,17 @@ function cardHTML(title, sub, text, btns) {
     + btns.map(([a, l, p]) => `<button class="pbtn${p ? ' pri' : ''}" data-act="${a}">${esc(l)}</button>`).join('') + `</div></div>`;
 }
 
+// English practice: the sentence, then the phrases worth keeping.
+function englishHTML(o) {
+  const rows = (o.phrases || []).map(p => `<div class="en-row"><b>${esc(p.en)}</b><span>${esc(p.zh)}</span></div>`).join('');
+  return `<div class="card-in en-card"><div class="en-h"><span class="en-tag">EN</span><span class="sp"></span>`
+    + `<button class="ib sm" data-act="copyen" aria-label="${L('复制英文', 'Copy English')}">${I('copy')}</button>`
+    + `<button class="ib sm" data-act="close" aria-label="${L('关闭', 'Close')}">${I('xmark')}</button></div>`
+    + `<div class="en-t">${esc(o.en)}</div>` + (rows ? `<div class="en-p">${rows}</div>` : '')
+    + (o.use ? `<div class="card-f"><span class="sp"></span><button class="pbtn pri" data-act="useen">${L('用这句替换', 'Use this')}</button></div>` : '')
+    + `</div>`;
+}
+
 function recHTML() {
   const o = S.d;
   const sel = o.sel ? `<span class="chip">${I('cursor')}${L('改写所选', 'Rewrite selection')}</span>` : '';
@@ -147,6 +158,7 @@ function view(st, o) {
     case 'inserted-unsure': return [`<span class="lead warn">${I('warn')}</span><span class="lbl">${L('可能没插进去', 'May not have gone in')} <span class="sub">· ${L('已复制，⌘V 粘贴', 'copied, press ⌘V')}</span></span>`, 'pill', [], L('可能没插进去，文字已复制，按 ⌘V 粘贴', 'The text may not have gone in. It is copied; press Command V to paste')];
     case 'edit-notarget': return [cardHTML(L('没有可插入的位置', 'Nowhere to insert'), L('已复制到剪贴板。改完按 ⏎ 再复制一次。', 'Copied to the clipboard. Press ⏎ after editing to copy again.'), o.text, [['done', L('完成', 'Done'), true]]), 'card', [], L('没有可插入的位置，结果已复制到剪贴板，可以直接修改', 'Nowhere to insert. The text is copied to the clipboard and can be edited here')];
     case 'edit-modify': return [cardHTML(L('修改刚插入的文字', 'Edit the inserted text'), L('替换 = 在原 App 里撤销那次粘贴，再粘贴新文字', 'Replace undoes the paste in its app, then pastes the new text'), o.text, [['close', L('取消', 'Cancel')], ['replace', L('替换', 'Replace'), true]]), 'card', [], L('修改刚插入的文字，回车替换，esc 取消', 'Edit the inserted text. Return replaces it, Escape cancels')];
+    case 'english': return [englishHTML(o), 'card', [], L('英语练习：', 'English practice: ') + (o.en || '')];
     case 'empty': return [`<span class="lead">${I('mic-slash')}</span><span class="lbl">${L('没有听到声音', 'Heard nothing')}${o.device ? ` <span class="sub">· ${esc(o.device)}</span>` : ''}</span>`, 'pill', [], L('没有听到声音', 'Heard nothing')];
     case 'mic': return o.why === 'stuck'
       ? [`<span class="lead err wiggle">${I('warn')}</span><span class="lbl">${L('麦克风卡住了', 'The microphone is stuck')} <span class="sub">· ${L('重新打开就好', 'relaunching fixes it')}</span></span>`, 'pill', [BUD.restart()], L('麦克风卡住了，重新打开就好', 'The microphone is stuck; relaunching the app fixes it')]
@@ -408,6 +420,7 @@ function loop(now) {
 /* ---------------- input ---------------- */
 function act(a) {
   const msg = { t: 'act', a };
+  if (a === 'useen' || a === 'copyen') msg.text = S.d.en || '';
   if (a === 'done' || a === 'replace') { const f = $('#cardField'); msg.text = f ? f.value : ''; }
   post(msg);
 }

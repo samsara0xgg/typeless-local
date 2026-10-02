@@ -67,13 +67,13 @@ STATES = frozenset({
     "inserted", "inserted-raw-net", "inserted-raw-key", "inserted-raw-trial", "inserted-unsure",
     "edit-notarget", "edit-modify",
     "empty", "mic", "download", "cancelled", "undone", "replaced", "copied",
-    "perm", "notice", "ready", "error",
+    "perm", "notice", "ready", "error", "english",
 })
 CARD_STATES = frozenset({"edit-notarget", "edit-modify"})
 ACTIONS = frozenset({
     "primary", "cancel", "finish", "extend",                # idle handle, recording
     "undo", "edit", "rerefine", "setkey", "billing", "input", "micperm", "perm", "log", "restart",  # buds
-    "close", "done", "replace",                             # cards
+    "close", "done", "replace", "useen", "copyen",           # cards
 })
 
 _A11Y_CHANGED = getattr(

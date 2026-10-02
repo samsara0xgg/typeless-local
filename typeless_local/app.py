@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import atexit
 import dataclasses
+import json
 from concurrent.futures import Future, ThreadPoolExecutor
 from functools import partial
 import logging
@@ -554,6 +555,8 @@ class TypelessLocalApp:
                     self._start_recording("hands_free")
         elif kind == "copy":
             self._copy_last_transcript()
+        elif kind == "english":
+            self.set_preference("english_practice", not self.prefs.english_practice)
         elif kind == "preset":
             self.select_model(arg)
         elif kind == "input":
@@ -688,11 +691,11 @@ class TypelessLocalApp:
             return "key"
         return _failure_kind(exc)
 
-    def _refine(self, text: str, context, vocab, language: str = "") -> RefineResult:
+    def _refine(self, text: str, context, vocab, language: str = "", **practice) -> RefineResult:
         if self.prefs.trial_used_up and getattr(self.config.refine, "preset", "") == trial.PRESET:
             # The trial server already said this Mac's share is spent: don't ask it again.
             raise TrialUnavailable("trial_used_up", "")
-        return self.refiner.refine(text, context, vocab=vocab, language=language)
+        return self.refiner.refine(text, context, vocab=vocab, language=language, **practice)
 
     def _note_trial(self, fallback: str) -> None:
         """The trial server said no: keep the menu's "enter your own key" up until one is saved."""
@@ -735,6 +738,7 @@ class TypelessLocalApp:
             inputs=tuple(devices.list_input_devices()),
             active_input=getattr(config, "input_device", "") or "",
             refine=self.prefs.refine,
+            english_practice=self.prefs.english_practice,
             usage=usage.today_line(history, prices(jarvis)) if history is not None else "",
         )
 
@@ -1213,6 +1217,12 @@ class TypelessLocalApp:
                 self._rerefine_insertion()
             elif action == "replace":
                 self._replace_insertion(text)
+            elif action == "useen":
+                self._use_english(text)
+            elif action == "copyen":
+                if text:
+                    set_clipboard_text(text)
+                self.capsule.show("copied")
             elif action == "done":
                 self._commit_edit(text)
             elif action == "close":
@@ -1286,6 +1296,16 @@ class TypelessLocalApp:
         threading.Thread(
             target=self._swap_text, args=(insertion, corrected, True), daemon=True, name="replace"
         ).start()
+
+    def _use_english(self, text: str) -> None:
+        """The English card's "Use this": the same swap as Replace, with the English version."""
+
+        insertion = self._insertion
+        if insertion is None or not text:
+            self.capsule.hide()
+            return
+        self._keys_wanted = False
+        threading.Thread(target=self._swap_text, args=(insertion, text, False), daemon=True, name="use-english").start()
 
     def _rerefine_insertion(self) -> None:
         """The capsule's Re-refine: try refinement again on what was pasted raw."""
@@ -1922,18 +1942,30 @@ class TypelessLocalApp:
             if not headless and not self._is_current_processing_session(session_id):
                 return
             fallback = ""
+            delivered: list[str] = []
             if prefs.refine:
                 step = "refine"
                 if not headless:
                     self.capsule.show("refining", raw=transcript.text)
                 LOGGER.info("Starting refinement")
                 refine_start = time.monotonic()
+                practice = {}
+                if prefs.english_practice and not headless:
+                    # The refined text is pasted the moment the model has written it,
+                    # while the English version is still arriving.
+                    def paste_early(text: str) -> None:
+                        if self._is_current_processing_session(session_id):
+                            delivered.append(text)
+                            self._deliver(text, transcript.text, context, "", record)
+
+                    practice = {"english": True, "on_text": paste_early}
                 try:
                     refined = self._refine(
                         transcript.text,
                         self._refine_context(context),
                         vocab=vocab_terms,
                         language=str(getattr(transcript, "language", "") or ""),
+                        **practice,
                     )
                 except Exception as exc:
                     # The transcript is already in hand; losing the whole dictation
@@ -1960,6 +1992,10 @@ class TypelessLocalApp:
             if headless:
                 return  # tests stop here; no overlay/paste path
 
+            if delivered:
+                record.refined_text = final_text = delivered[0]
+                self._show_english(refined.english, record, session_id)
+                return
             if not self._is_current_processing_session(session_id):
                 return
             step = "paste"
@@ -1990,6 +2026,20 @@ class TypelessLocalApp:
                 if watcher is not None and record.was_pasted and prefs.save_sent_text and insertion is not None:
                     watcher.watch(self._last_trace_id, record.refined_text, insertion.pid)
             self._keep_recording(audio, sample_rate, started)
+
+    def _show_english(self, english: dict | None, record: SessionRecord, session_id: int) -> None:
+        """After the paste: keep the English version in the trace and put it in the card."""
+
+        if not english:
+            return
+        record.english = json.dumps(english, ensure_ascii=False)
+        insertion = self._insertion
+        # Not if the dictation was undone, typed over, or a new one has begun.
+        if self.state != "idle" or session_id != getattr(self, "_active_session_id", 0) or insertion is None:
+            return
+        self.capsule.show(
+            "english", use=record.raw_asr_language == "en" and english["en"].strip() != (record.refined_text or "").strip(), en=english["en"], phrases=english["phrases"]
+        )
 
     def _deliver(self, text: str, raw: str, context: FocusContext, fallback: str, record: SessionRecord) -> None:
         """Paste the text where the caret is, or hand it over in a card when there is nowhere to paste."""

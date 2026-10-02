@@ -37,6 +37,8 @@ DISMISS_AFTER: dict[str, float] = {
     "ready": 6.0,
     "perm": 12.0,
 }
+# The English practice card stays for the time it takes to read: see english_dismiss_s.
+ENGLISH_BASE_S, ENGLISH_PER_CHAR_S, ENGLISH_MAX_S = 6.0, 0.06, 20.0
 INSERTED_STATES = frozenset({"inserted", "inserted-raw-net", "inserted-raw-key", "inserted-raw-trial"})
 # Once the pointer leaves, a state it was holding gets at least this long.
 RESUME_MIN_S = 1.2
@@ -132,6 +134,9 @@ class Capsule:
     # ----------------------------------------------------------- internals
 
     def _delay_for(self, state: str) -> float | None:
+        if state == "english":
+            n = len(self.data.get("en", "")) + sum(len(p.get("en", "")) + len(p.get("zh", "")) for p in self.data.get("phrases", []))
+            return min(ENGLISH_MAX_S, ENGLISH_BASE_S + ENGLISH_PER_CHAR_S * n)
         if state == "inserted":
             return float(self.inserted_dismiss_s)
         return DISMISS_AFTER.get(state)

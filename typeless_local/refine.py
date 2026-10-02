@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import logging
 import os
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
+from typeless_local import trial
 from typeless_local.config import RefineConfig
 from typeless_local.mac_integration import FocusContext
 
@@ -60,6 +62,8 @@ class RefineResult:
     prompt_tokens: int = 0
     cached_tokens: int = 0
     completion_tokens: int = 0
+    # English practice: {"en": str, "phrases": [{"en": str, "zh": str}]}, or None.
+    english: dict | None = None
 
 
 def _count(value) -> int:
@@ -161,6 +165,61 @@ For onboarding we need three things:
 比如说我后天好像就要重置额度了，如果我今天晚上把额度用完 Reset 的话，我是不是很亏？
 """
 
+# English practice: appended after everything else so the cached prefix is untouched.
+EN_MARKER = "<<<EN>>>"
+ENGLISH_PRACTICE_PROMPT = f"""
+
+English practice (extra output):
+After the refined text, write a line containing exactly {EN_MARKER}, then one line of compact JSON:
+{{"en": "...", "phrases": [{{"en": "...", "zh": "..."}}]}}
+- If the dictation is Chinese or another non-English language, "en" is a natural, idiomatic spoken English rendering of the refined text: what a fluent speaker would actually say, not a literal translation.
+- If the dictation is English, the part above the marker is the cleaned original as usual, and "en" is a more natural, native phrasing with the same meaning.
+- "phrases": 1-3 useful, reusable expressions taken from "en", each with a short Chinese note ("zh", at most 12 Chinese characters) on its meaning or usage.
+- Everything above the marker follows all the rules above exactly and never contains an English translation.
+"""
+# Room for the English version and the JSON after the refined text.
+ENGLISH_EXTRA_TOKENS = 300
+
+
+def _parse_english(tail: str) -> dict | None:
+    """The JSON after the marker, tolerant of code fences; None when unusable."""
+
+    start, end = tail.find("{"), tail.rfind("}")
+    if start < 0 or end < start:
+        return None
+    try:
+        data = json.loads(tail[start : end + 1])
+    except ValueError:
+        return None
+    en = data.get("en") if isinstance(data, dict) else None
+    if not isinstance(en, str) or not en.strip():
+        return None
+    phrases = [
+        {"en": p["en"].strip(), "zh": p["zh"].strip()}
+        for p in (data.get("phrases") if isinstance(data.get("phrases"), list) else [])
+        if isinstance(p, dict) and isinstance(p.get("en"), str) and isinstance(p.get("zh"), str) and p["en"].strip()
+    ][:3]
+    return {"en": en.strip(), "phrases": phrases}
+
+
+def _log_tokens(usage) -> dict:
+    """Log what the request was billed for and return it as RefineResult fields."""
+
+    if usage is None:
+        return {}
+    details = getattr(usage, "prompt_tokens_details", None)
+    LOGGER.info(
+        "Refine tokens: prompt=%s cached=%s completion=%s",
+        getattr(usage, "prompt_tokens", None),
+        getattr(details, "cached_tokens", None),
+        getattr(usage, "completion_tokens", None),
+    )
+    return {
+        "prompt_tokens": _count(getattr(usage, "prompt_tokens", 0)),
+        "cached_tokens": _count(getattr(details, "cached_tokens", 0)),
+        "completion_tokens": _count(getattr(usage, "completion_tokens", 0)),
+    }
+
 
 class TextRefiner:
     """OpenAI-compatible gpt-5.4-mini refinement client."""
@@ -209,11 +268,19 @@ class TextRefiner:
         context: FocusContext | None = None,
         vocab: list[str] | None = None,
         language: str = "",
+        english: bool = False,
+        on_text: Callable[[str], None] | None = None,
     ) -> RefineResult:
         """Refine raw ASR text into insertable dictation text.
 
         ``language`` is the recognizer's guess ("en", "zh", ...); it only
         steers the model away from translating, the transcript still decides.
+
+        ``english`` asks for an English version after the refined text in the
+        same reply (not on the trial proxy, which cannot stream). The reply is
+        then streamed, and ``on_text(refined)`` is called once, as soon as the
+        refined text is complete and before the English arrives. It is not
+        called for the raw-transcript fallbacks, which the caller handles.
         """
 
         stripped = raw_text.strip()
@@ -251,12 +318,17 @@ class TextRefiner:
                 "replace them with the correct term. Do not invent occurrences — only "
                 "correct fragments that already seem to be attempts at one of these terms.\n"
             )
+        practice = bool(english and on_text is not None and self.config.preset != trial.PRESET)
+        if practice:
+            system_prompt += ENGLISH_PRACTICE_PROMPT
         token_key = "max_completion_tokens" if self.config.model.startswith("gpt-5") else "max_tokens"
         # The configured budget is a floor: a fixed 512 tokens cut anything past
         # about three minutes of Chinese dictation. Two tokens per input
         # character covers Chinese at worst and English with room to spare, and
         # only the tokens actually generated are billed.
         max_tokens = max(self.config.max_tokens, 2 * len(stripped))
+        if practice:
+            max_tokens += ENGLISH_EXTRA_TOKENS
         kwargs = {
             "model": self.config.model,
             "messages": [
@@ -283,6 +355,9 @@ class TextRefiner:
             kwargs["reasoning_effort"] = self.config.reasoning_effort
         if self.config.extra_body:
             kwargs["extra_body"] = dict(self.config.extra_body)
+        if practice:
+            kwargs["stream"] = True
+            kwargs["stream_options"] = {"include_usage": True}
 
         LOGGER.info("Refining transcript with %s", self.config.model)
         client = self._get_client()
@@ -296,21 +371,9 @@ class TextRefiner:
             # second attempt opens a new one. Timeouts are not retried.
             LOGGER.warning("Refine request failed to connect (%s); retrying once", exc)
             response = client.chat.completions.create(**kwargs)
-        usage = getattr(response, "usage", None)
-        tokens = {}
-        if usage is not None:
-            details = getattr(usage, "prompt_tokens_details", None)
-            LOGGER.info(
-                "Refine tokens: prompt=%s cached=%s completion=%s",
-                getattr(usage, "prompt_tokens", None),
-                getattr(details, "cached_tokens", None),
-                getattr(usage, "completion_tokens", None),
-            )
-            tokens = {
-                "prompt_tokens": _count(getattr(usage, "prompt_tokens", 0)),
-                "cached_tokens": _count(getattr(details, "cached_tokens", 0)),
-                "completion_tokens": _count(getattr(usage, "completion_tokens", 0)),
-            }
+        if practice:
+            return self._read_stream(response, on_text, stripped, raw_text, max_tokens)
+        tokens = _log_tokens(getattr(response, "usage", None))
         choice = response.choices[0]
         text = str(choice.message.content or "").strip()
         if getattr(choice, "finish_reason", None) == "length":
@@ -321,6 +384,44 @@ class TextRefiner:
         if not text:
             return RefineResult(text=stripped, raw_text=raw_text, model=self.config.model, fallback="empty", **tokens)
         return RefineResult(text=text, raw_text=raw_text, model=self.config.model, **tokens)
+
+    def _read_stream(self, stream, on_text, stripped: str, raw_text: str, max_tokens: int) -> RefineResult:
+        """Paste-ready text is handed to ``on_text`` the moment the marker shows up."""
+
+        buf, finish, usage, refined = "", None, None, None
+        try:
+            for chunk in stream:
+                usage = getattr(chunk, "usage", None) or usage
+                if not getattr(chunk, "choices", None):
+                    continue
+                choice = chunk.choices[0]
+                buf += str(getattr(choice.delta, "content", None) or "")
+                finish = getattr(choice, "finish_reason", None) or finish
+                if refined is None and EN_MARKER in buf:
+                    refined = buf.split(EN_MARKER, 1)[0].strip()
+                    if refined:
+                        on_text(refined)
+        except Exception:
+            if not refined:
+                raise
+            # The text is already pasted: no retry, no second paste.
+            LOGGER.warning("Refine stream broke after the text was delivered", exc_info=True)
+            return RefineResult(text=refined, raw_text=raw_text, model=self.config.model, **_log_tokens(usage))
+        tokens = _log_tokens(usage)
+        model = self.config.model
+        if refined is None:
+            refined = buf.strip()
+            if finish == "length":
+                LOGGER.warning("Refinement hit the %d-token limit; using the raw transcript", max_tokens)
+                return RefineResult(text=stripped, raw_text=raw_text, model=model, fallback="truncated", **tokens)
+            if refined:
+                on_text(refined)
+            english = None
+        else:
+            english = _parse_english(buf.split(EN_MARKER, 1)[1])
+        if not refined:
+            return RefineResult(text=stripped, raw_text=raw_text, model=model, fallback="empty", **tokens)
+        return RefineResult(text=refined, raw_text=raw_text, model=model, english=english, **tokens)
 
 
 def _is_retryable_connection_error(exc: Exception) -> bool:
