@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -77,26 +78,37 @@ def load_rejected(path: Path) -> list[str]:
     return _coerce_list(_read_yaml(path).get("rejected"))
 
 
-def _load_sections(path: Path) -> dict[str, list[str]]:
-    """Read user/auto/rejected sections, defaulting missing ones to []."""
+def _coerce_learned(value) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [
+        {"term": str(i["term"]).strip(), "was": str(i.get("was") or "").strip(), "at": str(i.get("at") or "")}
+        for i in value
+        if isinstance(i, dict) and str(i.get("term") or "").strip()
+    ]
 
-    if not path.exists():
-        return {"user": [], "auto": [], "rejected": []}
-    data = _read_yaml(path)
+
+def _load_sections(path: Path) -> dict[str, list]:
+    """Read user/auto/rejected/learned sections, defaulting missing ones to []."""
+
+    data = _read_yaml(path) if path.exists() else {}
     return {
         "user": _coerce_list(data.get("user")),
         "auto": _coerce_list(data.get("auto")),
         "rejected": _coerce_list(data.get("rejected")),
+        "learned": _coerce_learned(data.get("learned")),
     }
 
 
-def _atomic_write_sections(path: Path, sections: dict[str, list[str]]) -> None:
+def _atomic_write_sections(path: Path, sections: dict[str, list]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "user": sections.get("user", []),
         "auto": sections.get("auto", []),
         "rejected": sections.get("rejected", []),
     }
+    if sections.get("learned"):
+        payload["learned"] = sections["learned"]
     rendered = _STARTER_HEADER + yaml.safe_dump(
         payload,
         allow_unicode=True,
@@ -187,6 +199,38 @@ def reject_term(path: Path, term: str) -> None:
     sections["auto"] = [t for t in sections["auto"] if t.lower() != lc]
     if not any(t.lower() == lc for t in sections["rejected"]):
         sections["rejected"].append(cleaned)
+    _atomic_write_sections(path, sections)
+
+
+def learn_term(path: Path, term: str, was: str) -> bool:
+    """Add a word the user fixed by hand to `user:` and note it in `learned:`.
+
+    Does nothing (False) when the word is already kept or was rejected.
+    """
+
+    path = Path(path)
+    term = term.strip()
+    sections = _load_sections(path)
+    if not term or any(term.lower() == t.lower() for t in sections["user"] + sections["rejected"]):
+        return False
+    sections["user"].append(term)
+    sections["learned"].append({"term": term, "was": was.strip(), "at": datetime.now().isoformat(timespec="minutes")})
+    _atomic_write_sections(path, sections)
+    return True
+
+
+def unlearn_term(path: Path, term: str) -> None:
+    """Drop a learned word from `user:` and `learned:`, and reject it so it is never learned again."""
+
+    path = Path(path)
+    lc = term.strip().lower()
+    if not lc:
+        return
+    sections = _load_sections(path)
+    sections["user"] = [t for t in sections["user"] if t.lower() != lc]
+    sections["learned"] = [e for e in sections["learned"] if e["term"].lower() != lc]
+    if not any(t.lower() == lc for t in sections["rejected"]):
+        sections["rejected"].append(term.strip())
     _atomic_write_sections(path, sections)
 
 

@@ -72,8 +72,8 @@ from typeless_local.preferences import Preferences, load_preferences, save_prefe
 from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner, TrialUnavailable
 from typeless_local.stats import DailyStats
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
-from typeless_local.vocab import as_initial_prompt, load_user_terms, load_vocab, write_starter_file
-from typeless_local.windows import Windows, install_main_menu, prices
+from typeless_local.vocab import as_initial_prompt, learn_term, load_user_terms, load_vocab, write_starter_file
+from typeless_local.windows import Windows, install_main_menu, learned_fixes, prices
 
 LOGGER = logging.getLogger(__name__)
 Mode = Literal["tap", "hands_free"]
@@ -1375,13 +1375,29 @@ class TypelessLocalApp:
 
     # ------------------------------------------------------------ recording
 
-    def _store_sent_text(self, session_id: int, text: str) -> None:
+    def _store_sent_text(self, session_id: int, pasted: str, text: str) -> None:
         """A pasted dictation went out as ``text`` (from the sent-text watcher's thread)."""
 
+        try:
+            user_paths = getattr(self.config, "user_paths", None)
+            if user_paths is not None and self.prefs.save_history and self.prefs.save_sent_text:
+                if set_sent_text(user_paths.trace_db_path, session_id, text):
+                    self._windows_changed(history=True)
+            self._learn_from_edit(pasted, text)
+        except Exception:
+            LOGGER.warning("Could not handle the sent text", exc_info=True)
+
+    def _learn_from_edit(self, pasted: str, sent: str) -> None:
+        """Words fixed by hand before sending go into the vocabulary."""
+
         user_paths = getattr(self.config, "user_paths", None)
-        if user_paths is not None and self.prefs.save_history and self.prefs.save_sent_text:
-            if set_sent_text(user_paths.trace_db_path, session_id, text):
-                self._windows_changed(history=True)
+        if user_paths is None:
+            return
+        learned = sum(learn_term(user_paths.vocab_path, right, wrong) for wrong, right in learned_fixes(pasted, sent))
+        if learned:
+            self.reload_vocab()
+            LOGGER.info("Learned %d word(s) from a hand edit", learned)
+            self._windows_changed()
 
     def _start_recording(self, mode: Mode, hold: bool = False) -> None:
         if getattr(self, "_download", None) is not None:

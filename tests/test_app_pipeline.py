@@ -1533,7 +1533,7 @@ def test_a_pasted_dictation_is_watched_until_it_is_sent(monkeypatch, tmp_path) -
 
     ((row, pasted, pid),) = watched
     assert pasted == "Refined text." and pid == TARGET_PID
-    app._store_sent_text(row, "Refined text, edited.")
+    app._store_sent_text(row, pasted, "Refined text, edited.")
     assert history.recent_sessions(db)[0]["sent"] == "Refined text, edited."
 
     # Off in Settings: nothing is watched.
@@ -2030,3 +2030,16 @@ def test_short_fragments_are_kept_or_dropped_by_the_allowed_languages(monkeypatc
     assert not drops("A longer sentence in Icelandic", "is", 0.9)  # the filter is for short fragments
     app.asr._asr_config = {"language": "ja"}
     assert not drops("はい", "ja", 0.9)  # chosen in Settings
+
+
+def test_a_hand_fix_before_sending_is_learned_into_the_vocabulary(tmp_path) -> None:
+    app = _make_app("x")
+    app.config.user_paths = SimpleNamespace(vocab_path=tmp_path / "v.yaml", trace_db_path=tmp_path / "t.db")
+    reloads = []
+    app.reload_vocab = lambda: reloads.append(1)
+    app._store_sent_text(1, "还没有默制是吧？", "还没有merge是吧？")
+    from typeless_local import vocab
+
+    assert vocab.load_user_terms(tmp_path / "v.yaml") == ["merge"] and reloads == [1]
+    app._store_sent_text(1, "还没有默制是吧？", "还没有merge是吧？")
+    assert reloads == [1]

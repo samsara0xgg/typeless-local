@@ -36,7 +36,7 @@ class SentTextWatcher:
 
     ``read(pid)`` returns the focused text field's value in that process, or
     None when there is none to read; ``front()`` returns the frontmost process.
-    ``on_sent(row_id, text)`` is called at most once per watch, from the
+    ``on_sent(row_id, pasted, text)`` is called at most once per watch, from the
     watcher's thread.
     """
 
@@ -44,7 +44,7 @@ class SentTextWatcher:
         self,
         read: Callable[[int], str | None],
         front: Callable[[], int],
-        on_sent: Callable[[int, str], None],
+        on_sent: Callable[[int, str, str], None],
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
@@ -84,7 +84,7 @@ class SentTextWatcher:
             return
         if text is not None and self._live(token):
             LOGGER.info("Dictation %s went out as %d characters", row_id, len(text))
-            self._on_sent(row_id, text)
+            self._on_sent(row_id, pasted, text)
 
     def _follow(self, token: int, pasted: str, pid: int) -> str | None:
         start = self._clock()

@@ -177,10 +177,13 @@ function vocab() {
   const fixes = v.fixes.length ? v.fixes.map(f => row(`${f.wrong ? `<span class="del">${esc(f.wrong)}</span> <span class="arrow">→</span> ` : ''}${esc(f.right)}`,
     v.mine.includes(f.right) ? `<span class="val">${L('已在词库', 'In the vocabulary')}</span>` : `<button class="mbtn" data-act="word" data-term="${esc(f.right)}">${L('加入词库', 'Add to Vocabulary')}</button>`, esc(f.at || '')))
     : [row(`<span class="empty">${L('在胶囊的修改卡片里改过的词会出现在这里。', 'Words you fix in the capsule’s edit card show up here.')}</span>`, '')];
+  const learned = v.learned.map(f => row(`${f.wrong ? `<span class="del">${esc(f.wrong)}</span> <span class="arrow">→</span> ` : ''}${esc(f.right)}`,
+    `<button class="mbtn" data-act="unlearn" data-term="${esc(f.right)}">${L('移除', 'Remove')}</button>`, esc(f.at || '')));
   return head(paneTitle('vocab'))
     + `<div class="grp-l">${L('我的词 · 同时提示给语音识别和润色模型', 'My words · hinted to both speech recognition and refinement')}</div>`
     + `<div class="grp"><div class="chipset">${mine}<input class="field" id="newword" placeholder="${L('添加词，回车确认', 'Add a word, press Return')}" aria-label="${L('添加词', 'Add a word')}"></div></div>`
     + (UI.vocabMsg ? `<p class="note">${esc(UI.vocabMsg)}</p>` : '')
+    + (learned.length ? `<div class="grp-l">${L('自动学到的 · 来自你发送前的修改', 'Learned from your edits')}</div>` + grp(learned) : '')
     + `<div class="grp-l">${L('建议加入 · 从最近的润色差异里找出', 'Suggested · found in recent refinements')}</div>` + grp(suggest)
     + `<div class="grp-l">${L('最近的手动修改', 'Recent hand corrections')}</div>` + grp(fixes);
 }
@@ -401,6 +404,7 @@ document.addEventListener('click', e => {
   else if (a === 'migrate') post({ t: 'migrate' });
   else if (a === 'word') post({ t: 'vocab', op: 'add', term: act.dataset.term });
   else if (a === 'unword') post({ t: 'vocab', op: 'remove', term: act.dataset.term });
+  else if (a === 'unlearn') post({ t: 'vocab', op: 'unlearn', term: act.dataset.term });
   else if (a === 'reject') post({ t: 'vocab', op: 'reject', term: act.dataset.term });
   else if (a === 'feedback') sendFeedback();
   else if (a === 'clear') { UI.confirm = { kind: 'clear', n: S.history.count }; draw(); }

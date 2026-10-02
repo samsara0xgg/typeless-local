@@ -122,6 +122,42 @@ def fix_terms(before: str, after: str) -> list[tuple[str, str]]:
     return out
 
 
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+
+
+def learned_fixes(pasted: str, sent: str) -> list[tuple[str, str]]:
+    """Mishears the user fixed by hand before sending, as (was, now); [] unless every change is a clean swap."""
+
+    def tokens(text: str) -> list[str]:
+        return [" " if tok.isspace() else tok for tok in _TOKEN.findall(text or "")]
+
+    old, new = tokens(pasted), tokens(sent)
+    ops = [op for op in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes() if op[0] != "equal"]
+    if len(ops) > 2 or any(op[0] != "replace" for op in ops):
+        return []
+    out = []
+    for _, i1, i2, j1, j2 in ops:
+        wrong, right = "".join(old[i1:i2]).strip(_EDGE), "".join(new[j1:j2]).strip(_EDGE)
+        if len(right) == 1 and _CJK.fullmatch(right):
+            # ponytail: no word segmentation; borrow the CJK neighbours so a one-character fix reads as a word.
+            if i1 and _CJK.fullmatch(old[i1 - 1]):
+                wrong, right = old[i1 - 1] + wrong, old[i1 - 1] + right
+            if i2 < len(old) and _CJK.fullmatch(old[i2]):
+                wrong, right = wrong + old[i2], right + old[i2]
+        if (
+            not 2 <= len(right) <= 24
+            or not wrong
+            or wrong.lower() == right.lower()
+            or not re.search(r"[^\W\d_]", right)
+            or sum(not x.isspace() for x in _TOKEN.findall(wrong)) > 4
+            or sum(not x.isspace() for x in _TOKEN.findall(right)) > 4
+            or (wrong.isascii() and not re.search(r"[A-Za-z]", right))
+        ):
+            continue
+        out.append((wrong, right))
+    return out
+
+
 class Windows:
     """Opens the windows and answers their pages."""
 
@@ -321,7 +357,7 @@ class Windows:
     def _vocab_state(self) -> dict:
         user_paths = getattr(self.app.config, "user_paths", None)
         if user_paths is None:
-            return {"mine": [], "suggest": [], "fixes": []}
+            return {"mine": [], "suggest": [], "fixes": [], "learned": []}
         sections = vocab._load_sections(Path(user_paths.vocab_path))
         mine = sections["user"]
         known = {term.lower() for term in mine + sections["rejected"]}
@@ -340,7 +376,11 @@ class Windows:
                     break
             if len(fixes) >= FIXES:
                 break
-        return {"mine": mine, "suggest": suggest, "fixes": fixes}
+        learned = [
+            {"wrong": e["was"], "right": e["term"], "at": e["at"][5:16].replace("T", " ")}
+            for e in reversed(sections["learned"]) if e["term"] in mine
+        ]
+        return {"mine": mine, "suggest": suggest, "fixes": fixes, "learned": learned}
 
     def _settings_message(self, msg: dict) -> None:
         kind = msg.get("t")
@@ -537,6 +577,8 @@ class Windows:
             vocab.save_user_terms(path, [word for word in mine if word != term])
         elif op == "reject":
             vocab.reject_term(path, term)
+        elif op == "unlearn":
+            vocab.unlearn_term(path, term)
         else:
             return
         self.app.reload_vocab()

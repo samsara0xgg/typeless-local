@@ -631,3 +631,27 @@ def test_the_level_meter_opens_the_microphone_only_while_asked(ui, monkeypatch) 
     window.close()  # the red button: the page never says stop
     streams[1].callback(np.array([[0.1]]), 1, None, None)
     assert not streams[1].open  # the next level finds the window gone and lets the microphone go
+
+
+def test_learned_fixes_only_take_clean_word_swaps() -> None:
+    lf = windows.learned_fixes
+    assert lf("目前这个版本还没有默制是吧？", "目前这个版本还没有merge是吧？") == [("默制", "merge")]
+    assert lf("大哥，copy 一下。", "大哥，考屁 一下。") == []
+    assert lf("的说明写着", "的？") == []
+    assert lf("好的哈", "好的哈 不行 怎么都不行") == []
+    assert lf("说明写着", "前缀 说明写着") == []
+    assert lf("第一段。\n\n第二段。", "第一段。\n第二段。") == []
+    assert lf("找张山开会", "找章三开会") == [("张山", "章三")]
+    assert lf("找张三开会", "找章三开会") == [("找张三", "找章三")]
+
+
+def test_learned_words_are_listed_and_can_be_removed(ui) -> None:
+    window = _open_settings(ui)
+    path = ui.paths.vocab_path
+    vocab._atomic_write_sections(path, {"user": [], "auto": [], "rejected": []})
+    vocab.learn_term(path, "merge", "默制")
+    assert [(f["wrong"], f["right"]) for f in ui.windows._vocab_state()["learned"]] == [("默制", "merge")]
+    ui.windows._settings_message({"t": "vocab", "op": "unlearn", "term": "merge"})
+    state = window.last("state")
+    assert state["vocab"]["learned"] == [] and state["vocab"]["mine"] == []
+    assert ("reload",) in ui.app.calls

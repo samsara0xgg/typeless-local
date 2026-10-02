@@ -31,7 +31,7 @@ class Field:
         return self.t
 
     def watcher(self):
-        return SentTextWatcher(self.read, self.front, lambda row, text: self.sent.append((row, text)), sleep=self.sleep, clock=self.clock)
+        return SentTextWatcher(self.read, self.front, lambda row, pasted, text: self.sent.append((row, text)), sleep=self.sleep, clock=self.clock)
 
 
 PASTED = "明天下午四点开会，记得带电脑。"

@@ -147,3 +147,17 @@ def test_save_user_terms_keeps_auto_and_rejected(tmp_path: Path) -> None:
     assert vocab.load_user_terms(path) == ["Typlus", "PyObjC"]
     assert vocab.load_vocab(path) == ["Typlus", "PyObjC", "Auto"]
     assert vocab.load_rejected(path) == ["Nope"]
+
+
+def test_learn_unlearn_round_trip_and_auto_save_keeps_learned(tmp_path: Path) -> None:
+    path = tmp_path / "vocab.yaml"
+    assert vocab.learn_term(path, "merge", "默制") is True
+    assert vocab.learn_term(path, "Merge", "x") is False
+    vocab.save_auto_terms(path, ["PyObjC"])
+    sections = vocab._load_sections(path)
+    assert sections["user"] == ["merge"] and sections["auto"] == ["PyObjC"]
+    assert [(e["term"], e["was"]) for e in sections["learned"]] == [("merge", "默制")] and sections["learned"][0]["at"]
+    vocab.unlearn_term(path, "merge")
+    sections = vocab._load_sections(path)
+    assert sections["user"] == [] and sections["learned"] == [] and sections["rejected"] == ["merge"]
+    assert vocab.learn_term(path, "merge", "默制") is False
