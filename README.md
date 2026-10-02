@@ -1,6 +1,6 @@
 # 言字 (Yana)
 
-**[Download for macOS](https://github.com/samsara0xgg/typeless-local/releases/download/v0.4.1/Yana-0.4.1.dmg)** (Apple silicon, macOS 13.5+)
+**[Download for macOS](https://github.com/samsara0xgg/typeless-local/releases/download/v0.4.2/Yana-0.4.2.dmg)** (Apple silicon, macOS 13.5+)
 
 > **Limited-time free trial.** Download Yana now and dictate with no API key: a new Mac in the US or Canada gets free refinement to start.
 
@@ -13,9 +13,38 @@ The app is called 言字 on a Chinese system and Yana everywhere else
 ID and the `~/.typlus` folder keep that name, so the permissions macOS granted
 and your key, words and history carry over.
 
+## Gets more accurate the more you use it
+
+Yana learns your words from how you use it, with nothing to set up:
+
+- **It learns from the fixes you already make.** Dictate into a chat box, fix
+  a misheard word right there, press Enter: Yana compares what it pasted with
+  what you sent and adds the corrected word to your vocabulary on the spot
+  ("Jeff → Jev"). Only small word swaps count; rewording, added or deleted
+  text, punctuation and capitalization are ignored, so normal editing does not
+  pollute it. Learned words are listed under **Settings › 词库** with how
+  often you fixed them, and one click removes a word for good. Works in
+  Claude, ChatGPT and most Mac apps; apps that hide their text box from other
+  apps (WeChat) can't be learned from.
+- **Hot words reach both steps.** Your whole vocabulary goes to the
+  refinement model, which turns mishearings of those terms back into the right
+  words. Speech recognition gets the hottest of them as a hint (Whisper's hint
+  has room for about 600 characters): ranked by how many times you fixed a word
+  and how often it came up in the last 90 days, so the words it keeps getting
+  wrong come first.
+- **Context.** Refinement sees which app you are in and its window title, so
+  a message in a chat, an email and code each come out right. Optionally it
+  also reads up to 300 characters before the cursor (off by default). Each is
+  a switch in **Settings › 历史与隐私**; password fields are never read.
+- **Your languages.** On Automatic, the spoken language is detected every
+  time, mixed languages included. Short clips are kept to the languages this
+  Mac and your longer dictations show you speak, so a two-second phrase is
+  not mistaken for Icelandic. Chinese always comes out in Simplified
+  characters, and nothing is ever translated.
+
 ## Install
 
-[Download Yana-0.4.1.dmg](https://github.com/samsara0xgg/typeless-local/releases/download/v0.4.1/Yana-0.4.1.dmg) (all versions are under
+[Download Yana-0.4.2.dmg](https://github.com/samsara0xgg/typeless-local/releases/download/v0.4.2/Yana-0.4.2.dmg) (all versions are under
 [Releases](https://github.com/samsara0xgg/typeless-local/releases)), open it, and
 drag the app to Applications. The build is signed and notarized by Apple, so it
 opens by double-clicking with no security warnings. If an older `Typlus.app` is
@@ -73,16 +102,24 @@ always wins.
   leaves both alone.
 - If refinement fails, times out, or its reply is cut off, the raw transcript
   is pasted instead, so a dictation is never lost to the polish step.
-- **Settings** (`⌘,` from the menu) has eight panes: general, dictation,
-  shortcuts, refinement models and keys, vocabulary, audio, usage, and history
-  and privacy.
+- **Settings** (`⌘,` from the menu) has nine panes: general, dictation,
+  shortcuts, refinement models and keys, vocabulary, audio, usage, history
+  and privacy, and about.
+- **Feedback**: Settings › 关于 (or **发送反馈…** in the menu) has a box
+  that sends a message straight to the developer, with the app and macOS
+  version and Mac model, optionally a reply address, and diagnostics only if
+  you tick the box. Never any dictated text.
 - **History** (`⌘Y`) lists every dictation by day, shows what the model changed
   and where the time went, and adds a misheard word to the vocabulary in one
   click. Nothing is ever deleted unless you pick a retention limit.
 - **What you actually sent**: after a paste, the field it landed in is read
   until it empties (a chat box on Enter) or you switch apps, and the final
   text is stored next to the refined one, so History shows what you fixed by
-  hand. Only small fields, never documents; off in Settings › 历史与隐私.
+  hand and the vocabulary learns the words you corrected. Only small fields,
+  never documents; off in Settings › 历史与隐私.
+- **Spoken language** (Settings › 听写 › 识别语言): Automatic, 中文, English
+  or Français. Keep Automatic if you speak more than one language; a fixed
+  language is only for people who speak just that one.
 - **Diagnostics** (Settings › 通用 › 诊断信息) zips the log, the changed
   settings and a summary of the Mac for a bug report, with API keys cut out and
   no dictation history, and shows the file in Finder.
@@ -106,6 +143,9 @@ dictated text passes through the Worker to OpenAI and is not stored. When the
 trial runs out (remembered, so the Worker is not asked again), or outside
 those two countries, dictation pastes the raw transcript and asks for the
 user's own key; saving one switches to `gpt-5.6-terra` for good.
+
+Feedback from Settings › 关于 goes to the same Worker and is stored for the
+developer to read.
 
 Once a day the app also sends anonymous usage stats to the same Worker: a
 random ID for this Mac, the app version, and for each day the number of
@@ -140,8 +180,16 @@ auto: []   # auto-filled by scripts/extract_hotwords.py
 ```
 
 `user:` entries are kept verbatim; `auto:` is rewritten by the extraction
-script. **Settings › 词库** edits `user:`, offers `auto:` terms to add or
-reject, and lists words from your recent hand corrections.
+script. Words learned from your hand edits are added to `user:` and noted in
+`learned:` (what they were heard as, when, and how many times you fixed
+them); a removed one goes to `rejected:` and is never learned again.
+**Settings › 词库** edits `user:`, shows what was learned, offers `auto:`
+terms to add or reject, and lists words from your recent hand corrections.
+
+The refinement model gets every term. Whisper's hint is capped at about 600
+characters, filled from the top of a ranking: 5 points for each time you
+fixed a word by hand plus 1 for each dictation in the last 90 days that used
+it, ties going to the most recently fixed.
 
 To fill `auto:` from your own history:
 
