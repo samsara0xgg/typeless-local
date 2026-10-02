@@ -643,6 +643,9 @@ def test_learned_fixes_only_take_clean_word_swaps() -> None:
     assert lf("第一段。\n\n第二段。", "第一段。\n第二段。") == []
     assert lf("找张山开会", "找章三开会") == [("张山", "章三")]
     assert lf("找张三开会", "找章三开会") == [("找张三", "找章三")]
+    # The field also held an earlier dictation; only the pasted part is compared.
+    assert lf("用 Java 把 Jarvis 优化一下", "可以听见我说话吗？用 Jev 把 Jarvis 优化一下") == [("Java", "Jev")]
+    assert lf("用 Java 把 Jarvis 优化一下", "用 Jev 把 Jarvis 优化一下 好吗") == [("Java", "Jev")]
 
 
 def test_learned_words_are_listed_and_can_be_removed(ui) -> None:

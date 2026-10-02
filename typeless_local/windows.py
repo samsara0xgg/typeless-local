@@ -133,6 +133,8 @@ def learned_fixes(pasted: str, sent: str) -> list[tuple[str, str]]:
 
     old, new = tokens(pasted), tokens(sent)
     ops = [op for op in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes() if op[0] != "equal"]
+    # The field can hold more than the paste: text typed or dictated before or after it.
+    ops = [op for op in ops if not (op[0] == "insert" and op[1] in (0, len(old)))]
     if len(ops) > 2 or any(op[0] != "replace" for op in ops):
         return []
     out = []

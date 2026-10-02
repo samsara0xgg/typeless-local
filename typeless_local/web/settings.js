@@ -183,7 +183,8 @@ function vocab() {
     + `<div class="grp-l">${L('我的词 · 同时提示给语音识别和润色模型', 'My words · hinted to both speech recognition and refinement')}</div>`
     + `<div class="grp"><div class="chipset">${mine}<input class="field" id="newword" placeholder="${L('添加词，回车确认', 'Add a word, press Return')}" aria-label="${L('添加词', 'Add a word')}"></div></div>`
     + (UI.vocabMsg ? `<p class="note">${esc(UI.vocabMsg)}</p>` : '')
-    + (learned.length ? `<div class="grp-l">${L('自动学到的 · 来自你发送前的修改', 'Learned from your edits')}</div>` + grp(learned) : '')
+    + `<div class="grp-l">${L('自动学到的 · 来自你发送前的修改', 'Learned from your edits')}</div>`
+    + grp(learned.length ? learned : [row(`<span class="empty">${L('在输入框里把听错的词改对再发送，改对的词会出现在这里。', 'Fix a misheard word in the text box before sending, and the fixed word shows up here.')}</span>`, '')])
     + `<div class="grp-l">${L('建议加入 · 从最近的润色差异里找出', 'Suggested · found in recent refinements')}</div>` + grp(suggest)
     + `<div class="grp-l">${L('最近的手动修改', 'Recent hand corrections')}</div>` + grp(fixes);
 }
