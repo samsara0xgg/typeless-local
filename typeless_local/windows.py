@@ -379,7 +379,7 @@ class Windows:
             if len(fixes) >= FIXES:
                 break
         learned = [
-            {"wrong": e["was"], "right": e["term"], "at": e["at"][5:16].replace("T", " ")}
+            {"wrong": e["was"], "right": e["term"], "n": e["n"], "at": e["at"][5:16].replace("T", " ")}
             for e in reversed(sections["learned"]) if e["term"] in mine
         ]
         return {"mine": mine, "suggest": suggest, "fixes": fixes, "learned": learned}

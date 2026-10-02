@@ -2041,5 +2041,5 @@ def test_a_hand_fix_before_sending_is_learned_into_the_vocabulary(tmp_path) -> N
     from typeless_local import vocab
 
     assert vocab.load_user_terms(tmp_path / "v.yaml") == ["merge"] and reloads == [1]
-    app._store_sent_text(1, "还没有默制是吧？", "还没有merge是吧？")
-    assert reloads == [1]
+    app._store_sent_text(1, "还没有默制是吧？", "还没有merge是吧？")  # a repeat fix counts again, the word is not repeated
+    assert vocab.load_user_terms(tmp_path / "v.yaml") == ["merge"] and reloads == [1, 1]

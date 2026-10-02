@@ -64,7 +64,7 @@ from typeless_local.first_run import (
     model_is_cached,
     set_api_key,
 )
-from typeless_local.history import purge_older_than, set_sent_text
+from typeless_local.history import purge_older_than, set_sent_text, term_counts
 from typeless_local.sent_text import SentTextWatcher
 from typeless_local.menubar import MenuBarIcon, Recent, Snapshot
 from typeless_local.overlay import FloatingOverlay
@@ -72,11 +72,12 @@ from typeless_local.preferences import Preferences, load_preferences, save_prefe
 from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner, TrialUnavailable
 from typeless_local.stats import DailyStats
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
-from typeless_local.vocab import as_initial_prompt, learn_term, load_vocab, whisper_terms, write_starter_file
+from typeless_local.vocab import as_initial_prompt, learn_term, load_user_terms, load_vocab, whisper_terms, write_starter_file
 from typeless_local.windows import Windows, install_main_menu, learned_fixes, prices
 
 LOGGER = logging.getLogger(__name__)
 Mode = Literal["tap", "hands_free"]
+USE_DAYS = 90  # how far back word use counts toward Whisper's prompt
 DOUBLE_CLICK_SECONDS = 0.4
 # After pressing play/pause, how long to watch for media that started instead of stopping.
 MEDIA_CHECK_S = 0.8
@@ -147,7 +148,7 @@ class TypelessLocalApp:
         if user_paths is not None:
             write_starter_file(user_paths.vocab_path)
             self.vocab = load_vocab(user_paths.vocab_path)
-            self.whisper_prompt = as_initial_prompt(whisper_terms(user_paths.vocab_path))
+            self.whisper_prompt = self._whisper_prompt(user_paths)
             self.trace = DictationTrace(user_paths.trace_db_path)
             self.daily_stats = DailyStats(user_paths.config_dir / "stats.json", app_version())
         else:
@@ -261,8 +262,16 @@ class TypelessLocalApp:
         if user_paths is None:
             return
         self.vocab = load_vocab(user_paths.vocab_path)
-        self.whisper_prompt = as_initial_prompt(whisper_terms(user_paths.vocab_path))
+        self.whisper_prompt = self._whisper_prompt(user_paths)
         LOGGER.info("Reloaded vocab: %d terms", len(self.vocab))
+
+    @staticmethod
+    def _whisper_prompt(user_paths) -> str:
+        """Whisper's prompt from the hottest words; counted on launch and on vocabulary changes only."""
+
+        terms = load_user_terms(user_paths.vocab_path)
+        uses = term_counts(user_paths.trace_db_path, terms, days=USE_DAYS) if user_paths.trace_db_path.exists() else {}
+        return as_initial_prompt(whisper_terms(user_paths.vocab_path, uses))
 
     def _select_capture_device(self) -> str:
         """Point the recorder at the preferred mic, or the system default if it is gone.

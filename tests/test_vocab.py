@@ -152,20 +152,28 @@ def test_save_user_terms_keeps_auto_and_rejected(tmp_path: Path) -> None:
 def test_learn_unlearn_round_trip_and_auto_save_keeps_learned(tmp_path: Path) -> None:
     path = tmp_path / "vocab.yaml"
     assert vocab.learn_term(path, "merge", "默制") is True
-    assert vocab.learn_term(path, "Merge", "x") is False
+    assert vocab.learn_term(path, "Merge", "默治") is True  # counted again under the kept spelling
     vocab.save_auto_terms(path, ["PyObjC"])
     sections = vocab._load_sections(path)
     assert sections["user"] == ["merge"] and sections["auto"] == ["PyObjC"]
-    assert [(e["term"], e["was"]) for e in sections["learned"]] == [("merge", "默制")] and sections["learned"][0]["at"]
+    assert [(e["term"], e["was"], e["n"]) for e in sections["learned"]] == [("merge", "默治", 2)] and sections["learned"][0]["at"]
     vocab.unlearn_term(path, "merge")
     sections = vocab._load_sections(path)
     assert sections["user"] == [] and sections["learned"] == [] and sections["rejected"] == ["merge"]
     assert vocab.learn_term(path, "merge", "默制") is False
 
 
-def test_whisper_terms_put_the_newest_learned_word_first(tmp_path: Path) -> None:
+def test_whisper_terms_rank_fixes_then_use_then_recency(tmp_path: Path) -> None:
     path = tmp_path / "vocab.yaml"
     vocab.save_user_terms(path, ["Jarvis", "Typlus"])
     vocab.learn_term(path, "merge", "默制")
     vocab.learn_term(path, "Jev", "Jeff")
     assert vocab.whisper_terms(path) == ["Jev", "merge", "Jarvis", "Typlus"]
+    # Plain use counts, but one fix weighs more; a repeat fix counts again.
+    assert vocab.whisper_terms(path, {"Typlus": 3}) == ["Jev", "merge", "Typlus", "Jarvis"]
+    assert vocab.whisper_terms(path, {"Typlus": 6}) == ["Typlus", "Jev", "merge", "Jarvis"]
+    assert vocab.learn_term(path, "merge", "默治")
+    assert vocab.whisper_terms(path, {"Typlus": 6}) == ["merge", "Typlus", "Jev", "Jarvis"]
+    assert vocab.learn_term(path, "jarvis", "Java")  # a hand-added word fixed by hand counts too
+    assert vocab.load_user_terms(path) == ["Jarvis", "Typlus", "merge", "Jev"]
+    assert [(e["term"], e["n"]) for e in vocab._load_sections(path)["learned"]] == [("Jev", 1), ("merge", 2), ("Jarvis", 1)]

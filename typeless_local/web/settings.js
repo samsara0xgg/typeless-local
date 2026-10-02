@@ -177,7 +177,7 @@ function vocab() {
   const fixes = v.fixes.length ? v.fixes.map(f => row(`${f.wrong ? `<span class="del">${esc(f.wrong)}</span> <span class="arrow">→</span> ` : ''}${esc(f.right)}`,
     v.mine.includes(f.right) ? `<span class="val">${L('已在词库', 'In the vocabulary')}</span>` : `<button class="mbtn" data-act="word" data-term="${esc(f.right)}">${L('加入词库', 'Add to Vocabulary')}</button>`, esc(f.at || '')))
     : [row(`<span class="empty">${L('在胶囊的修改卡片里改过的词会出现在这里。', 'Words you fix in the capsule’s edit card show up here.')}</span>`, '')];
-  const learned = v.learned.map(f => row(`${f.wrong ? `<span class="del">${esc(f.wrong)}</span> <span class="arrow">→</span> ` : ''}${esc(f.right)}`,
+  const learned = v.learned.map(f => row(`${f.wrong ? `<span class="del">${esc(f.wrong)}</span> <span class="arrow">→</span> ` : ''}${esc(f.right)}${f.n > 1 ? ` <span class="val">×${f.n}</span>` : ''}`,
     `<button class="mbtn" data-act="unlearn" data-term="${esc(f.right)}">${L('移除', 'Remove')}</button>`, esc(f.at || '')));
   return head(paneTitle('vocab'))
     + `<div class="grp-l">${L('我的词 · 同时提示给语音识别和润色模型', 'My words · hinted to both speech recognition and refinement')}</div>`

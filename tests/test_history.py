@@ -83,7 +83,8 @@ def test_term_counts_are_case_insensitive(tmp_path) -> None:
     _log(trace, raw_asr_text="x", refined_text="Ship the PyObjC fix.")
     _log(trace, raw_asr_text="x", refined_text="pyobjc again")
 
-    assert history.term_counts(db, ["PyObjC", "Whisper"]) == {"PyObjC": 2, "Whisper": 0}
+    _log(trace, raw_asr_text="x", refined_text="ask Jarvis, 用 Jev")
+    assert history.term_counts(db, ["PyObjC", "Whisper", "Ja", "Jev"]) == {"PyObjC": 2, "Whisper": 0, "Ja": 0, "Jev": 1}
 
 
 def test_the_sent_text_is_stored_and_read_back(tmp_path) -> None:
