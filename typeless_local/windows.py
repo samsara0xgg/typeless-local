@@ -34,7 +34,17 @@ from typeless_local.trace import load_corrections
 
 LOGGER = logging.getLogger(__name__)
 
-SETTINGS_PANES = ("general", "dictation", "keys", "model", "vocab", "audio", "usage", "privacy")
+SETTINGS_PANES = ("general", "dictation", "keys", "model", "vocab", "audio", "usage", "privacy", "about")
+
+
+def _open_urls() -> dict[str, str]:
+    """The only web addresses a page may ask to open, by name."""
+
+    urls = {"releases": brand.RELEASES_URL, "repo": brand.REPO_URL, "github": brand.AUTHOR_GITHUB}
+    urls.update({f"link{i}": url for i, (_, url) in enumerate(brand.AUTHOR_LINKS)})
+    return {name: url for name, url in urls.items() if url.startswith("https://")}
+
+
 SUGGESTIONS = 8
 HISTORY_ROWS = 500
 FIXES = 6
@@ -107,6 +117,44 @@ def fix_terms(before: str, after: str) -> list[tuple[str, str]]:
             continue
         wrong, right = "".join(old[i1:i2]).strip(_EDGE), "".join(new[j1:j2]).strip(_EDGE)
         if len(right) < 2 or wrong.lower() == right.lower():
+            continue
+        out.append((wrong, right))
+    return out
+
+
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+
+
+def learned_fixes(pasted: str, sent: str) -> list[tuple[str, str]]:
+    """Mishears the user fixed by hand before sending, as (was, now); [] unless every change is a clean swap."""
+
+    def tokens(text: str) -> list[str]:
+        return [" " if tok.isspace() else tok for tok in _TOKEN.findall(text or "")]
+
+    old, new = tokens(pasted), tokens(sent)
+    ops = [op for op in difflib.SequenceMatcher(None, old, new, autojunk=False).get_opcodes() if op[0] != "equal"]
+    # The field can hold more than the paste: text typed or dictated before or after it.
+    ops = [op for op in ops if not (op[0] == "insert" and op[1] in (0, len(old)))]
+    if len(ops) > 2 or any(op[0] != "replace" for op in ops):
+        return []
+    out = []
+    for _, i1, i2, j1, j2 in ops:
+        wrong, right = "".join(old[i1:i2]).strip(_EDGE), "".join(new[j1:j2]).strip(_EDGE)
+        if len(right) == 1 and _CJK.fullmatch(right):
+            # ponytail: no word segmentation; borrow the CJK neighbours so a one-character fix reads as a word.
+            if i1 and _CJK.fullmatch(old[i1 - 1]):
+                wrong, right = old[i1 - 1] + wrong, old[i1 - 1] + right
+            if i2 < len(old) and _CJK.fullmatch(old[i2]):
+                wrong, right = wrong + old[i2], right + old[i2]
+        if (
+            not 2 <= len(right) <= 24
+            or not wrong
+            or wrong.lower() == right.lower()
+            or not re.search(r"[^\W\d_]", right)
+            or sum(not x.isspace() for x in _TOKEN.findall(wrong)) > 4
+            or sum(not x.isspace() for x in _TOKEN.findall(right)) > 4
+            or (wrong.isascii() and not re.search(r"[A-Za-z]", right))
+        ):
             continue
         out.append((wrong, right))
     return out
@@ -305,12 +353,13 @@ class Windows:
             "history": {"count": history.count_sessions(db) if db is not None else 0},
             "usage": usage.summary(db, prices(jarvis)) if db is not None and prefs.save_history else None,
             "f5": bool(self._f5_conflict),
+            "author": {"name": brand.AUTHOR_NAME, "github": brand.AUTHOR_GITHUB, "links": [list(link) for link in brand.AUTHOR_LINKS]},
         }
 
     def _vocab_state(self) -> dict:
         user_paths = getattr(self.app.config, "user_paths", None)
         if user_paths is None:
-            return {"mine": [], "suggest": [], "fixes": []}
+            return {"mine": [], "suggest": [], "fixes": [], "learned": []}
         sections = vocab._load_sections(Path(user_paths.vocab_path))
         mine = sections["user"]
         known = {term.lower() for term in mine + sections["rejected"]}
@@ -329,7 +378,11 @@ class Windows:
                     break
             if len(fixes) >= FIXES:
                 break
-        return {"mine": mine, "suggest": suggest, "fixes": fixes}
+        learned = [
+            {"wrong": e["was"], "right": e["term"], "n": e["n"], "at": e["at"][5:16].replace("T", " ")}
+            for e in reversed(sections["learned"]) if e["term"] in mine
+        ]
+        return {"mine": mine, "suggest": suggest, "fixes": fixes, "learned": learned}
 
     def _settings_message(self, msg: dict) -> None:
         kind = msg.get("t")
@@ -353,6 +406,8 @@ class Windows:
             self._edit_vocab(window, str(msg.get("op") or ""), str(msg.get("term") or ""))
         elif kind == "open":
             self._open(str(msg.get("what") or ""))
+        elif kind == "feedback":
+            self._send_feedback(window, msg)
         elif kind == "count":
             days = int(msg.get("days") or 0)
             db = self._db()
@@ -364,6 +419,15 @@ class Windows:
                 removed = history.clear_history(db)
                 LOGGER.info("Cleared %d dictations from the history", removed)
             self.refresh(history=True)
+
+    def _send_feedback(self, window, msg: dict) -> None:
+        message = str(msg.get("message") or "").strip()
+        if not message:
+            return
+        self.app.send_feedback(
+            message, str(msg.get("email") or ""), bool(msg.get("diagnostics")),
+            lambda ok, error: self._later(window, {"t": "feedbackResult", "ok": ok, "msg": error}),
+        )
 
     def _db(self) -> Path | None:
         user_paths = getattr(self.app.config, "user_paths", None)
@@ -515,6 +579,8 @@ class Windows:
             vocab.save_user_terms(path, [word for word in mine if word != term])
         elif op == "reject":
             vocab.reject_term(path, term)
+        elif op == "unlearn":
+            vocab.unlearn_term(path, term)
         else:
             return
         self.app.reload_vocab()
@@ -542,6 +608,8 @@ class Windows:
             self.show_settings("privacy")
         elif what == "openai-keys":
             permissions.open_url(trial.KEYS_URL)
+        elif what in _open_urls():
+            permissions.open_url(_open_urls()[what])
 
     # ----------------------------------------------------------- history
 

@@ -310,6 +310,11 @@ def focused_text_value(pid: int) -> str | None:
         app_ref = ApplicationServices.AXUIElementCreateApplication(pid)
         element = _copy_ax_attribute(app_ref, ApplicationServices.kAXFocusedUIElementAttribute)
         if not element:
+            # Electron apps (Claude among them) publish no focus until asked
+            # for their accessibility tree; the switch outlives this call.
+            ApplicationServices.AXUIElementSetAttributeValue(app_ref, "AXManualAccessibility", True)
+            element = _copy_ax_attribute(app_ref, ApplicationServices.kAXFocusedUIElementAttribute)
+        if not element:
             return None
         role = str(_copy_ax_attribute(element, ApplicationServices.kAXRoleAttribute) or "")
         if role == "AXSecureTextField" or _copy_ax_attribute(element, "AXSubrole") == "AXSecureTextField":

@@ -102,9 +102,12 @@ class DailyStats:
 
 
 def _post(url: str, payload: dict) -> None:
-    request = urllib.request.Request(
-        url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST"
-    )
+    from typeless_local import app_version  # noqa: PLC0415
+
+    # Cloudflare refuses urllib's default "Python-urllib" User-Agent (error 1010),
+    # which silently dropped every stats send.
+    headers = {"Content-Type": "application/json", "User-Agent": f"Yana/{app_version()}"}
+    request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
     import certifi  # noqa: PLC0415  (the bundled Python has no system CA store)
 
     context = ssl.create_default_context(cafile=certifi.where())

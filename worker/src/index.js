@@ -6,6 +6,7 @@
 //                       day and per month across everyone.
 // /v1/models            answers the app's connection prewarm; costs nothing.
 // /stats                one row per Mac per day: counts only, never any text.
+// /feedback             a message from the About pane, with optional diagnostics the user ticked.
 // /admin                the owner's view of installs, activity and retention: open
 //                       /admin?token=... once and a cookie keeps it out of the URL.
 
@@ -27,6 +28,7 @@ export default {
       if (pathname === "/v1/models") return json({ object: "list", data: [] });
       if (pathname === "/v1/chat/completions" && request.method === "POST") return await trial(request, env);
       if (pathname === "/stats" && request.method === "POST") return await stats(request, env);
+      if (pathname === "/feedback" && request.method === "POST") return await feedback(request, env);
       if (pathname === "/admin" && request.method === "GET") return await admin(request, env);
       return new Response("Not found", { status: 404 });
     } catch (err) {
@@ -220,6 +222,35 @@ async function stats(request, env) {
   return json({ ok: true });
 }
 
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const SHORT_FIELDS = ["version", "macos", "model", "spoken_language", "ui_language"];
+
+async function feedback(request, env) {
+  if (!(await allowed(request, env))) return error(429, "rate_limited", "Too many requests.");
+  const raw = await request.text();
+  if (new TextEncoder().encode(raw).length > MAX_BODY_BYTES) return error(413, "too_large", "That feedback is too large.");
+  let f;
+  try {
+    f = JSON.parse(raw);
+  } catch {
+    return error(400, "bad_feedback", "Unexpected feedback payload.");
+  }
+  const str = (v) => typeof v === "string";
+  const ok =
+    f && typeof f === "object" &&
+    str(f.message) && f.message.trim().length >= 1 && f.message.length <= 4000 &&
+    (f.email == null || (str(f.email) && f.email.length <= 200 && (f.email === "" || EMAIL.test(f.email)))) &&
+    SHORT_FIELDS.every((k) => f[k] == null || (str(f[k]) && f[k].length <= 100)) &&
+    (f.diagnostics == null || (str(f.diagnostics) && new TextEncoder().encode(f.diagnostics).length <= 48 * 1024));
+  if (!ok) return error(400, "bad_feedback", "Unexpected feedback payload.");
+  await env.DB.prepare(
+    "INSERT INTO feedback (created_at, message, email, version, macos, model, spoken_language, ui_language, diagnostics) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  )
+    .bind(new Date().toISOString(), f.message, f.email || "", ...SHORT_FIELDS.map((k) => f[k] || ""), f.diagnostics || "")
+    .run();
+  return json({ ok: true });
+}
+
 async function admin(request, env) {
   const url = new URL(request.url);
   const cookie = /(?:^|;\s*)yana_admin=([^;]+)/.exec(request.headers.get("Cookie") || "")?.[1] || "";
@@ -263,6 +294,7 @@ async function admin(request, env) {
   const [trialTotals] = await q(
     `SELECT COUNT(*) AS macs, ROUND(SUM(spend), 2) AS spend, SUM(spend >= ${Number(env.DEVICE_BUDGET_USD)}) AS used_up FROM trial_devices`,
   );
+  const notes = await q("SELECT created_at, message, email, version, macos, model, diagnostics FROM feedback ORDER BY id DESC LIMIT 100");
   const months = await q("SELECT month, ROUND(spend, 2) AS spend FROM trial_months ORDER BY month DESC LIMIT 6");
 
   const page = `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width">
@@ -282,12 +314,26 @@ th:first-child,td:first-child{text-align:left}.big{font-size:28px;font-weight:60
 <p>Retained: dictated again 7+ days after first reporting. Eligible: first reported at least 7 days ago.</p>
 ${table(cohorts.map((c) => ({ ...c, rate: c.eligible ? `${Math.round((100 * c.retained) / c.eligible)}%` : "–" })), ["week", "new_macs", "eligible", "retained", "rate"])}
 <h2>Versions, last 7 days</h2>${table(versions, ["version", "macs"])}
-<h2>Trial spend by month (cap $${env.MONTHLY_BUDGET_USD})</h2>${table(months, ["month", "spend"])}`;
+<h2>Trial spend by month (cap $${env.MONTHLY_BUDGET_USD})</h2>${table(months, ["month", "spend"])}
+<h2>Feedback, latest 100</h2>${feedbackList(notes)}`;
   return new Response(page, { headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
 }
 
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+export function feedbackList(rows) {
+  if (!rows.length) return "<p>No feedback yet</p>";
+  return rows
+    .map(
+      (r) =>
+        `<div style="border-bottom:1px solid #ddd;padding:8px 0"><small>${esc(r.created_at)} · ${esc(r.version)} · macOS ${esc(r.macos)} · ${esc(r.model)}` +
+        `${r.email ? ` · ${esc(r.email)}` : ""}</small><div style="white-space:pre-wrap">${esc(r.message)}</div>` +
+        `${r.diagnostics ? `<details><summary>diagnostics</summary><pre style="white-space:pre-wrap;font-size:11px">${esc(r.diagnostics)}</pre></details>` : ""}</div>`,
+    )
+    .join("");
+}
+
 function table(rows, cols) {
-  const esc = (v) => String(v ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
   const head = cols.map((c) => `<th>${c.replace("_", " ")}</th>`).join("");
   const body = rows.map((r) => `<tr>${cols.map((c) => `<td>${esc(r[c])}</td>`).join("")}</tr>`).join("");
   return `<table><tr>${head}</tr>${body || `<tr><td colspan="${cols.length}">No data yet</td></tr>`}</table>`;

@@ -204,6 +204,7 @@ def build_menu(snap: Snapshot, now: float | None = None) -> list[Item]:
     items += [
         SEPARATOR,
         Item(t("设置…", "Settings…"), key="settings:", shortcut="⌘,", symbol="gearshape"),
+        Item(t("发送反馈…", "Send Feedback…"), key="settings:about", symbol="bubble.left"),
         Item(brand.quit_label(), key="quit", shortcut="⌘Q", symbol="power"),
     ]
     return items

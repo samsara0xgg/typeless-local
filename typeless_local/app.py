@@ -17,13 +17,13 @@ import threading
 import time
 from types import SimpleNamespace
 import unicodedata
-from typing import Literal
+from typing import Callable, Literal
 
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
 import numpy as np
 from PyObjCTools import AppHelper
 
-from typeless_local import app_version, brand, diagnostics, i18n, keyboard_layout, keychain, languages, permissions, reach, trial, usage
+from typeless_local import app_version, brand, diagnostics, feedback, i18n, keyboard_layout, keychain, languages, permissions, reach, trial, usage
 from typeless_local.i18n import t
 from typeless_local.asr import JarvisASR, Transcript, mlx_whisper_repo
 from typeless_local.audio import MicrophoneRecorder, keep_recording, peak_level
@@ -64,7 +64,7 @@ from typeless_local.first_run import (
     model_is_cached,
     set_api_key,
 )
-from typeless_local.history import purge_older_than, set_sent_text
+from typeless_local.history import purge_older_than, set_sent_text, term_counts
 from typeless_local.sent_text import SentTextWatcher
 from typeless_local.menubar import MenuBarIcon, Recent, Snapshot
 from typeless_local.overlay import FloatingOverlay
@@ -72,14 +72,16 @@ from typeless_local.preferences import Preferences, load_preferences, save_prefe
 from typeless_local.refine import MissingAPIKey, RefineResult, TextRefiner, TrialUnavailable
 from typeless_local.stats import DailyStats
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
-from typeless_local.vocab import as_initial_prompt, load_user_terms, load_vocab, write_starter_file
-from typeless_local.windows import Windows, install_main_menu, prices
+from typeless_local.vocab import as_initial_prompt, learn_term, load_user_terms, load_vocab, whisper_terms, write_starter_file
+from typeless_local.windows import Windows, install_main_menu, learned_fixes, prices
 
 LOGGER = logging.getLogger(__name__)
 Mode = Literal["tap", "hands_free"]
+USE_DAYS = 90  # how far back word use counts toward Whisper's prompt
 DOUBLE_CLICK_SECONDS = 0.4
 # After pressing play/pause, how long to watch for media that started instead of stopping.
 MEDIA_CHECK_S = 0.8
+MAX_UNCLEAR_MEDIA_APPS = 8  # players remembered as unconfirmable; keeps the saved list small
 MEDIA_POLL_S = 0.05
 LONG_PRESS_SECONDS = 0.6
 # A right-Cmd hold this long into its recording is talking, not a slow chord:
@@ -146,7 +148,7 @@ class TypelessLocalApp:
         if user_paths is not None:
             write_starter_file(user_paths.vocab_path)
             self.vocab = load_vocab(user_paths.vocab_path)
-            self.whisper_prompt = as_initial_prompt(load_user_terms(user_paths.vocab_path))
+            self.whisper_prompt = self._whisper_prompt(user_paths)
             self.trace = DictationTrace(user_paths.trace_db_path)
             self.daily_stats = DailyStats(user_paths.config_dir / "stats.json", app_version())
         else:
@@ -260,8 +262,16 @@ class TypelessLocalApp:
         if user_paths is None:
             return
         self.vocab = load_vocab(user_paths.vocab_path)
-        self.whisper_prompt = as_initial_prompt(load_user_terms(user_paths.vocab_path))
+        self.whisper_prompt = self._whisper_prompt(user_paths)
         LOGGER.info("Reloaded vocab: %d terms", len(self.vocab))
+
+    @staticmethod
+    def _whisper_prompt(user_paths) -> str:
+        """Whisper's prompt from the hottest words; counted on launch and on vocabulary changes only."""
+
+        terms = load_user_terms(user_paths.vocab_path)
+        uses = term_counts(user_paths.trace_db_path, terms, days=USE_DAYS) if user_paths.trace_db_path.exists() else {}
+        return as_initial_prompt(whisper_terms(user_paths.vocab_path, uses))
 
     def _select_capture_device(self) -> str:
         """Point the recorder at the preferred mic, or the system default if it is gone.
@@ -337,7 +347,7 @@ class TypelessLocalApp:
     def set_language(self, language: str) -> None:
         """Recognise ``language`` ("" detects it) from the next dictation on, and persist it."""
 
-        language = language if language in ("zh", "en") else ""
+        language = language if language in ("zh", "en", "fr") else ""
         set_language = getattr(self.asr, "set_language", None)
         if set_language is not None:
             set_language(language)
@@ -613,13 +623,45 @@ class TypelessLocalApp:
             ) or 0.0
         stats.record(dictations=1, chars=len(text), trial_spend=spend)
 
-    def _stats_url(self) -> str:
+    def _worker_url(self, path: str) -> str:
         try:
             base = refine_config_for(self.config.jarvis_config, trial.PRESET).base_url
         except Exception:
             return ""
         server = trial.server(base)
-        return f"{server}/stats" if server.startswith("https://") and "YOUR-SUBDOMAIN" not in server else ""
+        return f"{server}/{path}" if server.startswith("https://") and "YOUR-SUBDOMAIN" not in server else ""
+
+    def _stats_url(self) -> str:
+        return self._worker_url("stats")
+
+    def send_feedback(self, message: str, email: str, attach: bool, done: Callable[[bool, str], None]) -> None:
+        """Post the About pane's feedback to the Worker from a background thread; ``done(ok, error)`` reports back."""
+
+        url = self._worker_url("feedback")
+        user_paths = getattr(self.config, "user_paths", None)
+        # Gathered here on the calling thread, like export_diagnostics does.
+        summary = self._diagnostic_summary() if attach else None
+        secrets = [os.environ.get(name, "") for name in api_key_names(self.config)]
+        asr_config = (self.config.jarvis_config or {}).get("asr") or {}
+
+        def run() -> None:
+            try:
+                if not url:
+                    raise RuntimeError("no feedback server configured")
+                extra = None
+                if summary is not None and user_paths is not None:
+                    extra = feedback.diagnostics_text(summary, user_paths.log_path, secrets)
+                body = feedback.build(
+                    message, email, version=app_version(), spoken_language=str(asr_config.get("language") or ""),
+                    ui_language=i18n.current(), extra=extra,
+                )
+                feedback.post(url, body)
+                done(True, "")
+            except Exception as exc:
+                LOGGER.info("Feedback not sent (%s)", exc)
+                done(False, t("没有发出去，请检查网络后重试。", "Could not send; check your connection and try again."))
+
+        threading.Thread(target=run, daemon=True, name="feedback").start()
 
     def _send_stats(self) -> None:
         """Once a day: the finished days' counts, from a background thread. Reschedules itself."""
@@ -1342,13 +1384,29 @@ class TypelessLocalApp:
 
     # ------------------------------------------------------------ recording
 
-    def _store_sent_text(self, session_id: int, text: str) -> None:
+    def _store_sent_text(self, session_id: int, pasted: str, text: str) -> None:
         """A pasted dictation went out as ``text`` (from the sent-text watcher's thread)."""
 
+        try:
+            user_paths = getattr(self.config, "user_paths", None)
+            if user_paths is not None and self.prefs.save_history and self.prefs.save_sent_text:
+                if set_sent_text(user_paths.trace_db_path, session_id, text):
+                    self._windows_changed(history=True)
+            self._learn_from_edit(pasted, text)
+        except Exception:
+            LOGGER.warning("Could not handle the sent text", exc_info=True)
+
+    def _learn_from_edit(self, pasted: str, sent: str) -> None:
+        """Words fixed by hand before sending go into the vocabulary."""
+
         user_paths = getattr(self.config, "user_paths", None)
-        if user_paths is not None and self.prefs.save_history and self.prefs.save_sent_text:
-            if set_sent_text(user_paths.trace_db_path, session_id, text):
-                self._windows_changed(history=True)
+        if user_paths is None:
+            return
+        learned = sum(learn_term(user_paths.vocab_path, right, wrong) for wrong, right in learned_fixes(pasted, sent))
+        if learned:
+            self.reload_vocab()
+            LOGGER.info("Learned %d word(s) from a hand edit", learned)
+            self._windows_changed()
 
     def _start_recording(self, mode: Mode, hold: bool = False) -> None:
         if getattr(self, "_download", None) is not None:
@@ -1573,6 +1631,12 @@ class TypelessLocalApp:
             # Only a call is holding output (a class on Zoom): the key would
             # go to a paused music app, or launch Music, and start it.
             return
+        bundles = {pid: devices.bundle_id(pid) for pid in before if not devices.is_call_app(pid)}
+        unclear = set(getattr(getattr(self, "prefs", None), "unclear_media_apps", ()))
+        if all(bundle in unclear for bundle in bundles.values()):
+            # Paused and playing look alike for it, so the key could start it.
+            LOGGER.info("Not pausing %s: its play/pause can't be confirmed", sorted(bundles.values()))
+            return
         press_play_pause()
         deadline = time.monotonic() + MEDIA_CHECK_S
         while time.monotonic() < deadline:
@@ -1589,6 +1653,17 @@ class TypelessLocalApp:
         # ponytail: an ambiguous press is undone (a brief blip at worst); per-process levels would tell for sure.
         LOGGER.info("Could not tell what play/pause did; pressing it again")
         press_play_pause()
+        self._remember_unclear_media(set(bundles.values()))
+
+    def _remember_unclear_media(self, bundles: set[str]) -> None:
+        known = list(getattr(getattr(self, "prefs", None), "unclear_media_apps", ()))
+        merged = (known + sorted(b for b in bundles if b and b not in known))[-MAX_UNCLEAR_MEDIA_APPS:]
+        if merged == known:
+            return
+        try:
+            self.set_preference("unclear_media_apps", merged)
+        except Exception:
+            LOGGER.debug("Could not remember unclear media apps", exc_info=True)
 
     def _resume_media(self) -> None:
         if getattr(self, "_media_paused", False):

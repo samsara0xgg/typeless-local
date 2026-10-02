@@ -59,3 +59,12 @@ def display_name() -> str:
 
 def quit_label(name: str | None = None) -> str:
     return join(t("退出", "Quit"), name or display_name())
+
+
+# The author's details live here and nowhere else; the About pane shows what is filled in.
+AUTHOR_NAME = "Allen Shi"
+AUTHOR_GITHUB = "https://github.com/samsara0xgg"
+AUTHOR_LINKS: tuple[tuple[str, str], ...] = ()  # (label, url) pairs
+REPO_URL = "https://github.com/samsara0xgg/typeless-local"
+RELEASES_URL = f"{REPO_URL}/releases/latest"
+

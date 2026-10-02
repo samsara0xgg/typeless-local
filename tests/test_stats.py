@@ -52,3 +52,27 @@ def test_turning_stats_off_during_a_send_stops_it_and_leaves_no_file(tmp_path) -
     assert not (tmp_path / "stats.json").exists()
     stats.record(dictations=1, today=date(2026, 9, 3))
     assert not (tmp_path / "stats.json").exists()
+
+
+def test_posts_carry_an_app_user_agent(monkeypatch) -> None:
+    """Cloudflare answers urllib's default User-Agent with 403 (error 1010)."""
+
+    from typeless_local import stats
+
+    seen = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(request, timeout, context):
+        seen["agent"] = request.get_header("User-agent")
+        return _Response()
+
+    monkeypatch.setattr(stats.urllib.request, "urlopen", fake_urlopen)
+    stats._post("https://example.invalid/stats", {})
+
+    assert seen["agent"].startswith("Yana/")

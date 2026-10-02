@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import re
 import sqlite3
 import statistics
 import time
@@ -241,6 +242,7 @@ def term_counts(db_path: Path, terms: list[str], days: int = 30) -> dict[str, in
     except sqlite3.Error:
         return counts
     for term in terms:
-        needle = term.lower()
-        counts[term] = sum(1 for text in texts if needle in text)
+        # Whole words only: "Ja" must not count every "Jarvis", nor "Sol" every "solution".
+        pattern = re.compile(rf"(?<![a-z0-9]){re.escape(term.lower())}(?![a-z0-9])")
+        counts[term] = sum(1 for text in texts if pattern.search(text))
     return counts

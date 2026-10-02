@@ -1434,14 +1434,15 @@ def test_language_and_ducking_apply_live_and_persist(monkeypatch, tmp_path) -> N
     app.asr = SimpleNamespace(set_language=languages.append)
 
     app.set_language("en")
+    app.set_language("fr")
     app.set_language("klingon")
     app.set_ducking(False)
 
-    assert languages == ["en", ""]
+    assert languages == ["en", "fr", ""]
     assert app.config.jarvis_config["asr"]["language"] == ""
     assert app.audio_ducker.enabled is False
     assert app.config.jarvis_config["audio_ducking"]["enabled"] is False
-    assert written == [("asr", "language", "en"), ("asr", "language", ""), ("audio_ducking", "enabled", False)]
+    assert written == [("asr", "language", "en"), ("asr", "language", "fr"), ("asr", "language", ""), ("audio_ducking", "enabled", False)]
 
 
 def test_a_new_key_for_the_active_model_replaces_the_client(monkeypatch, tmp_path) -> None:
@@ -1532,7 +1533,7 @@ def test_a_pasted_dictation_is_watched_until_it_is_sent(monkeypatch, tmp_path) -
 
     ((row, pasted, pid),) = watched
     assert pasted == "Refined text." and pid == TARGET_PID
-    app._store_sent_text(row, "Refined text, edited.")
+    app._store_sent_text(row, pasted, "Refined text, edited.")
     assert history.recent_sessions(db)[0]["sent"] == "Refined text, edited."
 
     # Off in Settings: nothing is watched.
@@ -1590,6 +1591,40 @@ def test_a_player_that_keeps_output_open_is_put_back_as_it_was(monkeypatch, _med
     assert _media_keys == ["play_pause", "play_pause"]
     app._finish_recording()
     assert _media_keys == ["play_pause", "play_pause"]
+
+
+def _unclear_app(monkeypatch, playing: set[int]):
+    monkeypatch.setattr("typeless_local.app.capture_focus_context", lambda **_: FocusContext("TextEdit", "Untitled"))
+    monkeypatch.setattr(app_module, "MEDIA_CHECK_S", 0.02)
+    monkeypatch.setattr(app_module.devices, "playing_apps", lambda: set(playing))
+    monkeypatch.setattr(app_module.devices, "bundle_id", lambda pid: {101: "com.netease.163music", 102: "com.other.player"}.get(pid, ""))
+    app = _recording_app()
+    app.prefs = Preferences()
+    app.set_preference = lambda key, value: setattr(app, "prefs", dataclasses.replace(app.prefs, **{key: value}))
+    return app
+
+
+def test_an_unclear_press_remembers_the_player_and_it_is_not_pressed_again(monkeypatch, _media_keys) -> None:
+    app = _unclear_app(monkeypatch, {101})
+
+    app._start_recording("tap")
+    assert _media_keys == ["play_pause", "play_pause"]  # pressed and undone this once
+    assert app.prefs.unclear_media_apps == ["com.netease.163music"]
+    app._finish_recording()
+
+    _media_keys.clear()
+    app._start_recording("tap")
+    app._finish_recording()
+    assert _media_keys == []
+
+
+def test_a_second_player_still_gets_the_press_as_before(monkeypatch, _media_keys) -> None:
+    app = _unclear_app(monkeypatch, {101, 102})
+    app.prefs = Preferences(unclear_media_apps=["com.netease.163music"])
+
+    app._start_recording("tap")
+    assert _media_keys == ["play_pause", "play_pause"]
+    assert app.prefs.unclear_media_apps == ["com.netease.163music", "com.other.player"]
 
 
 def test_only_a_call_holding_output_never_touches_play_pause(monkeypatch, _media_keys) -> None:
@@ -1995,3 +2030,16 @@ def test_short_fragments_are_kept_or_dropped_by_the_allowed_languages(monkeypatc
     assert not drops("A longer sentence in Icelandic", "is", 0.9)  # the filter is for short fragments
     app.asr._asr_config = {"language": "ja"}
     assert not drops("はい", "ja", 0.9)  # chosen in Settings
+
+
+def test_a_hand_fix_before_sending_is_learned_into_the_vocabulary(tmp_path) -> None:
+    app = _make_app("x")
+    app.config.user_paths = SimpleNamespace(vocab_path=tmp_path / "v.yaml", trace_db_path=tmp_path / "t.db")
+    reloads = []
+    app.reload_vocab = lambda: reloads.append(1)
+    app._store_sent_text(1, "还没有默制是吧？", "还没有merge是吧？")
+    from typeless_local import vocab
+
+    assert vocab.load_user_terms(tmp_path / "v.yaml") == ["merge"] and reloads == [1]
+    app._store_sent_text(1, "还没有默制是吧？", "还没有merge是吧？")  # a repeat fix counts again, the word is not repeated
+    assert vocab.load_user_terms(tmp_path / "v.yaml") == ["merge"] and reloads == [1, 1]

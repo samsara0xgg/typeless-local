@@ -15,10 +15,11 @@ const PANES = [
   ['audio', ['音频', 'Audio'], 'speaker', '#FF3B30'],
   ['usage', ['用量', 'Usage'], 'chart', '#34C759'],
   ['privacy', ['历史与隐私', 'History & Privacy'], 'shield', '#0A84FF'],
+  ['about', ['关于', 'About'], 'info', '#5AC8FA'],
 ];
 const paneTitle = id => L(...PANES.find(p => p[0] === id)[1]);
 const DAYS = v => ({ 30: L('30 天', '30 days'), 90: L('90 天', '90 days'), 365: L('1 年', '1 year'), 0: L('永久', 'Forever') })[v] || L(`${v} 天`, `${v} days`);
-const LANGS = () => [['', L('自动', 'Automatic')], ['zh', '中文'], ['en', 'English']];
+const LANGS = () => [['', L('自动', 'Automatic')], ['zh', '中文'], ['en', 'English'], ['fr', 'Français']];
 // The interface language names itself in both, so it can be found whichever one is showing.
 const UI_LANGS = () => [['auto', L('跟随系统', 'Same as the Mac')], ['zh', '中文'], ['en', 'English']];
 const SOURCES = () => [['auto', L('自动', 'Automatic')], ['huggingface', 'Hugging Face'], ['mirror', L('国内镜像 hf-mirror.com', 'China mirror (hf-mirror.com)')]];
@@ -26,7 +27,9 @@ const SOURCES = () => [['auto', L('自动', 'Automatic')], ['huggingface', 'Hugg
 let S = null;            // the state Python sent
 let pane = 'general';
 // What is being edited here and not yet sent.
-const UI = { keyEdit: '', keyBusy: '', keyMsg: {}, test: null, confirm: null, vocabMsg: '', usageBy: '' };
+const UI = { keyEdit: '', keyBusy: '', keyMsg: {}, test: null, confirm: null, vocabMsg: '', usageBy: '',
+  // The feedback box: kept here so a redraw or a failed send never loses what was typed.
+  fb: { text: '', email: '', diag: false, status: '', msg: '' } };
 
 /* ---------------- building blocks ---------------- */
 const sw = (key, on_, label, disabled = false) =>
@@ -78,7 +81,7 @@ function dictation() {
   return head(paneTitle('dictation'))
     + grp([
       row(L('识别语言', 'Spoken language'), select('language', S.language, LANGS(), L('识别语言', 'Spoken language')),
-        L('自动会听出你说的语言，混着说也行；固定一种语言会快一点。', 'Automatic hears which language you speak, even mixed; one fixed language is a little faster.')),
+        L('自动会听出你说的语言，混着说也行。只说一种语言时才固定它，否则别的语言可能被认错或翻译。', 'Automatic hears which language you speak, even mixed. Fix one only if it is the only language you speak; others may be misheard or translated.')),
       row(L('语音模型', 'Speech model'), `<span class="val">${L('在这台 Mac 上运行', 'Runs on this Mac')}</span>`),
       row(L('模型下载源', 'Model download'), select('model_source', p.model_source, SOURCES(), L('模型下载源', 'Model download')),
         L('自动：在中国大陆用国内镜像，其他地方用 Hugging Face。只管下载，识别始终在这台 Mac 上。',
@@ -174,10 +177,14 @@ function vocab() {
   const fixes = v.fixes.length ? v.fixes.map(f => row(`${f.wrong ? `<span class="del">${esc(f.wrong)}</span> <span class="arrow">→</span> ` : ''}${esc(f.right)}`,
     v.mine.includes(f.right) ? `<span class="val">${L('已在词库', 'In the vocabulary')}</span>` : `<button class="mbtn" data-act="word" data-term="${esc(f.right)}">${L('加入词库', 'Add to Vocabulary')}</button>`, esc(f.at || '')))
     : [row(`<span class="empty">${L('在胶囊的修改卡片里改过的词会出现在这里。', 'Words you fix in the capsule’s edit card show up here.')}</span>`, '')];
+  const learned = v.learned.map(f => row(`${f.wrong ? `<span class="del">${esc(f.wrong)}</span> <span class="arrow">→</span> ` : ''}${esc(f.right)}${f.n > 1 ? ` <span class="val">×${f.n}</span>` : ''}`,
+    `<button class="mbtn" data-act="unlearn" data-term="${esc(f.right)}">${L('移除', 'Remove')}</button>`, esc(f.at || '')));
   return head(paneTitle('vocab'))
     + `<div class="grp-l">${L('我的词 · 同时提示给语音识别和润色模型', 'My words · hinted to both speech recognition and refinement')}</div>`
     + `<div class="grp"><div class="chipset">${mine}<input class="field" id="newword" placeholder="${L('添加词，回车确认', 'Add a word, press Return')}" aria-label="${L('添加词', 'Add a word')}"></div></div>`
     + (UI.vocabMsg ? `<p class="note">${esc(UI.vocabMsg)}</p>` : '')
+    + `<div class="grp-l">${L('自动学到的 · 来自你发送前的修改', 'Learned from your edits')}</div>`
+    + grp(learned.length ? learned : [row(`<span class="empty">${L('在输入框里把听错的词改对再发送，改对的词会出现在这里。', 'Fix a misheard word in the text box before sending, and the fixed word shows up here.')}</span>`, '')])
     + `<div class="grp-l">${L('建议加入 · 从最近的润色差异里找出', 'Suggested · found in recent refinements')}</div>` + grp(suggest)
     + `<div class="grp-l">${L('最近的手动修改', 'Recent hand corrections')}</div>` + grp(fixes);
 }
@@ -281,7 +288,29 @@ function privacy() {
     + `<div class="grp" style="background:transparent; box-shadow:none">${c && c.kind === 'clear' ? `<div class="grp">${confirmBox}</div>` : ''}<div class="btnrow left"><button class="mbtn" data-act="open" data-what="data">${I('folder')} ${L('在访达中显示数据', 'Show Data in Finder')}</button><button class="mbtn danger" data-act="clear">${I('trash')} ${L('清除历史…', 'Clear History…')}</button></div></div>`;
 }
 
-const RENDER = { general, dictation, keys, model, vocab, audio, usage, privacy };
+function aboutPane() {
+  const a = S.author, f = UI.fb, sending = f.status === 'sending';
+  const link = (what, label) => `<button class="mbtn" data-act="open" data-what="${what}">${I('link')} ${esc(label)}</button>`;
+  const status = f.status === 'sent' ? `<span class="st-ok">${L('已发送，谢谢！', 'Sent, thank you!')}</span>`
+    : f.status === 'failed' ? `<span class="st-err">${esc(f.msg)}</span>` : '';
+  return head(paneTitle('about'))
+    + `<div class="grp"><div class="abt"><img src="appicon.svg" alt=""><div><b>${esc(S.name)}</b><small>${L('版本', 'Version')} ${esc(S.version || '')}</small></div>`
+    + `<button class="mbtn" data-act="open" data-what="releases">${L('检查新版本', 'Check for a new version')}</button></div></div>`
+    + `<div class="grp-l">${L('关于作者', 'About the author')}</div>`
+    + grp([
+      row(`<b>${esc(a.name)}</b>`, ''),
+      `<div class="row"><div class="rl">${L('言字是开源项目。如果你有兴趣一起把它做得更好，欢迎在 GitHub 上提 Issue 或 Pull Request，也欢迎通过下面的反馈框联系我。', `${esc(S.name)} is open source. If you’d like to help make it better, issues and pull requests on GitHub are welcome, and so is a note through the feedback box below.`)}</div></div>`,
+      `<div class="row"><span class="inline">${link('repo', 'GitHub')}${a.github ? link('github', L('作者主页', 'Author profile')) : ''}${a.links.map(([label], i) => link(`link${i}`, label)).join('')}</span></div>`,
+    ])
+    + `<div class="grp-l">${L('反馈', 'Feedback')}</div>`
+    + `<div class="grp fb"><textarea id="fb-text" class="fbtext" maxlength="4000" placeholder="${L('遇到了什么问题，或者想要什么功能？', 'What went wrong, or what would you like to see?')}" aria-label="${L('反馈内容', 'Feedback')}"${sending ? ' disabled' : ''}>${esc(f.text)}</textarea>`
+    + `<div class="row"><div class="rl">${L('回复邮箱（可选）', 'Reply email (optional)')}</div><input class="field" id="fb-email" type="email" maxlength="200" value="${esc(f.email)}" aria-label="${L('回复邮箱', 'Reply email')}"${sending ? ' disabled' : ''}></div>`
+    + `<div class="row"><label class="rl"><input type="checkbox" id="fb-diag"${f.diag ? ' checked' : ''}${sending ? ' disabled' : ''}> ${L('附上诊断信息', 'Attach diagnostics')}<small>${L('设置概要和最近的日志（已去掉密钥）。日志可能引用少量识别到的词，默认不附。', 'A settings summary and the latest log lines, with keys removed. The log can quote a few recognised words, so it is off by default.')}</small></label></div>`
+    + `<div class="btnrow">${status}<button class="mbtn pri" id="fb-send" data-act="feedback"${sending || !f.text.trim() ? ' disabled' : ''}>${sending ? '<span class="spin"></span>' : L('发送', 'Send')}</button></div></div>`
+    + `<p class="note">${L('随反馈自动发送：App 版本、macOS 版本、Mac 型号、听写语言设置和界面语言。从不包含听写内容。', 'Sent with it: the app version, macOS version, Mac model, the spoken-language setting and the interface language. Never any dictation text.')}</p>`;
+}
+
+const RENDER = { general, dictation, keys, model, vocab, audio, usage, privacy, about: aboutPane };
 
 /* ---------------- drawing ---------------- */
 function drawSide() {
@@ -376,14 +405,25 @@ document.addEventListener('click', e => {
   else if (a === 'migrate') post({ t: 'migrate' });
   else if (a === 'word') post({ t: 'vocab', op: 'add', term: act.dataset.term });
   else if (a === 'unword') post({ t: 'vocab', op: 'remove', term: act.dataset.term });
+  else if (a === 'unlearn') post({ t: 'vocab', op: 'unlearn', term: act.dataset.term });
   else if (a === 'reject') post({ t: 'vocab', op: 'reject', term: act.dataset.term });
+  else if (a === 'feedback') sendFeedback();
   else if (a === 'clear') { UI.confirm = { kind: 'clear', n: S.history.count }; draw(); }
   else if (a === 'cancelconfirm') { UI.confirm = null; draw(); }
   else if (a === 'confirmdays') { const d = UI.confirm.days; UI.confirm = null; S.prefs.history_days = d; post({ t: 'set', key: 'history_days', value: d }); draw(); }
   else if (a === 'confirmclear') { UI.confirm = null; post({ t: 'clear' }); draw(); }
 });
 
+document.addEventListener('input', e => {
+  if (e.target.id === 'fb-text') {
+    UI.fb.text = e.target.value;
+    const send = document.getElementById('fb-send');
+    if (send) send.disabled = !UI.fb.text.trim();
+  } else if (e.target.id === 'fb-email') UI.fb.email = e.target.value;
+});
+
 document.addEventListener('change', e => {
+  if (e.target.id === 'fb-diag') { UI.fb.diag = e.target.checked; return; }
   const el = e.target.closest('select[data-set]');
   if (el) setting(el);
 });
@@ -397,8 +437,19 @@ document.addEventListener('keydown', e => {
     if (e.key === 'Enter') { e.preventDefault(); saveKey(e.target.id.slice(4)); }
     if (e.key === 'Escape') { e.preventDefault(); UI.keyEdit = ''; draw(); }
   } else if (e.key === 'Escape' && UI.confirm) { UI.confirm = null; draw(); }
-  else if ((e.metaKey || e.ctrlKey) && /^[1-8]$/.test(e.key)) { e.preventDefault(); show(PANES[+e.key - 1][0]); }
+  else if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) { e.preventDefault(); show(PANES[+e.key - 1][0]); }
 });
+
+function sendFeedback() {
+  const f = UI.fb;
+  if (!f.text.trim()) return;
+  if (f.email.trim() && !/^\S+@\S+\.\S+$/.test(f.email.trim())) {
+    f.status = 'failed'; f.msg = L('回复邮箱看起来不对，改一下或清空再发。', 'That reply email does not look right; fix it or clear it.'); draw(); return;
+  }
+  f.status = 'sending';
+  post({ t: 'feedback', message: f.text, email: f.email.trim(), diagnostics: f.diag });
+  draw();
+}
 
 function saveKey(envName) {
   const f = document.getElementById(`key-${envName}`);
@@ -423,6 +474,13 @@ on('keyResult', m => {
   UI.keyBusy = '';
   UI.keyMsg[m.env] = { ok: m.ok, text: m.msg };
   if (m.ok) UI.keyEdit = '';
+  draw();
+});
+on('feedbackResult', m => {
+  const f = UI.fb;
+  f.status = m.ok ? 'sent' : 'failed';
+  f.msg = m.msg || '';
+  if (m.ok) f.text = '';  // kept on failure so nothing is lost
   draw();
 });
 on('testResult', m => { UI.test = m; draw(); });

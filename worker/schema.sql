@@ -31,3 +31,16 @@ CREATE TABLE IF NOT EXISTS daily_stats (
   country TEXT,                 -- no longer written
   PRIMARY KEY (id, day)
 );
+
+CREATE TABLE IF NOT EXISTS feedback (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at TEXT NOT NULL,     -- ISO time, UTC
+  message TEXT NOT NULL,
+  email TEXT NOT NULL DEFAULT '',   -- optional reply address the user typed
+  version TEXT NOT NULL DEFAULT '',
+  macos TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  spoken_language TEXT NOT NULL DEFAULT '',
+  ui_language TEXT NOT NULL DEFAULT '',
+  diagnostics TEXT NOT NULL DEFAULT ''  -- only when the user ticked "attach diagnostics"
+);

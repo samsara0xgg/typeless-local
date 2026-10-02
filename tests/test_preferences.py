@@ -75,3 +75,12 @@ def test_heard_languages_persist_as_a_list(monkeypatch, tmp_path) -> None:
     assert prefs.heard_languages == ["de", "ja"]
     assert load_preferences(paths).heard_languages == ["de", "ja"]
     assert Preferences().heard_languages == []
+
+
+def test_unclear_media_apps_persist_as_a_list(monkeypatch, tmp_path) -> None:
+    paths = _paths(monkeypatch, tmp_path)
+
+    save_preference(paths, load_preferences(paths), "unclear_media_apps", ["com.netease.163music"])
+
+    assert load_preferences(paths).unclear_media_apps == ["com.netease.163music"]
+    assert Preferences().unclear_media_apps == []

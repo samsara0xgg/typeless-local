@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from typeless_local import devices, history, login_item, permissions, preferences, reach, vocab, webview, windows
+from typeless_local import brand, devices, history, login_item, permissions, preferences, reach, vocab, webview, windows
 from typeless_local.config import UserPaths, refine_config_for
 from typeless_local.trace import DictationTrace, SessionRecord, append_correction
 from typeless_local.webview import web_root
@@ -81,6 +81,7 @@ class FakeApp:
         self.audio_ducker = SimpleNamespace(enabled=True)
         self._download = None
         self.calls: list[tuple] = []
+        self.feedback_result = (True, "")
 
     def _call_ui(self, callback, *args, **kwargs) -> None:
         callback(*args, **kwargs)
@@ -113,6 +114,10 @@ class FakeApp:
 
     def export_diagnostics(self) -> None:
         self.calls.append(("diagnostics",))
+
+    def send_feedback(self, message, email, attach, done) -> None:
+        self.calls.append(("feedback", message, email, attach))
+        done(*self.feedback_result)
 
     def _start_model_prefetch(self) -> None:
         self.calls.append(("prefetch",))
@@ -514,11 +519,35 @@ def test_settings_exports_diagnostics(ui) -> None:
     assert ("diagnostics",) in ui.app.calls
 
 
+def test_feedback_goes_to_the_app_and_the_result_comes_back(ui) -> None:
+    window = _open_settings(ui)
+    ui.windows._settings_message({"t": "feedback", "message": " it crashed ", "email": "a@b.co", "diagnostics": True})
+    assert ("feedback", "it crashed", "a@b.co", True) in ui.app.calls
+    assert window.last("feedbackResult") == {"t": "feedbackResult", "ok": True, "msg": ""}
+    ui.app.feedback_result = (False, "offline")
+    ui.windows._settings_message({"t": "feedback", "message": "again"})
+    assert window.last("feedbackResult") == {"t": "feedbackResult", "ok": False, "msg": "offline"}
+    ui.windows._settings_message({"t": "feedback", "message": "  "})  # empty: nothing is sent
+    assert [c for c in ui.app.calls if c[0] == "feedback"] == [("feedback", "it crashed", "a@b.co", True), ("feedback", "again", "", False)]
+
+
+def test_about_state_carries_the_author_and_only_allow_listed_urls_open(ui, monkeypatch) -> None:
+    window = _open_settings(ui)
+    author = window.last("state")["author"]
+    assert author["name"] == brand.AUTHOR_NAME == "Allen Shi" and author["github"] == brand.AUTHOR_GITHUB and "email" not in author
+    opened = []
+    monkeypatch.setattr(windows.permissions, "open_url", opened.append)
+    ui.windows._open("releases")
+    ui.windows._open("https://evil.example")
+    assert opened == [brand.RELEASES_URL]
+    assert "about" in windows.SETTINGS_PANES
+
+
 # ----------------------------------------------------------------- pages
 
 
 PAGES = {
-    "settings": ({"ready", "set", "key", "migrate", "test", "vocab", "open", "count", "clear", "geo"}, "_settings_message"),
+    "settings": ({"ready", "set", "key", "migrate", "test", "vocab", "open", "count", "clear", "geo", "feedback"}, "_settings_message"),
     "history": ({"ready", "geo", "copy", "delete", "vocab", "open"}, "_history_message"),
     "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang", "source", "open", "meter"}, "_onboarding_message"),
 }
@@ -602,3 +631,30 @@ def test_the_level_meter_opens_the_microphone_only_while_asked(ui, monkeypatch) 
     window.close()  # the red button: the page never says stop
     streams[1].callback(np.array([[0.1]]), 1, None, None)
     assert not streams[1].open  # the next level finds the window gone and lets the microphone go
+
+
+def test_learned_fixes_only_take_clean_word_swaps() -> None:
+    lf = windows.learned_fixes
+    assert lf("目前这个版本还没有默制是吧？", "目前这个版本还没有merge是吧？") == [("默制", "merge")]
+    assert lf("大哥，copy 一下。", "大哥，考屁 一下。") == []
+    assert lf("的说明写着", "的？") == []
+    assert lf("好的哈", "好的哈 不行 怎么都不行") == []
+    assert lf("说明写着", "前缀 说明写着") == []
+    assert lf("第一段。\n\n第二段。", "第一段。\n第二段。") == []
+    assert lf("找张山开会", "找章三开会") == [("张山", "章三")]
+    assert lf("找张三开会", "找章三开会") == [("找张三", "找章三")]
+    # The field also held an earlier dictation; only the pasted part is compared.
+    assert lf("用 Java 把 Jarvis 优化一下", "可以听见我说话吗？用 Jev 把 Jarvis 优化一下") == [("Java", "Jev")]
+    assert lf("用 Java 把 Jarvis 优化一下", "用 Jev 把 Jarvis 优化一下 好吗") == [("Java", "Jev")]
+
+
+def test_learned_words_are_listed_and_can_be_removed(ui) -> None:
+    window = _open_settings(ui)
+    path = ui.paths.vocab_path
+    vocab._atomic_write_sections(path, {"user": [], "auto": [], "rejected": []})
+    vocab.learn_term(path, "merge", "默制")
+    assert [(f["wrong"], f["right"]) for f in ui.windows._vocab_state()["learned"]] == [("默制", "merge")]
+    ui.windows._settings_message({"t": "vocab", "op": "unlearn", "term": "merge"})
+    state = window.last("state")
+    assert state["vocab"]["learned"] == [] and state["vocab"]["mine"] == []
+    assert ("reload",) in ui.app.calls

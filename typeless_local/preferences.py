@@ -68,6 +68,9 @@ class Preferences:
     # Languages heard in confident long dictations; with the spoken language on
     # Automatic they are allowed on short clips (languages.py). Not in Settings.
     heard_languages: list[str] = field(default_factory=list)
+    # Players whose play/pause showed no change in their output (NetEase keeps it
+    # open while paused); the key is never pressed for them. Not in Settings.
+    unclear_media_apps: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
