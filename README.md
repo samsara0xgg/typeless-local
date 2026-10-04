@@ -1,6 +1,6 @@
 # 言字 (Yana)
 
-**[Download for macOS](https://github.com/samsara0xgg/typeless-local/releases/download/v0.4.2/Yana-0.4.2.dmg)** (Apple silicon, macOS 13.5+)
+**[Download for macOS](https://github.com/samsara0xgg/typeless-local/releases/download/v0.4.3/Yana-0.4.3.dmg)** (Apple silicon, macOS 13.5+)
 
 > **Limited-time free trial.** Download Yana now and dictate with no API key: a new Mac in the US or Canada gets free refinement to start.
 
@@ -44,7 +44,7 @@ Yana learns your words from how you use it, with nothing to set up:
 
 ## Install
 
-[Download Yana-0.4.2.dmg](https://github.com/samsara0xgg/typeless-local/releases/download/v0.4.2/Yana-0.4.2.dmg) (all versions are under
+[Download Yana-0.4.3.dmg](https://github.com/samsara0xgg/typeless-local/releases/download/v0.4.3/Yana-0.4.3.dmg) (all versions are under
 [Releases](https://github.com/samsara0xgg/typeless-local/releases)), open it, and
 drag the app to Applications. The build is signed and notarized by Apple, so it
 opens by double-clicking with no security warnings. If an older `Typlus.app` is
@@ -94,6 +94,9 @@ always wins.
 - `F5` (the dictation key on a MacBook) is left to macOS's own dictation unless
   **Settings › 快捷键 › 也用 F5** is on. Installs set up before 0.4.0 keep it on.
 - `Esc` cancels the active or pending dictation.
+- `Return` while recording finishes the dictation and sends it: once the text
+  has landed in the field, Return is pressed for you. Not after a raw-transcript
+  fallback or a paste that did not land. `Shift+Return` is left alone.
 - While recording, system output is muted and playing music is paused, then
   both are restored. Music only counts as paused when its app visibly stops
   sending audio; with only a call (Zoom, WeChat, Teams) holding output, the
@@ -117,6 +120,14 @@ always wins.
   text is stored next to the refined one, so History shows what you fixed by
   hand and the vocabulary learns the words you corrected. Only small fields,
   never documents; off in Settings › 历史与隐私.
+- **English practice** (menu: **英语练习**, off by default): the same refine
+  request also writes a natural English version and 1-3 phrases worth keeping,
+  shown in a card after the paste; the paste itself is not delayed. For an
+  English dictation it offers a more natural phrasing with **Use this**.
+- **Word book**: click a word on the English card, or drag across several, to
+  keep it. Its Chinese meaning in that sentence is looked up once with
+  gpt-5.6-luna; History › 单词本 lists them with the sentence they came from.
+  Stored only in the local history database.
 - **Spoken language** (Settings › 听写 › 识别语言): Automatic, 中文, English
   or Français. Keep Automatic if you speak more than one language; a fixed
   language is only for people who speak just that one.
