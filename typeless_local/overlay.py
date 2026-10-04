@@ -49,7 +49,7 @@ ActionCallback = Callable[[str, dict], None]
 HoverCallback = Callable[[bool], None]
 
 PANEL_WIDTH = 720
-PANEL_HEIGHT = 360
+PANEL_HEIGHT = 520
 # While the pointer is over the capsule, how often it is re-read: WebKit gets
 # no mouse-moved events in a window that is not key, so hover is fed by hand.
 POINTER_INTERVAL = 1 / 30
@@ -67,13 +67,13 @@ STATES = frozenset({
     "inserted", "inserted-raw-net", "inserted-raw-key", "inserted-raw-trial", "inserted-unsure",
     "edit-notarget", "edit-modify",
     "empty", "mic", "download", "cancelled", "undone", "replaced", "copied",
-    "perm", "notice", "ready", "error",
+    "perm", "notice", "ready", "error", "english",
 })
 CARD_STATES = frozenset({"edit-notarget", "edit-modify"})
 ACTIONS = frozenset({
     "primary", "cancel", "finish", "extend",                # idle handle, recording
     "undo", "edit", "rerefine", "setkey", "billing", "input", "micperm", "perm", "log", "restart",  # buds
-    "close", "done", "replace",                             # cards
+    "close", "done", "replace", "useen", "copyen",           # cards
 })
 
 _A11Y_CHANGED = getattr(
@@ -345,7 +345,9 @@ class FloatingOverlay(NSObject):
         if kind == "geo":
             self._on_geo(message.get("s") or [])
         elif kind == "act":
-            data = {"text": str(message.get("text") or "")} if "text" in message else {}
+            data = {k: message[k] for k in ("text", "term", "kind", "on") if k in message}
+            if "text" in data:
+                data["text"] = str(data["text"] or "")
             self._emit(str(message.get("a") or ""), data)
         elif kind == "edit":
             # The card's text as it is being typed ("edit" is the bud that opens the card).

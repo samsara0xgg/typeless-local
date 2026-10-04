@@ -77,6 +77,7 @@ PRIMARY_KEYCODES = frozenset({F5_KEYCODE, DICTATION_KEYCODE})
 RIGHT_OPTION_KEYCODE = 61
 SPACE_KEYCODE = 49
 ESCAPE_KEYCODE = 53
+RETURN_KEYCODES = frozenset({36, 76})  # Return and keypad Enter
 OPTION_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskAlternate", 1 << 19)
 SHIFT_FLAG_MASK = getattr(Quartz, "kCGEventFlagMaskShift", 1 << 17)
 # Right Command arrives as a FlagsChanged event with keycode 54 (kVK_RightCommand).
@@ -502,12 +503,18 @@ def undo_last_edit() -> None:
     _post_command_key(keyboard_layout.keycode("z"))
 
 
-def _post_command_key(keycode: int) -> None:
+def press_return() -> None:
+    """Press Return in the app in front (sends a message once the dictation is pasted)."""
+
+    _post_command_key(36, 0)
+
+
+def _post_command_key(keycode: int, flags: int = COMMAND_FLAG_MASK) -> None:
     source = Quartz.CGEventSourceCreate(Quartz.kCGEventSourceStateHIDSystemState)
     down = Quartz.CGEventCreateKeyboardEvent(source, keycode, True)
     up = Quartz.CGEventCreateKeyboardEvent(source, keycode, False)
     for event in (down, up):
-        Quartz.CGEventSetFlags(event, Quartz.kCGEventFlagMaskCommand)
+        Quartz.CGEventSetFlags(event, flags)
         try:
             Quartz.CGEventSetIntegerValueField(event, _USER_DATA_FIELD, SYNTHETIC_EVENT_TAG)
         except Exception:
@@ -563,6 +570,7 @@ class GlobalHotkeyMonitor:
         callback: HotkeyCallback,
         debug_hotkey: bool = False,
         is_active_fn: Callable[[], bool] | None = None,
+        is_recording_fn: Callable[[], bool] | None = None,
         watch_keys_fn: Callable[[], bool] | None = None,
         use_f5_fn: Callable[[], bool] | None = None,
         use_right_command_fn: Callable[[], bool] | None = None,
@@ -578,6 +586,9 @@ class GlobalHotkeyMonitor:
         # it passes through to the focused app. Without this, the global tap
         # consumed every Esc system-wide, breaking Esc in any app.
         self.is_active_fn = is_active_fn
+        # Return is only taken (to finish and send) while this says a recording
+        # is under way; otherwise it is the app's own key.
+        self.is_recording_fn = is_recording_fn
         # Whether the app wants to hear about ordinary typing: after a paste it
         # offers to undo or replace it, which is only right until the user types
         # something else. Asked on every key press, so it must stay a plain
@@ -787,6 +798,15 @@ class GlobalHotkeyMonitor:
                 return None
             if keycode == ESCAPE_KEYCODE and (self.is_active_fn is None or self.is_active_fn()):
                 self.callback("cancel")
+                return None
+            if (
+                keycode in RETURN_KEYCODES
+                and self.is_recording_fn is not None
+                and self.is_recording_fn()
+                and not self._is_synthetic(event)
+                and not Quartz.CGEventGetFlags(event) & (_OTHER_MODIFIERS_MASK | COMMAND_FLAG_MASK)
+            ):
+                self.callback("send")
                 return None
             # Never swallowed, and nothing asked of the app unless it is
             # watching: this runs inside a synchronous event tap, where slow

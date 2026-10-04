@@ -768,3 +768,28 @@ def test_prepare_paste_puts_the_caret_back_or_refuses_to_paste_blind(monkeypatch
     _paste_target(monkeypatch, front=7, focused_is_text=False)
     no_field = mac_integration.FocusContext("ChatGPT", "", can_insert_text=True, pid=7)
     assert mac_integration.prepare_paste(no_field) == "blind"
+
+
+def _return_key(monkeypatch, recording: bool, keycode: int = 36, flags: int = 0):
+    events = []
+    monitor = _rcmd_monitor(monkeypatch, events, is_recording_fn=lambda: recording)
+    monkeypatch.setattr(monitor, "_is_synthetic", lambda event: False)
+    key = _KeyEvent(keycode, flags)
+    result = monitor._handle_event(None, mac_integration.Quartz.kCGEventKeyDown, key, None)
+    return events, result, key
+
+
+def test_return_while_recording_is_swallowed_and_sends(monkeypatch) -> None:
+    for keycode in (36, 76):
+        events, result, _ = _return_key(monkeypatch, True, keycode)
+        assert events == ["send"] and result is None
+
+
+def test_return_when_idle_passes_through(monkeypatch) -> None:
+    events, result, key = _return_key(monkeypatch, False)
+    assert events == [] and result is key
+
+
+def test_shift_return_while_recording_passes_through(monkeypatch) -> None:
+    events, result, key = _return_key(monkeypatch, True, flags=mac_integration.SHIFT_FLAG_MASK)
+    assert events == [] and result is key

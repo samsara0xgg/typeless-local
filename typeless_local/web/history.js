@@ -18,7 +18,8 @@ const FALLBACK_SHORT = k => ({
   truncated: L('润色不完整', 'Refinement incomplete'), empty: L('润色没有返回', 'Refinement empty'),
 })[k] || L('润色出错', 'Refinement failed');
 
-let D = { enabled: true, items: [], vocab: [] };
+let D = { enabled: true, items: [], vocab: [], words: [] };
+let tab = 'history';      // or 'words'
 let sel = null;           // id of the selected row
 let query = '';
 let armedDelete = 0;      // id waiting for a second click on 删除
@@ -110,8 +111,22 @@ function visible() {
   return D.items.filter(it => [it.text, it.raw, it.sent, it.app, it.window].some(v => (v || '').toLowerCase().includes(q)));
 }
 
+const tabsHTML = () => `<div class="htabs" role="tablist">`
+  + [['history', L('听写', 'Dictations')], ['words', L('单词本', 'Word book')]].map(([k, l]) => `<button role="tab" aria-selected="${tab === k}" data-tab="${k}">${l}</button>`).join('') + `</div>`;
+
+// The saved term marked inside its sentence.
+function markHTML(sentence, term) {
+  const i = sentence.toLowerCase().indexOf(term.toLowerCase());
+  return i < 0 ? esc(sentence) : `${esc(sentence.slice(0, i))}<mark>${esc(sentence.slice(i, i + term.length))}</mark>${esc(sentence.slice(i + term.length))}`;
+}
+function wordsHTML() {
+  const rows = D.words.map(w => `<div class="witem"><div><b>${esc(w.term)}</b> <span class="wz">${esc(w.meaning || '…')}</span></div>`
+    + `<div class="ws">${markHTML(w.en, w.term)}</div><button class="mbtn danger" data-w="${w.id}" aria-label="${L('删除', 'Delete')}">${I('trash')}</button></div>`).join('');
+  return `<div class="wbook">${tabsHTML()}${rows || `<div class="hempty">${I('book')}<b>${L('还没有单词', 'No words yet')}</b><span>${L('在英语练习卡片里点一个单词或短语，就会存到这里。', 'Click a word or phrase on the English practice card to save it here.')}</span></div>`}</div>`;
+}
+
 function listHTML(items) {
-  let out = `<label class="hsearch">${I('search')}<input id="q" type="search" placeholder="${L('搜索', 'Search')}" aria-label="${L('搜索历史记录', 'Search the history')}" value="${esc(query)}"></label>`;
+  let out = tabsHTML() + `<label class="hsearch">${I('search')}<input id="q" type="search" placeholder="${L('搜索', 'Search')}" aria-label="${L('搜索历史记录', 'Search the history')}" value="${esc(query)}"></label>`;
   if (!D.enabled) out += `<div class="hday">${L('历史记录已关闭，新的听写不会保存', 'History is off; new dictations are not saved')}</div>`;
   if (!items.length) return out + `<div class="hday">${query ? L('没有找到', 'No matches') : ''}</div>`;
   let day = '';
@@ -177,6 +192,7 @@ function emptyHTML() {
 
 function draw() {
   const root = $('#root');
+  if (tab === 'words') { root.innerHTML = wordsHTML(); reportGlass(); return; }
   if (!D.items.length) { root.innerHTML = emptyHTML(); reportGlass(); return; }
   const items = visible();
   if (!items.some(it => it.id === sel)) sel = items.length ? items[0].id : null;
@@ -231,6 +247,10 @@ function toast(msg) {
 
 /* ---------------- input ---------------- */
 document.addEventListener('click', e => {
+  const tb = e.target.closest('[data-tab]');
+  if (tb) { tab = tb.dataset.tab; draw(); return; }
+  const wd = e.target.closest('[data-w]');
+  if (wd) { post({ t: 'delword', id: +wd.dataset.w }); return; }
   const row = e.target.closest('[data-h]');
   if (row) { select(+row.dataset.h); return; }
   const a = e.target.closest('[data-a]')?.dataset.a;
@@ -288,7 +308,7 @@ on('env', m => {
   if (relabel && ready) draw();
 });
 on('items', m => {
-  D = { enabled: !!m.enabled, items: m.items || [], vocab: m.vocab || [] };
+  D = { enabled: !!m.enabled, items: m.items || [], vocab: m.vocab || [], words: m.words || [] };
   if (!ready && D.items.length) sel = D.items[0].id;
   ready = true;
   armedDelete = 0;

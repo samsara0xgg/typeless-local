@@ -128,6 +128,7 @@ class Snapshot:
     inputs: tuple[str, ...] = ()
     active_input: str = ""
     refine: bool = True
+    english_practice: bool = False
     usage: str = ""  # "今天 23 次 · 约 $0.04"; "" when history is off
 
 
@@ -190,6 +191,7 @@ def build_menu(snap: Snapshot, now: float | None = None) -> list[Item]:
     else:
         status = t("关闭", "Off")
     items.append(Item(t("润色与 API Key…", "Refinement and API Key…"), key="settings:model", badge=status, symbol="sparkles"))
+    items.append(Item(t("英语练习", "English practice"), key="english", checked=snap.english_practice, symbol="character.book.closed"))
     active_input = snap.active_input if snap.active_input in snap.inputs else ""
     inputs = (Item(t(*SYSTEM_DEFAULT), key="input:", checked=not active_input),) + tuple(
         Item(name, key=f"input:{name}", checked=name == active_input) for name in snap.inputs

@@ -19,6 +19,10 @@ from typeless_local.menubar import (
 )
 
 
+def _item(items, key):
+    return next(item for item in items if item.key == key)
+
+
 def _titles(items):
     return [item.title for item in items if item.kind != "separator"]
 
@@ -104,6 +108,7 @@ def test_idle_menu_follows_the_design() -> None:
         "最近一次",
         "明天下午四点开会",
         "润色与 API Key…",
+        "英语练习",
         "输入设备",
         "词库…",
         "历史记录…",
@@ -112,6 +117,8 @@ def test_idle_menu_follows_the_design() -> None:
         brand.quit_label(),
     ]
     assert items[0].subtitle == "就绪"
+    assert not _item(items, "english").checked
+    assert _item(build_menu(Snapshot(english_practice=True)), "english").checked
     recent = _find(items, "明天下午四点开会")
     assert recent.key == "copy" and recent.subtitle == "2 分钟前 · 备忘录 · 点按复制"
     # One model for everyone, never named: the row says whose key pays and opens its settings.

@@ -41,10 +41,25 @@ CREATE TABLE IF NOT EXISTS sessions (
   cached_tokens INTEGER,
   completion_tokens INTEGER,
   sent_text TEXT,
-  before_text TEXT
+  before_text TEXT,
+  english TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_started_at ON sessions(started_at);
 
+"""
+
+# Words and phrases saved from the English practice card (history.add_word).
+WORDS_SQL = """
+CREATE TABLE IF NOT EXISTS words (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at REAL NOT NULL,
+  term TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  meaning TEXT,
+  sentence_en TEXT NOT NULL,
+  source_text TEXT NOT NULL,
+  session_id INTEGER
+);
 """
 
 
@@ -83,6 +98,8 @@ ADDED_COLUMNS = (
     ("sent_text", "TEXT"),
     # The text before the caret that refinement was given as context.
     ("before_text", "TEXT"),
+    # English practice: JSON {"en": ..., "phrases": [{"en": ..., "zh": ...}]}, NULL when off.
+    ("english", "TEXT"),
 )
 
 
@@ -113,6 +130,7 @@ class SessionRecord:
     cached_tokens: int = 0
     completion_tokens: int = 0
     before_text: str = ""
+    english: str | None = None
 
 
 _INSERT_SQL = """
@@ -123,7 +141,7 @@ INSERT INTO sessions (
   vocab_terms_used, hotwords_count,
   latency_asr_ms, latency_refine_ms, latency_total_ms,
   asr_model, refine_model, app_version, error,
-  prompt_tokens, cached_tokens, completion_tokens, before_text
+  prompt_tokens, cached_tokens, completion_tokens, before_text, english
 ) VALUES (
   :started_at, :ended_at, :audio_duration_s, :audio_rms, :audio_sample_rate,
   :raw_asr_text, :raw_asr_language, :raw_asr_confidence,
@@ -131,7 +149,7 @@ INSERT INTO sessions (
   :vocab_terms_used, :hotwords_count,
   :latency_asr_ms, :latency_refine_ms, :latency_total_ms,
   :asr_model, :refine_model, :app_version, :error,
-  :prompt_tokens, :cached_tokens, :completion_tokens, :before_text
+  :prompt_tokens, :cached_tokens, :completion_tokens, :before_text, :english
 )
 """
 
@@ -149,7 +167,7 @@ class DictationTrace:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.db_path), isolation_level=None)
         try:
-            conn.executescript(SCHEMA_SQL)
+            conn.executescript(SCHEMA_SQL + WORDS_SQL)
             have = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
             for name, kind in ADDED_COLUMNS:
                 if name not in have:

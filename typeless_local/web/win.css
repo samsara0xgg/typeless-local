@@ -197,6 +197,16 @@ html.rt body .hlist{background:var(--win-2) !important}
 .hempty{height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; text-align:center; color:var(--win-fg-2); padding:24px}
 .hempty .i{width:36px; height:36px; color:var(--win-fg-3); stroke-width:1.5}
 .hempty b{color:var(--win-fg); font-size:15px}
+.htabs{display:flex; gap:2px; padding:2px; border-radius:8px; background:var(--hover); margin:0 2px 8px}
+.htabs button{flex:1; height:22px; border:0; border-radius:6px; background:transparent; font-size:12px; color:var(--win-fg-2)}
+.htabs button[aria-selected="true"]{background:var(--win-2); color:var(--win-fg); box-shadow:0 0 0 .5px var(--win-sep)}
+.wbook{height:100%; overflow:auto; padding:var(--band) 26px 24px; max-width:720px; margin:0 auto; box-sizing:border-box}
+.witem{display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px 12px; align-items:start; padding:12px 14px; border-radius:12px; background:var(--grp-bg); box-shadow:inset 0 0 0 .5px var(--win-sep); margin-bottom:10px}
+.witem b{font-size:15px}
+.witem .wz{font-size:12.5px; color:var(--win-fg-2); margin-left:6px}
+.witem .ws{grid-column:1; font-size:12.5px; line-height:1.6; color:var(--win-fg-2); word-break:break-word}
+.witem .ws mark{background:color-mix(in srgb, var(--accent) 22%, transparent); color:var(--win-fg); border-radius:3px; padding:0 2px}
+.witem .mbtn{grid-column:2; grid-row:1 / span 2}
 .toast{position:fixed; left:50%; bottom:18px; transform:translateX(-50%); padding:6px 14px; border-radius:14px; background:var(--g-solid); color:var(--label); font-size:12.5px; box-shadow:0 6px 18px rgba(0,0,0,.2); opacity:0; transition:opacity .2s; pointer-events:none}
 .toast.on{opacity:1}
 

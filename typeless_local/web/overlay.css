@@ -110,3 +110,25 @@ html.native .bud:hover, html.native .bud.hov{background:var(--hover)}
 #handle.hov > i, #handle.away > i{opacity:0}
 #hb{width:40px; height:40px; border-radius:20px; display:grid; place-items:center; color:var(--label); border:0; padding:0; opacity:0}
 #hb .i{width:18px; height:18px; stroke-width:1.9}
+
+/* English practice card */
+.en-card{padding:12px 14px 12px}
+.en-h{display:flex; align-items:center; gap:4px; margin-bottom:6px}
+.en-h .sp{flex:1}
+.en-tag{font-size:10.5px; font-weight:700; letter-spacing:.08em; color:var(--accent); background:color-mix(in srgb, var(--accent) 14%, transparent); padding:1px 7px; border-radius:8px}
+.en-t{font:500 16px/1.5 var(--font-d); color:var(--label); padding:0 2px; max-height:260px; overflow-y:auto; scrollbar-width:none; -webkit-user-select:text; user-select:text}
+.en-t::-webkit-scrollbar{display:none}
+.en-t.more{-webkit-mask-image:linear-gradient(#000 calc(100% - 32px), transparent); mask-image:linear-gradient(#000 calc(100% - 32px), transparent)}
+.en-p{margin-top:10px; padding:8px 10px; border-radius:12px; background:color-mix(in srgb, var(--g-fill-2) 70%, transparent); display:grid; gap:5px}
+.en-row{display:flex; align-items:baseline; gap:8px; font-size:13px; line-height:1.4}
+.en-row b{font-weight:600; color:var(--label)}
+.en-row span{color:var(--label-2); font-size:12px}
+.wd{cursor:pointer; border-radius:4px}
+.wd.hov{background:color-mix(in srgb, var(--label) 10%, transparent); text-decoration:underline; text-decoration-color:var(--label-2)}
+.wd.saved{background:color-mix(in srgb, var(--accent) 22%, transparent); color:var(--accent)}
+.en-t .wd,.en-t .gp{border-radius:0}
+.en-t.dragging{-webkit-user-select:none; user-select:none}
+.sel,.gp.saved{background:color-mix(in srgb, var(--accent) 22%, transparent)}
+.sel{color:var(--accent)}
+.en-row.wd{padding:2px 4px; margin:0 -4px}
+.en-card .card-f{margin-top:10px}

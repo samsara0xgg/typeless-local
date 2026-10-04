@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from typeless_local.config import RefineConfig
 from typeless_local.mac_integration import FocusContext
-from typeless_local.refine import TextRefiner
+from typeless_local.refine import ENGLISH_PRACTICE_PROMPT, SYSTEM_PROMPT, TextRefiner
 
 
 class _FakeCompletions:
@@ -341,3 +341,108 @@ def test_refiner_passes_the_recognizer_language_guess() -> None:
     assert "language guess" not in fake.completions.kwargs["messages"][1]["content"]
     refiner.refine("hello")
     assert "language guess" not in fake.completions.kwargs["messages"][1]["content"]
+
+
+# ---- English practice -------------------------------------------------------
+
+
+def _stream(*pieces, finish="stop", usage=None):
+    """Chunks as the SDK yields them; the log records what was read so far."""
+
+    def chunks(log):
+        for piece in pieces:
+            log.append(piece)
+            yield SimpleNamespace(
+                choices=[SimpleNamespace(delta=SimpleNamespace(content=piece), finish_reason=None)], usage=None
+            )
+        yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content=None), finish_reason=finish)], usage=None)
+        yield SimpleNamespace(choices=[], usage=usage)
+
+    return chunks
+
+
+def _practice(fake, pieces, **kw):
+    log, heard = [], []
+    stream = _stream(*pieces, **kw)
+    fake.completions.create = lambda **kwargs: (setattr(fake.completions, "kwargs", kwargs), stream(log))[1]
+    result = _refiner(fake).refine("你好", english=True, on_text=lambda text: heard.append((text, len(log))))
+    return result, heard, log
+
+
+def test_english_marker_pastes_before_the_english_arrives() -> None:
+    usage = SimpleNamespace(prompt_tokens=1500, completion_tokens=90, prompt_tokens_details=SimpleNamespace(cached_tokens=0))
+    pieces = ["你好，", "世界。\n<<<", "EN>>>\n", '{"en": "Hello, ', 'world.", "phrases": [{"en": "Hello", "zh": "你好"}]}']
+    fake = _FakeClient()
+
+    result, heard, log = _practice(fake, pieces, usage=usage)
+
+    assert heard == [("你好，世界。", 3)]  # fired once, before the JSON was read
+    assert result.text == "你好，世界。"
+    assert result.english == {"en": "Hello, world.", "phrases": [{"en": "Hello", "zh": "你好"}]}
+    assert result.prompt_tokens == 1500
+    kwargs = fake.completions.kwargs
+    assert kwargs["stream"] is True and kwargs["stream_options"] == {"include_usage": True}
+    assert kwargs["max_completion_tokens"] == 128 + 300
+    system = kwargs["messages"][0]["content"]
+    assert system.startswith(SYSTEM_PROMPT) and system.endswith(ENGLISH_PRACTICE_PROMPT)
+
+
+def test_english_without_a_marker_is_just_the_refined_text() -> None:
+    result, heard, _ = _practice(_FakeClient(), ["你好，", "世界。"])
+    assert heard == [("你好，世界。", 2)] and result.text == "你好，世界。" and result.english is None
+
+
+def test_english_with_bad_json_keeps_the_text_and_drops_the_english() -> None:
+    result, heard, _ = _practice(_FakeClient(), ["好的。\n<<<EN>>>\n", '```json\n{"en": ', "oops"])
+    assert [h[0] for h in heard] == ["好的。"] and result.text == "好的。" and result.english is None
+
+
+def test_english_tolerates_code_fences() -> None:
+    result, _, _ = _practice(_FakeClient(), ['好的。\n<<<EN>>>\n```json\n{"en": "OK.", "phrases": []}\n```'])
+    assert result.english == {"en": "OK.", "phrases": []}
+
+
+def test_english_cut_off_before_the_marker_falls_back_without_pasting() -> None:
+    result, heard, _ = _practice(_FakeClient(), ["前半段"], finish="length")
+    assert heard == [] and result.fallback == "truncated" and result.text == "你好"
+
+
+def test_english_stream_error_after_the_paste_is_not_retried() -> None:
+    fake = _FakeClient()
+    heard = []
+
+    def broken(**kwargs):
+        yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="好的。\n<<<EN>>>"), finish_reason=None)], usage=None)
+        raise RuntimeError("reset")
+
+    fake.completions.create = broken
+    result = _refiner(fake).refine("好的", english=True, on_text=heard.append)
+    assert heard == ["好的。"] and result.text == "好的。" and result.english is None
+
+
+def test_english_off_stays_non_streaming_and_the_trial_proxy_never_gets_the_instruction() -> None:
+    fake = _FakeClient()
+    _refiner(fake).refine("hello", english=False, on_text=lambda text: None)
+    assert "stream" not in fake.completions.kwargs
+    assert ENGLISH_PRACTICE_PROMPT not in fake.completions.kwargs["messages"][0]["content"]
+
+    trial = TextRefiner(
+        RefineConfig("gpt-5.4-mini", "https://x.example/v1", "YANA_TRIAL_TOKEN", 128, preset="free-trial"), client=fake
+    )
+    trial.refine("hello", english=True, on_text=lambda text: None)
+    assert "stream" not in fake.completions.kwargs
+    assert ENGLISH_PRACTICE_PROMPT not in fake.completions.kwargs["messages"][0]["content"]
+
+
+def test_define_uses_the_cheap_model_on_openai_and_skips_the_trial() -> None:
+    fake = _FakeClient()
+    openai = RefineConfig("gpt-5.4-mini", "https://api.openai.com/v1", "OPENAI_API_KEY", 128)
+    assert TextRefiner(openai, client=fake).define("meeting", "A meeting.") == "This is the refined text."
+    assert fake.completions.kwargs["model"] == "gpt-5.6-luna"
+    other = RefineConfig("deepseek-chat", "https://api.deepseek.com", "DEEPSEEK_API_KEY", 128)
+    TextRefiner(other, client=fake).define("meeting", "A meeting.")
+    assert fake.completions.kwargs["model"] == "deepseek-chat"
+    fake.completions.kwargs = None
+    trial_cfg = RefineConfig("m", "https://x", "K", 128, preset="free-trial")
+    assert TextRefiner(trial_cfg, client=fake).define("meeting", "A meeting.") is None
+    assert fake.completions.kwargs is None
