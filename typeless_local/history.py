@@ -13,6 +13,8 @@ import sqlite3
 import statistics
 import time
 
+from typeless_local.trace import WORDS_SQL
+
 LOGGER = logging.getLogger(__name__)
 
 DAY_S = 86400.0
@@ -246,3 +248,73 @@ def term_counts(db_path: Path, terms: list[str], days: int = 30) -> dict[str, in
         pattern = re.compile(rf"(?<![a-z0-9]){re.escape(term.lower())}(?![a-z0-9])")
         counts[term] = sum(1 for text in texts if pattern.search(text))
     return counts
+
+
+# ----------------------------------------------------------------- word book
+
+def add_word(db_path: Path, term: str, kind: str, meaning: str | None, sentence_en: str, source_text: str, session_id: int | None) -> int | None:
+    """Save a word or phrase from an English card. Returns its row id, None on failure."""
+
+    try:
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(db_path), isolation_level=None, timeout=2.0)
+        try:
+            conn.executescript(WORDS_SQL)
+            cursor = conn.execute(
+                "INSERT INTO words (created_at, term, kind, meaning, sentence_en, source_text, session_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (time.time(), term, kind, meaning, sentence_en, source_text, session_id),
+            )
+            return int(cursor.lastrowid)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        LOGGER.warning("Could not save the word %r", term, exc_info=True)
+        return None
+
+
+def _words_exec(db_path: Path, sql: str, params: tuple) -> bool:
+    try:
+        conn = _connect(db_path)
+        if conn is None:
+            return False
+        try:
+            return conn.execute(sql, params).rowcount > 0
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        LOGGER.warning("Could not update the word book", exc_info=True)
+        return False
+
+
+def remove_word(db_path: Path, term: str, sentence_en: str) -> bool:
+    """Unsave ``term`` from the card whose English sentence is ``sentence_en``."""
+
+    return _words_exec(db_path, "DELETE FROM words WHERE term = ? AND sentence_en = ?", (term, sentence_en))
+
+
+def delete_word(db_path: Path, word_id: int) -> bool:
+    return _words_exec(db_path, "DELETE FROM words WHERE id = ?", (int(word_id),))
+
+
+def set_word_meaning(db_path: Path, word_id: int, meaning: str) -> bool:
+    return _words_exec(db_path, "UPDATE words SET meaning = ? WHERE id = ?", (meaning, int(word_id)))
+
+
+def list_words(db_path: Path) -> list[dict]:
+    """Every saved word, newest first."""
+
+    try:
+        conn = _connect(db_path)
+        if conn is None:
+            return []
+        try:
+            rows = conn.execute("SELECT * FROM words ORDER BY created_at DESC, id DESC").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:  # no words table yet
+        return []
+    return [
+        {"id": r["id"], "at": r["created_at"], "term": r["term"], "kind": r["kind"],
+         "meaning": r["meaning"], "en": r["sentence_en"], "source": r["source_text"]}
+        for r in rows
+    ]

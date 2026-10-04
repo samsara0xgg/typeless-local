@@ -243,6 +243,41 @@ class TextRefiner:
         self._client = OpenAI(api_key=api_key, base_url=self.config.base_url, max_retries=0)
         return self._client
 
+    def define(self, word: str, sentence: str, source: str = "") -> str | None:
+        """The Chinese meaning of ``word`` as used in ``sentence``; None on the free trial.
+
+        ``source`` is what was dictated: when it differs from the sentence it is
+        the Chinese the sentence renders, which settles words like "pop" (爆音).
+        """
+
+        if self.config.preset == trial.PRESET:
+            return None
+        # The cheapest tier is plenty for one word, but only the OpenAI endpoint has it.
+        cheap = not self.config.base_url or "api.openai.com" in self.config.base_url
+        model = "gpt-5.6-luna" if cheap else self.config.model
+        prompt = f"Word or phrase: {word}\nSentence: {sentence}"
+        if source and source.strip() != sentence.strip():
+            prompt += f"\nOriginal (the sentence renders this): {source}"
+        kwargs = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "Give the Chinese meaning of the English word or phrase as used in the sentence, matching the original where it corresponds: a concise Chinese meaning, 2 to 15 Chinese characters for a word and at most 30 for a longer phrase, only the meaning, no punctuation or explanation."},
+                {"role": "user", "content": prompt},
+            ],
+            "max_completion_tokens" if model.startswith("gpt-5") else "max_tokens": 60,
+            "timeout": 15.0,
+        }
+        if cheap:
+            # Without this luna can spend the whole token budget thinking and say nothing.
+            kwargs["reasoning_effort"] = "none"
+        else:
+            if self.config.reasoning_effort:
+                kwargs["reasoning_effort"] = self.config.reasoning_effort
+            if self.config.extra_body:
+                kwargs["extra_body"] = dict(self.config.extra_body)
+        response = self._get_client().chat.completions.create(**kwargs)
+        return str(response.choices[0].message.content or "").strip() or None
+
     def prewarm(self) -> None:
         """Open a connection to the API now so refine() doesn't pay the handshake.
 

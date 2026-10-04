@@ -101,12 +101,26 @@ function cardHTML(title, sub, text, btns) {
 }
 
 // English practice: the sentence, then the phrases worth keeping.
+// Long English scrolls in place from the top; a fade at the bottom says there is more.
+function enFade(t) { t.classList.toggle('more', t.scrollTop + t.clientHeight < t.scrollHeight - 1); }
+document.addEventListener('scroll', e => { if (e.target.classList?.contains('en-t')) enFade(e.target); }, true);
+// Each English word and each phrase row is a button for the word book (data-w = the term).
+// Words carry their offset in the sentence (data-i); everything between words is a .gp span, so a dragged block can be highlighted whole.
+function words(t) {
+  let out = '', at = 0;
+  for (const m of t.matchAll(/[A-Za-z][A-Za-z'’-]*/g)) {
+    if (m.index > at) out += `<span class="gp">${esc(t.slice(at, m.index))}</span>`;
+    out += `<span class="wd" data-w="${m[0]}" data-k="word" data-i="${m.index}">${m[0]}</span>`;
+    at = m.index + m[0].length;
+  }
+  return out + (at < t.length ? `<span class="gp">${esc(t.slice(at))}</span>` : '');
+}
 function englishHTML(o) {
-  const rows = (o.phrases || []).map(p => `<div class="en-row"><b>${esc(p.en)}</b><span>${esc(p.zh)}</span></div>`).join('');
+  const rows = (o.phrases || []).map(p => `<div class="en-row wd" data-w="${esc(p.en)}" data-k="phrase"><b>${esc(p.en)}</b><span>${esc(p.zh)}</span></div>`).join('');
   return `<div class="card-in en-card"><div class="en-h"><span class="en-tag">EN</span><span class="sp"></span>`
     + `<button class="ib sm" data-act="copyen" aria-label="${L('复制英文', 'Copy English')}">${I('copy')}</button>`
     + `<button class="ib sm" data-act="close" aria-label="${L('关闭', 'Close')}">${I('xmark')}</button></div>`
-    + `<div class="en-t">${esc(o.en)}</div>` + (rows ? `<div class="en-p">${rows}</div>` : '')
+    + `<div class="en-t">${words(o.en)}</div>` + (rows ? `<div class="en-p">${rows}</div>` : '')
     + (o.use ? `<div class="card-f"><span class="sp"></span><button class="pbtn pri" data-act="useen">${L('用这句替换', 'Use this')}</button></div>` : '')
     + `</div>`;
 }
@@ -204,6 +218,7 @@ function measureLayer(html, kind) {
   if (kind === 'card') el.style.width = Math.min(400, innerWidth - 16) + 'px';
   el.innerHTML = html;
   capEl.appendChild(el);
+  el.querySelectorAll('.en-t').forEach(enFade);
   const w = Math.ceil(el.offsetWidth), h = Math.ceil(el.offsetHeight);
   el.classList.remove('measure');
   return { el, w, h };
@@ -424,7 +439,64 @@ function act(a) {
   if (a === 'done' || a === 'replace') { const f = $('#cardField'); msg.text = f ? f.value : ''; }
   post(msg);
 }
+// Drag across words of the sentence to save them as one phrase; a press and release on one word saves that word.
+let drag = null;
+const save = (term, kind, on) => post({ t: 'act', a: 'word', term, kind, on });
+function dragTo(el) {
+  const w = el && el.closest && el.closest('.en-t .wd');
+  if (!drag || !w || w === drag.cur) return;
+  drag.cur = w;
+  const ws = [...drag.t.querySelectorAll('.wd')], kids = [...drag.t.children];
+  const a = ws.indexOf(drag.from), b = ws.indexOf(w);
+  const lo = kids.indexOf(ws[Math.min(a, b)]), hi = kids.indexOf(ws[Math.max(a, b)]);
+  kids.forEach((k, i) => k.classList.toggle('sel', i >= lo && i <= hi));
+  drag.n = Math.abs(a - b) + 1;
+}
+function dragEnd() {
+  const d = drag; drag = null;
+  if (!d) return;
+  d.t.classList.remove('dragging');
+  const sel = [...d.t.querySelectorAll('.sel')];
+  sel.forEach(k => k.classList.remove('sel'));
+  if (d.n >= 2) {
+    const ws = sel.filter(k => k.classList.contains('wd')), last = ws[ws.length - 1];
+    const term = S.d.en.slice(+ws[0].dataset.i, +last.dataset.i + last.textContent.length);
+    sel.forEach(k => (k._b = k._b || []).push(term) && k.classList.add('saved'));
+    save(term, 'phrase', true);
+    return;
+  }
+  const w = d.from, b = w._b && w._b.pop();
+  if (b) {   // inside a saved block: take the whole block back
+    document.querySelectorAll('.en-t .saved').forEach(k => {
+      const i = (k._b || []).indexOf(b);
+      if (i >= 0) k._b.splice(i, 1);
+      if (!(k._b || []).length) k.classList.remove('saved');
+    });
+    save(b, w.dataset.k, false);
+  } else {
+    const on = w.classList.toggle('saved');
+    if (on) (w._b = w._b || []).push(w.dataset.w);
+    save(w.dataset.w, 'word', on);
+  }
+}
+stage.addEventListener('mousedown', e => {
+  const w = e.target.closest('.en-t .wd');
+  if (!w || e.button) return;
+  e.preventDefault();
+  drag = { from: w, cur: null, n: 1, t: w.closest('.en-t') };
+  drag.t.classList.add('dragging');
+  dragTo(w);
+});
+document.addEventListener('mousemove', e => { if (drag) dragTo(e.target); });
+document.addEventListener('mouseup', dragEnd);
 stage.addEventListener('click', e => {
+  const w = e.target.closest('[data-w]');
+  if (w) {
+    if (w.closest('.en-t')) return;
+    const on = w.classList.toggle('saved');
+    save(w.dataset.w, w.dataset.k, on);
+    return;
+  }
   const b = e.target.closest('[data-act]');
   if (b) act(b.dataset.act);
 });
@@ -452,7 +524,8 @@ capEl.addEventListener('focusout', e => { if (e.target.id === 'cardField') post(
 function pointer(x, y) {
   let over = null;
   if (x != null) over = document.elementFromPoint(x, y);
-  const btn = over ? over.closest('button') : null;
+  if (drag) dragTo(over);
+  const btn = over ? over.closest('button, .wd') : null;
   if (btn !== S.hovBtn) {
     if (S.hovBtn) S.hovBtn.classList.remove('hov');
     if (btn) btn.classList.add('hov');

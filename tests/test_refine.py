@@ -432,3 +432,17 @@ def test_english_off_stays_non_streaming_and_the_trial_proxy_never_gets_the_inst
     trial.refine("hello", english=True, on_text=lambda text: None)
     assert "stream" not in fake.completions.kwargs
     assert ENGLISH_PRACTICE_PROMPT not in fake.completions.kwargs["messages"][0]["content"]
+
+
+def test_define_uses_the_cheap_model_on_openai_and_skips_the_trial() -> None:
+    fake = _FakeClient()
+    openai = RefineConfig("gpt-5.4-mini", "https://api.openai.com/v1", "OPENAI_API_KEY", 128)
+    assert TextRefiner(openai, client=fake).define("meeting", "A meeting.") == "This is the refined text."
+    assert fake.completions.kwargs["model"] == "gpt-5.6-luna"
+    other = RefineConfig("deepseek-chat", "https://api.deepseek.com", "DEEPSEEK_API_KEY", 128)
+    TextRefiner(other, client=fake).define("meeting", "A meeting.")
+    assert fake.completions.kwargs["model"] == "deepseek-chat"
+    fake.completions.kwargs = None
+    trial_cfg = RefineConfig("m", "https://x", "K", 128, preset="free-trial")
+    assert TextRefiner(trial_cfg, client=fake).define("meeting", "A meeting.") is None
+    assert fake.completions.kwargs is None

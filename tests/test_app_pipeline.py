@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -2067,3 +2068,123 @@ def test_english_practice_pastes_at_the_marker_once_then_shows_the_card(monkeypa
     assert pasted == ["你好，世界。"]
     assert app.overlay.shown() == ["refining", "inserted", "english"]
     assert app.capsule.data["en"] == "Hello, world." and app.capsule.data["use"] is False
+
+
+def test_clicking_words_on_the_english_card_saves_and_unsaves_them(tmp_path) -> None:
+    from typeless_local import history
+
+    app = _make_app("x")
+    app.trace = SimpleNamespace(db_path=tmp_path / "trace.db")
+    app.prefs = Preferences()
+    app.windows = None
+    app._english_card = {"en": "A meeting.", "source": "一个会议", "zh": {"set up": "安排"}}
+    looked = []
+    app.refiner = SimpleNamespace(define=lambda term, sentence, source="": looked.append((term, sentence)) or "会议")
+
+    app._on_overlay_action("word", {"term": "meeting", "kind": "word", "on": True})
+    app._on_overlay_action("word", {"term": "set up", "kind": "phrase", "on": True})
+    for _ in range(100):
+        if looked and history.list_words(app.trace.db_path)[-1]["meaning"]:
+            break
+        time.sleep(0.01)
+    words = {w["term"]: w for w in history.list_words(app.trace.db_path)}
+    assert words["meeting"]["meaning"] == "会议" and looked == [("meeting", "A meeting.")]
+    assert words["set up"]["meaning"] == "安排" and words["set up"]["source"] == "一个会议"
+
+    app._on_overlay_action("word", {"term": "meeting", "kind": "word", "on": False})
+    assert [w["term"] for w in history.list_words(app.trace.db_path)] == ["set up"]
+
+
+def test_dragged_phrase_without_zh_looks_up_its_meaning(tmp_path) -> None:
+    from typeless_local import history
+
+    app = _make_app("x")
+    app.trace = SimpleNamespace(db_path=tmp_path / "trace.db")
+    app.prefs = Preferences()
+    app.windows = None
+    app._english_card = {"en": "Let's set up a meeting.", "source": "", "zh": {"set up": "安排"}}
+    looked = []
+    app.refiner = SimpleNamespace(define=lambda term, sentence, source="": looked.append(term) or "安排会议")
+
+    app._on_overlay_action("word", {"term": "set up a meeting", "kind": "phrase", "on": True})
+    for _ in range(100):
+        if history.list_words(app.trace.db_path)[-1]["meaning"]:
+            break
+        time.sleep(0.01)
+    assert looked == ["set up a meeting"]
+    assert history.list_words(app.trace.db_path)[-1]["meaning"] == "安排会议"
+
+    app._on_overlay_action("word", {"term": "set up a meeting", "kind": "phrase", "on": False})
+    assert history.list_words(app.trace.db_path) == []
+
+
+class _InstantTimer:
+    def __init__(self, delay, fn, args=()):
+        self.fn, self.args = fn, args
+
+    def start(self):
+        self.fn(*self.args)
+
+
+def _send_app(monkeypatch):
+    returns = []
+    monkeypatch.setattr(app_module, "press_return", lambda: returns.append("return"))
+    monkeypatch.setattr(app_module.threading, "Timer", _InstantTimer)
+    monkeypatch.setattr(app_module, "paste_text", lambda text: None)
+    monkeypatch.setattr(app_module, "set_clipboard_text", lambda text: None)
+    monkeypatch.setattr(app_module, "prepare_paste", lambda context: "blind")
+    app = _make_app("hello")
+    app._active_session_id = 3
+    app._send_session = 3
+    return app, returns
+
+
+def _deliver(app, fallback=""):
+    context = FocusContext("TextEdit", "", can_insert_text=True, pid=TARGET_PID)
+    app._deliver("Text.", "raw", context, fallback, SimpleNamespace(was_pasted=False))
+
+
+def test_enter_finish_presses_return_once_after_the_paste(monkeypatch) -> None:
+    app, returns = _send_app(monkeypatch)
+    _deliver(app)
+    assert returns == ["return"]
+    _deliver(app)
+    assert returns == ["return"], "the flag is used up by its dictation"
+
+
+@pytest.mark.parametrize("fallback", ["net", "key"])
+def test_no_return_after_a_raw_fallback_paste(monkeypatch, fallback) -> None:
+    app, returns = _send_app(monkeypatch)
+    _deliver(app, fallback)
+    assert returns == []
+
+
+def test_no_return_when_the_paste_did_not_land(monkeypatch) -> None:
+    app, returns = _send_app(monkeypatch)
+    monkeypatch.setattr(app_module, "prepare_paste", lambda context: "lost")
+    _deliver(app)
+    assert returns == []
+
+
+def test_no_return_after_a_new_dictation_began(monkeypatch) -> None:
+    app, returns = _send_app(monkeypatch)
+    app._active_session_id = 4
+    _deliver(app)
+    assert returns == []
+
+
+def test_send_action_marks_the_dictation_and_recording_start_clears_it(monkeypatch) -> None:
+    app = _recording_app()
+    app.state = "recording"
+    app._active_session_id = 5
+    finished = []
+    monkeypatch.setattr(app, "_finish_recording", lambda: finished.append(1))
+    app._on_hotkey("send")
+    assert app._send_session == 5 and finished == [1]
+
+    app.state = "idle"
+    app._on_hotkey("send")
+    assert finished == [1], "Enter outside a recording does nothing"
+
+    app._start_recording("tap")
+    assert app._send_session is None

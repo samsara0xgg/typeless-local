@@ -51,6 +51,7 @@ from typeless_local.mac_integration import (
     has_accessibility_trust,
     paste_text,
     prepare_paste,
+    press_return,
     focused_text_length,
     press_play_pause,
     request_accessibility_trust,
@@ -65,6 +66,7 @@ from typeless_local.first_run import (
     model_is_cached,
     set_api_key,
 )
+from typeless_local import history as word_book
 from typeless_local.history import purge_older_than, set_sent_text, term_counts
 from typeless_local.sent_text import SentTextWatcher
 from typeless_local.menubar import MenuBarIcon, Recent, Snapshot
@@ -90,6 +92,8 @@ LONG_PRESS_SECONDS = 0.6
 HOLD_CONFIRM_S = 0.6
 # How long a pasted dictation gets to show up in the field before it counts as lost.
 PASTE_CHECK_S = 0.5
+# After a paste, the wait before the Return that sends it: the paste lands first.
+SEND_SETTLE_S = 0.1
 MIN_MIC_STARTUP_SECONDS = 0.75
 # A non-Chinese transcript this short is usually Whisper inventing a word over
 # noise ("you", "Bye."), but it is also how "OK" and "Yes" come out. Whisper's
@@ -186,6 +190,7 @@ class TypelessLocalApp:
                 self._on_hotkey,
                 debug_hotkey=config.debug_hotkey,
                 is_active_fn=lambda: self.state != "idle",
+                is_recording_fn=lambda: self.state == "recording",
                 watch_keys_fn=lambda: self._keys_wanted,
                 use_f5_fn=lambda: self.prefs.f5_hotkey,
                 use_right_command_fn=lambda: self.prefs.right_command_hotkey,
@@ -1020,6 +1025,13 @@ class TypelessLocalApp:
             if action == "cancel":
                 self._cancel()
                 return
+            if action == "send":
+                # Enter while recording: finish like a normal stop, then press
+                # Return after the paste. Tied to this dictation's session id.
+                if self.state == "recording":
+                    self._send_session = getattr(self, "_active_session_id", 0)
+                    self._finish_recording()
+                return
             if action == "hold_start":
                 self._on_hold_start()
                 return
@@ -1198,6 +1210,9 @@ class TypelessLocalApp:
             # card, not typing after the paste.
             self._keys_wanted = self._insertion is not None and not data.get("focus")
             return
+        if action == "word":
+            self._toggle_word(data)
+            return
         with self._lock:
             if action == "primary":
                 if self.state == "idle":
@@ -1296,6 +1311,35 @@ class TypelessLocalApp:
         threading.Thread(
             target=self._swap_text, args=(insertion, corrected, True), daemon=True, name="replace"
         ).start()
+
+    def _toggle_word(self, data: dict) -> None:
+        """A word or phrase clicked on the English card: save it to the word book, or take it back."""
+
+        card = getattr(self, "_english_card", None)
+        trace = getattr(self, "trace", None)
+        term = str(data.get("term") or "").strip()
+        if not card or trace is None or not term:
+            return
+        db = trace.db_path
+        if not data.get("on"):
+            word_book.remove_word(db, term, card["en"])
+            self._windows_changed(history=True)
+            return
+        phrase = data.get("kind") == "phrase"
+        meaning = card["zh"].get(term)
+        session_id = getattr(self, "_last_trace_id", None) if self.prefs.save_history else None
+        word_id = word_book.add_word(db, term, "phrase" if phrase else "word", meaning, card["en"], card["source"], session_id)
+        self._windows_changed(history=True)
+        if word_id and not meaning:
+            threading.Thread(target=self._lookup_meaning, args=(db, word_id, term, card["en"], card["source"]), daemon=True, name="word-meaning").start()
+
+    def _lookup_meaning(self, db, word_id: int, term: str, sentence: str, source: str = "") -> None:
+        try:
+            meaning = self.refiner.define(term, sentence, source)
+            if meaning and word_book.set_word_meaning(db, word_id, meaning):
+                self._windows_changed(history=True)
+        except Exception:
+            LOGGER.warning("Word meaning lookup failed for %r", term, exc_info=True)
 
     def _use_english(self, text: str) -> None:
         """The English card's "Use this": the same swap as Replace, with the English version."""
@@ -1441,6 +1485,7 @@ class TypelessLocalApp:
         self._active_session_id = getattr(self, "_active_session_id", 0) + 1
         self._insertion = None
         self._keys_wanted = False
+        self._send_session = None
         watcher = getattr(self, "sent_watcher", None)
         if watcher is not None:
             watcher.cancel()
@@ -2039,6 +2084,10 @@ class TypelessLocalApp:
             LOGGER.info("English card skipped: a new dictation has begun")
             return
         LOGGER.info("Showing the English card")
+        self._english_card = {
+            "en": english["en"], "source": record.refined_text or "",
+            "zh": {p["en"]: p["zh"] for p in english["phrases"]},
+        }
         swap = self._insertion is not None and record.raw_asr_language == "en"
         self.capsule.show(
             "english", use=swap and english["en"].strip() != (record.refined_text or "").strip(), en=english["en"], phrases=english["phrases"]
@@ -2066,10 +2115,12 @@ class TypelessLocalApp:
                 self._set_menubar("idle")
                 self._remember(text, context.app_name)
                 self.capsule.show("inserted-unsure")
+                self._maybe_send(fallback, landed=False)
                 return
             record.was_pasted = True
             LOGGER.info("Dictation inserted %d characters", len(text))
             self.state = "idle"
+            self._maybe_send(fallback)
             self._set_menubar("idle")
             self._remember(text, context.app_name)
             self._insertion = Insertion(text=text, raw=raw, pid=frontmost_pid(), context=context)
@@ -2094,6 +2145,31 @@ class TypelessLocalApp:
         self.state = "idle"
         self._set_menubar("idle")
         self.capsule.show("edit-notarget", text=text)
+        self._maybe_send(fallback, landed=False)
+
+    def _maybe_send(self, fallback: str, landed: bool = True) -> None:
+        """Press Return after the paste when this dictation was finished with Enter."""
+
+        sid = getattr(self, "_send_session", None)
+        if sid is None:
+            return
+        if not landed:
+            LOGGER.info("Not sending with Return: the text did not land in a field")
+        elif sid != getattr(self, "_active_session_id", 0):
+            LOGGER.info("Not sending with Return: a new dictation has begun")
+        elif fallback:
+            LOGGER.info("Not sending with Return: the raw transcript was pasted (%s)", fallback)
+        else:
+            LOGGER.info("Sending with Return after the paste")
+            threading.Timer(SEND_SETTLE_S, self._press_return, args=(sid,)).start()
+        self._send_session = None
+
+    def _press_return(self, sid: int) -> None:
+        with self._lock:
+            if sid == getattr(self, "_active_session_id", 0) and self.state == "idle":
+                press_return()
+            else:
+                LOGGER.info("Not sending with Return: a new dictation has begun")
 
     def _paste_landed(self, pid: int, before: int) -> bool:
         """Whether the focused field's length changed soon after the Cmd+V."""

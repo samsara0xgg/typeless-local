@@ -48,6 +48,20 @@ CREATE INDEX IF NOT EXISTS idx_started_at ON sessions(started_at);
 
 """
 
+# Words and phrases saved from the English practice card (history.add_word).
+WORDS_SQL = """
+CREATE TABLE IF NOT EXISTS words (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at REAL NOT NULL,
+  term TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  meaning TEXT,
+  sentence_en TEXT NOT NULL,
+  source_text TEXT NOT NULL,
+  session_id INTEGER
+);
+"""
+
 
 def changed_terms(before: str, after: str) -> list[tuple[str, str]]:
     """The fragments that actually differ, as ``(before, after)`` pairs.
@@ -153,7 +167,7 @@ class DictationTrace:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.db_path), isolation_level=None)
         try:
-            conn.executescript(SCHEMA_SQL)
+            conn.executescript(SCHEMA_SQL + WORDS_SQL)
             have = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
             for name, kind in ADDED_COLUMNS:
                 if name not in have:

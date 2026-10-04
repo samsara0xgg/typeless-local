@@ -618,7 +618,7 @@ class Windows:
         user_paths = getattr(self.app.config, "user_paths", None)
         items = history.recent_sessions(db, HISTORY_ROWS) if db is not None else []
         mine = vocab.load_user_terms(Path(user_paths.vocab_path)) if user_paths is not None else []
-        return {"enabled": self.app.prefs.save_history, "items": items, "vocab": mine}
+        return {"enabled": self.app.prefs.save_history, "items": items, "vocab": mine, "words": history.list_words(db) if db is not None else []}
 
     def _history_message(self, msg: dict) -> None:
         kind = msg.get("t")
@@ -636,6 +636,10 @@ class Windows:
         elif kind == "delete":
             db = self._db()
             if db is not None and history.delete_session(db, int(msg.get("id") or 0)):
+                self.refresh(history=True)
+        elif kind == "delword":
+            db = self._db()
+            if db is not None and history.delete_word(db, int(msg.get("id") or 0)):
                 self.refresh(history=True)
         elif kind == "vocab":
             term = str(msg.get("term") or "").strip()

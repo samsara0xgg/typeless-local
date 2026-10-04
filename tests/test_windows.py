@@ -548,7 +548,7 @@ def test_about_state_carries_the_author_and_only_allow_listed_urls_open(ui, monk
 
 PAGES = {
     "settings": ({"ready", "set", "key", "migrate", "test", "vocab", "open", "count", "clear", "geo", "feedback"}, "_settings_message"),
-    "history": ({"ready", "geo", "copy", "delete", "vocab", "open"}, "_history_message"),
+    "history": ({"ready", "geo", "copy", "delete", "delword", "vocab", "open"}, "_history_message"),
     "onboarding": ({"ready", "mic", "a11y", "key", "download", "done", "lang", "source", "open", "meter"}, "_onboarding_message"),
 }
 

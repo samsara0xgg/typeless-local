@@ -95,3 +95,16 @@ def test_the_sent_text_is_stored_and_read_back(tmp_path) -> None:
     assert history.set_sent_text(db, row, "明天三点开会。") is True
     assert history.recent_sessions(db)[0]["sent"] == "明天三点开会。"
     assert history.set_sent_text(tmp_path / "missing.db", row, "x") is False
+
+
+def test_word_book_add_remove_list(tmp_path) -> None:
+    db = tmp_path / "trace.db"
+    first = history.add_word(db, "meeting", "word", None, "A meeting.", "一个会议", 3)
+    history.add_word(db, "meeting", "word", None, "Another meeting.", "另一个", None)
+    history.add_word(db, "set up", "phrase", "安排", "Set up a call.", "x", None)
+    assert [w["term"] for w in history.list_words(db)] == ["set up", "meeting", "meeting"]
+    assert history.set_word_meaning(db, first, "会议")
+    assert history.remove_word(db, "meeting", "A meeting.")
+    left = history.list_words(db)
+    assert [(w["term"], w["en"]) for w in left] == [("set up", "Set up a call."), ("meeting", "Another meeting.")]
+    assert history.delete_word(db, left[0]["id"]) and len(history.list_words(db)) == 1
